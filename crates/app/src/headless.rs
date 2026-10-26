@@ -522,3 +522,273 @@ pub fn bench_ticker(path: &str, ticks: u32) -> Result<(), String> {
     );
     Ok(())
 }
+
+/// Graphs for comparing with Desmos, kept as Desmos states so the same file
+/// opens in both. Each has a slider `a` (id "a") from 0 to 3.
+pub const SUITE: &[(&str, &str)] = &[
+    ("curves", include_str!("../../../bench/curves.json")),
+    ("sums", include_str!("../../../bench/sums.json")),
+    ("implicit", include_str!("../../../bench/implicit.json")),
+    ("shading", include_str!("../../../bench/shading.json")),
+    ("points", include_str!("../../../bench/points.json")),
+    ("parametric", include_str!("../../../bench/parametric.json")),
+    ("polar", include_str!("../../../bench/polar.json")),
+];
+
+/// Times each suite graph as bench/desmos-bench.js times it in Desmos:
+/// opening it, then `frames` frames each of moving slider `a`, panning and
+/// zooming. A frame is the app's own work (analysis and scene building)
+/// plus drawing on the GPU and waiting for it.
+pub fn bench_suite(frames: u32) -> Result<(), String> {
+    let (width, height) = (1600u32, 1000u32);
+    let gpu = Gpu::new(&new_instance(), None)?;
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut renderer = GraphRenderer::new(&gpu, format);
+    let mut shader = ShadingRenderer::new(&gpu);
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("suite target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let area = Area {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let mut text = TextAtlas::system();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let software = gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu;
+    println!(
+        "suite on {} at {width}x{height}, {frames} frames each (ms; cpu = analysis and scene building)",
+        gpu.describe()
+    );
+    println!(
+        "{:<11} {:>8} {:>13} {:>13} {:>13}",
+        "graph", "open", "slider", "pan", "zoom"
+    );
+    // GRAPHCALC_SUITE=curves,points runs only those graphs.
+    let only = std::env::var("GRAPHCALC_SUITE").unwrap_or_default();
+    for (name, state) in SUITE {
+        if !only.is_empty() && !only.split(',').any(|o| o.trim() == *name) {
+            continue;
+        }
+        let (rows, view, _) = crate::files::open_any(state)?;
+        let mut rows = rows.as_array().cloned().unwrap_or_default();
+        for (i, r) in rows.iter_mut().enumerate() {
+            r["id"] = json!(i + 1);
+        }
+        let slider = rows
+            .iter()
+            .position(|r| r["latex"].as_str().is_some_and(|l| l.starts_with("a=")))
+            .ok_or(format!("{name} has no slider a"))?;
+        let fresh_view = || {
+            let mut vp = Viewport::new(width as f64, height as f64);
+            if let Some(v) = &view {
+                v.apply(&mut vp);
+            }
+            vp
+        };
+
+        // Opening: a fresh engine analyzes every row and builds the scene.
+        let mut open = Duration::MAX;
+        for _ in 0..3 {
+            let vp = fresh_view();
+            let start = Instant::now();
+            let mut engine = Engine::default();
+            engine.update(&serde_json::Value::Array(rows.clone()));
+            std::hint::black_box(engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text)));
+            open = open.min(start.elapsed());
+        }
+
+        let mut engine = Engine::default();
+        engine.update(&serde_json::Value::Array(rows.clone()));
+        let mut frame =
+            |engine: &mut Engine, vp: &Viewport, update: Option<&[serde_json::Value]>| {
+                let start = Instant::now();
+                if let Some(rows) = update {
+                    engine.update(&serde_json::Value::Array(rows.to_vec()));
+                }
+                let scene = engine.with_plot(|plot| build_scene(vp, 1.0, plot, &mut text));
+                let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+                let cpu = start.elapsed();
+                renderer.draw_scene(
+                    &gpu,
+                    &target,
+                    (width, height),
+                    area,
+                    &scene,
+                    &text,
+                    &shadings,
+                    &mut shader,
+                );
+                gpu.device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((cpu, start.elapsed()))
+            };
+        let mut run = |engine: &mut Engine,
+                       each: &mut dyn FnMut(
+            u32,
+            &mut Viewport,
+            &mut Vec<serde_json::Value>,
+        ) -> bool| {
+            let mut vp = fresh_view();
+            let mut rows = rows.clone();
+            let (mut cpu, mut total) = (Duration::ZERO, Duration::ZERO);
+            for i in 0..frames {
+                let changed = each(i, &mut vp, &mut rows);
+                let (c, t) = frame(engine, &vp, changed.then_some(&rows[..]))?;
+                cpu += c;
+                total += t;
+            }
+            let n = frames.max(1);
+            Ok::<_, String>((cpu / n, total / n))
+        };
+        let slider_t = run(&mut engine, &mut |i, _, rows| {
+            let a = 0.5 + 2.0 * f64::from(i) / f64::from(frames.max(1));
+            rows[slider]["latex"] = json!(format!("a={a:.4}"));
+            true
+        })?;
+        engine.update(&serde_json::Value::Array(rows.clone()));
+        let pan_t = run(&mut engine, &mut |_, vp, _| {
+            vp.pan_px(-4.0, 0.0);
+            false
+        })?;
+        let zoom_t = run(&mut engine, &mut |_, vp, _| {
+            vp.zoom_at(width as f64 / 2.0, height as f64 / 2.0, 1.0 / 1.01);
+            false
+        })?;
+        let cell = |(cpu, total): (Duration, Duration)| {
+            if software {
+                format!("{:.1} cpu", ms(cpu))
+            } else {
+                format!("{:.1} ({:.1})", ms(total), ms(cpu))
+            }
+        };
+        println!(
+            "{:<11} {:>8.1} {:>13} {:>13} {:>13}",
+            name,
+            ms(open),
+            cell(slider_t),
+            cell(pan_t),
+            cell(zoom_t)
+        );
+    }
+    if software {
+        println!("software adapter: only the app's own (cpu) time is shown");
+    } else {
+        println!("frame times are total (cpu in brackets)");
+    }
+    Ok(())
+}
+
+/// The console script that times the suite graphs in Desmos, the same way
+/// [`bench_suite`] times them here. Kept in the repository as
+/// bench/desmos-bench.js; a test checks the two agree.
+pub fn desmos_script() -> String {
+    let graphs: Vec<String> = SUITE
+        .iter()
+        .map(|(name, state)| {
+            let compact: serde_json::Value = serde_json::from_str(state).expect("suite JSON");
+            format!("    {name}: {compact},")
+        })
+        .collect();
+    format!(
+        r#"// Times the graphcalc comparison graphs in Desmos. Open
+// https://www.desmos.com/calculator in Chrome, press F12, paste all of this
+// into the Console and press Enter. It replaces the graph on screen, takes
+// about a minute, and prints a table to compare with `graphcalc --bench-suite`.
+//
+// Each step waits until Desmos has finished computing and drawing (through
+// asyncScreenshot), less what a screenshot of an unchanged graph costs.
+// Generated by graphcalc (headless.rs, desmos_script); do not edit by hand.
+(async () => {{
+  const FRAMES = 60;
+  const GRAPHS = {{
+{}
+  }};
+  const size = () => Calc.graphpaperBounds.pixelCoordinates;
+  const settle = () => new Promise((done) => {{
+    const px = size();
+    Calc.asyncScreenshot({{ width: px.width, height: px.height, targetPixelRatio: 1 }}, () => done());
+  }});
+  const results = [];
+  for (const [graph, state] of Object.entries(GRAPHS)) {{
+    let t = performance.now();
+    Calc.setState(state);
+    await settle();
+    const open = performance.now() - t;
+    t = performance.now();
+    for (let i = 0; i < 10; i++) await settle();
+    const base = (performance.now() - t) / 10;
+    const steps = async (change) => {{
+      const t0 = performance.now();
+      for (let i = 0; i < FRAMES; i++) {{
+        change(i);
+        await settle();
+      }}
+      return Math.max(0, (performance.now() - t0) / FRAMES - base);
+    }};
+    const b = Calc.graphpaperBounds.mathCoordinates;
+    const bounds = (dx, k) => {{
+      const cx = (b.left + b.right) / 2 + dx, cy = (b.bottom + b.top) / 2;
+      const hw = (b.right - b.left) / 2 / k, hh = (b.top - b.bottom) / 2 / k;
+      Calc.setMathBounds({{ left: cx - hw, right: cx + hw, bottom: cy - hh, top: cy + hh }});
+    }};
+    const slider = await steps((i) =>
+      Calc.setExpression({{ id: 'a', latex: 'a=' + (0.5 + (2 * i) / FRAMES).toFixed(4) }}));
+    Calc.setExpression({{ id: 'a', latex: 'a=1' }});
+    const pan = await steps((i) => bounds((b.right - b.left) * 0.0025 * (i + 1), 1));
+    const zoom = await steps((i) => bounds(0, Math.pow(1.01, i + 1)));
+    const px = size();
+    results.push({{
+      graph,
+      open: +open.toFixed(1),
+      slider: +slider.toFixed(1),
+      pan: +pan.toFixed(1),
+      zoom: +zoom.toFixed(1),
+      size: px.width + 'x' + px.height,
+    }});
+  }}
+  console.table(results);
+  console.log('Desmos times in ms. Copy this line into the chat:\n' + JSON.stringify(results));
+}})();
+"#,
+        graphs.join("\n")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn suite_graphs_open_and_the_desmos_script_is_current() {
+        for (name, state) in super::SUITE {
+            let (rows, _, imported) = crate::files::open_any(state).unwrap();
+            assert!(imported, "{name}");
+            let reply = crate::engine::Engine::default().update(&rows);
+            for r in reply.as_array().unwrap() {
+                assert!(r["error"].is_null(), "{name}: {r}");
+            }
+        }
+        let script = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../bench/desmos-bench.js"
+        ))
+        .unwrap_or_default();
+        assert!(
+            script == super::desmos_script(),
+            "bench/desmos-bench.js is out of date: run `graphcalc --desmos-script bench/desmos-bench.js`"
+        );
+    }
+}

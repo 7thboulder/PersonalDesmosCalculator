@@ -27,6 +27,9 @@ USAGE:
     graphcalc --bench-ticker FILE [TICKS]
                                        run a graph's ticker (default 100 times)
                                        and time each run against its step
+    graphcalc --bench-suite [FRAMES]   time the Desmos comparison graphs in bench/
+                                       (open, slider drag, pan, zoom) and print a
+                                       table to set beside bench/desmos-bench.js
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency
@@ -98,6 +101,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 None => 100,
             };
             headless::bench_ticker(path, ticks)
+        }
+        Some("--bench-suite") => {
+            let frames = match args.get(1) {
+                Some(n) => n.parse().map_err(|_| format!("bad frame count: {n}"))?,
+                None => 120,
+            };
+            headless::bench_suite(frames)
+        }
+        Some("--desmos-script") => {
+            let path = args.get(1).ok_or("--desmos-script needs a file name")?;
+            std::fs::write(path, headless::desmos_script()).map_err(|e| format!("{path}: {e}"))
         }
         Some("--dump-panel-html") => {
             let path = args.get(1).ok_or("--dump-panel-html needs a file name")?;

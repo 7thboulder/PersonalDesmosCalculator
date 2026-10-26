@@ -268,6 +268,8 @@ pub enum Op {
 
 /// Deepest evaluation stack a program may need.
 const MAX_STACK: usize = 128;
+/// The stack most programs fit in.
+const SMALL_STACK: usize = 16;
 
 /// A compiled expression of one variable.
 #[derive(Clone, Debug, PartialEq)]
@@ -275,6 +277,8 @@ pub struct Program {
     ops: Vec<Op>,
     /// The bodies of integrals, evaluated by `Op::Integral`.
     subs: Vec<Program>,
+    /// Deepest the stack gets, so most programs run on a small one.
+    depth: usize,
 }
 
 impl Program {
@@ -288,11 +292,13 @@ impl Program {
         let mut program = Program {
             ops: Vec::new(),
             subs: Vec::new(),
+            depth: 0,
         };
         let depth = program.emit(expr, slot)?;
         if depth > MAX_STACK {
             return Err("Expression is too deeply nested".into());
         }
+        program.depth = depth;
         Ok(program)
     }
 
@@ -382,7 +388,17 @@ impl Program {
     }
 
     fn run(&self, x: f64, y: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
-        let mut stack = [0.0f64; MAX_STACK];
+        // Clearing a full-size stack on every call cost as much as running
+        // a short program.
+        if self.depth <= SMALL_STACK {
+            self.run_on::<SMALL_STACK>(x, y, locals)
+        } else {
+            self.run_on::<MAX_STACK>(x, y, locals)
+        }
+    }
+
+    fn run_on<const N: usize>(&self, x: f64, y: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
+        let mut stack = [0.0f64; N];
         let mut top = 0usize;
         for op in &self.ops {
             match *op {

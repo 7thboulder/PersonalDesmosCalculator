@@ -343,7 +343,9 @@ mod tests {
         let lines = trace_implicit(&Plain(circle(5.0)), &vp);
         assert_eq!(lines.len(), 1, "one loop, not {} pieces", lines.len());
         let line = &lines[0];
-        assert!(line.len() > 100);
+        // A 150 px circle needs about 60 points to stay within the 0.2 px
+        // simplification tolerance.
+        assert!(line.len() > 40, "{} points", line.len());
         // Every point is on the circle, to within a fraction of a pixel.
         for p in line {
             let w = vp.to_world(p[0] as f64, p[1] as f64);
