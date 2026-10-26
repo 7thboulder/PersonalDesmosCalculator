@@ -38,14 +38,26 @@ jobs:
         shell: pwsh
         run: |
           $p = Start-Process -FilePath ./target/release/graphcalc.exe `
-            -ArgumentList '--render-png','render.png','1200x800' `
+            -ArgumentList '--render-png','render.png','1200x800','a=2','"y=a\sin\left(x\right)"','x=y^2','"y=\frac{1}{x}"' `
             -Wait -PassThru -NoNewWindow -RedirectStandardOutput render.txt
           Get-Content render.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
+      - name: Slider benchmark
+        # Simulates dragging a slider that nine curves depend on. On the
+        # software adapter only the app's own per-frame work is judged.
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath ./target/release/graphcalc.exe `
+            -ArgumentList '--bench','1600x1000','600' `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput bench.txt
+          Get-Content bench.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
       - name: Window smoke test
-        # Opens the real window with the editor panel, screenshots the desktop
-        # while it runs, and fails unless the panel and graph both started.
+        # Opens the real window, adds a slider through the panel and plays it,
+        # screenshots the desktop while it runs, and fails unless the panel
+        # reached the engine and curves were drawn.
         shell: pwsh
         run: |
           $p = Start-Process -FilePath ./target/release/graphcalc.exe `
@@ -80,4 +92,5 @@ jobs:
             render.png
             window.png
             smoke.txt
+            bench.txt
           if-no-files-found: ignore

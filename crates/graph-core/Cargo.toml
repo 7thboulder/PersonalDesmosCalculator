@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
+fontdue = { version = "0.9", default-features = false, features = ["std", "simd", "hashbrown"] }

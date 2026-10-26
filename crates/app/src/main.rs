@@ -1,23 +1,31 @@
 // Release builds are a windowed app with no console window behind them.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod engine;
 #[cfg(windows)]
 mod gui;
 mod headless;
 mod ui;
 
 const USAGE: &str = "\
-graphcalc (Phase 0 prototype)
+graphcalc (Phase 1 preview)
 
 USAGE:
     graphcalc                          open the calculator window
-    graphcalc --render-png FILE [WxH]  draw the graph offscreen to a PNG and exit
+    graphcalc --render-png FILE [WxH] [LATEX...]
+                                       graph the LaTeX rows (default y=sin x)
+                                       offscreen to a PNG and exit
+    graphcalc --bench [WxH] [FRAMES]   time a simulated slider drag (analyze,
+                                       build and GPU render per frame) against
+                                       the 60 fps budget
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency
                                        (try this if the editor panel looks wrong)
     graphcalc --dump-panel-html FILE   save the expression panel page, for testing
-                                       it in a browser";
+                                       it in a browser
+    graphcalc --analyze                read the panel's rows as JSON on stdin and
+                                       print the engine's reply, for testing";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,11 +47,35 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("--render-png") => {
             let path = args.get(1).ok_or("--render-png needs a file name")?;
-            let (w, h) = match args.get(2) {
-                Some(size) => parse_size(size)?,
-                None => (1200, 800),
+            let mut rest = &args[2..];
+            let (w, h) = match rest.first().map(|s| parse_size(s)) {
+                Some(Ok(size)) => {
+                    rest = &rest[1..];
+                    size
+                }
+                _ => (1200, 800),
             };
-            headless::render_png(path, w, h)
+            headless::render_png(path, w, h, rest)
+        }
+        Some("--analyze") => {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let rows: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
+            println!("{}", engine::Engine::default().update(&rows));
+            Ok(())
+        }
+        Some("--bench") => {
+            let (w, h) = match args.get(1) {
+                Some(size) => parse_size(size)?,
+                None => (1600, 1000),
+            };
+            let frames = match args.get(2) {
+                Some(n) => n.parse().map_err(|_| format!("bad frame count: {n}"))?,
+                None => 600,
+            };
+            headless::bench_sliders(w, h, frames)
         }
         Some("--dump-panel-html") => {
             let path = args.get(1).ok_or("--dump-panel-html needs a file name")?;
