@@ -7,12 +7,13 @@
 //! becomes one program per element, as Desmos draws one curve per element,
 //! and a point becomes a pair of programs.
 
-use crate::ast::{Condition, Coord, Expr, Relation, Repeat, Statement};
+use crate::ast::{Condition, Coord, Expr, Relation, Repeat, ShapeFn, Statement};
 use crate::builtins::Builtin;
 use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
 use crate::parser::parse;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Default)]
 pub struct RowInput {
@@ -121,6 +122,11 @@ pub enum Value {
     Point(f64, f64),
     Numbers(Vec<f64>),
     Points(Vec<[f64; 2]>),
+    Polygon(Vec<[f64; 2]>),
+    Polygons(Vec<Vec<[f64; 2]>>),
+    /// A complex number, real part then imaginary part.
+    Complex(f64, f64),
+    Complexes(Vec<[f64; 2]>),
 }
 
 /// The parameter a parametric or polar row runs over.
@@ -141,6 +147,8 @@ pub enum RowKind {
     Curve,
     Table,
     Value,
+    /// An action, such as `a \to a + 1`, which runs when clicked.
+    Action,
     /// Valid math this version cannot graph yet, such as a derivative.
     NotYet,
     Error,
@@ -164,6 +172,11 @@ pub struct RowAnalysis {
     pub regions: Vec<Region>,
     /// Fixed points to draw.
     pub points: Vec<[f64; 2]>,
+    /// Filled polygons to draw, each a list of vertices.
+    pub polygons: Vec<Vec<[f64; 2]>>,
+    /// For an action row: what each variable becomes when it runs, worked
+    /// out from the current values.
+    pub updates: Vec<(String, Value)>,
     /// Set for parametric and polar rows, whose domain the panel shows.
     pub parameter: Option<Parameter>,
     /// One entry per column for a table row.
@@ -186,6 +199,8 @@ impl RowAnalysis {
             parametrics: Vec::new(),
             regions: Vec::new(),
             points: Vec::new(),
+            polygons: Vec::new(),
+            updates: Vec::new(),
             parameter: None,
             columns: Vec::new(),
             drag: None,
@@ -223,6 +238,7 @@ impl RowAnalysis {
             && self.parametrics.is_empty()
             && self.regions.is_empty()
             && self.points.is_empty()
+            && self.polygons.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
 }
@@ -247,9 +263,91 @@ const NO_FREE: &[(&str, Arg)] = &[];
 /// Inside a function body, only its parameters are in scope.
 const PARAM_ONLY: &[(&str, Arg)] = &[];
 
+#[derive(PartialEq)]
 struct FuncDef {
     params: Vec<String>,
     body: Expr,
+}
+
+/// Variable values kept from one analysis to the next, each with what it
+/// was worked out from, so a ticker or slider that changes one variable
+/// does not make every other variable be worked out again.
+#[derive(Default)]
+pub struct Cache {
+    vars: HashMap<String, Cached>,
+    /// Function results, as `Env::calls` keeps them within one analysis.
+    calls: FastMap<CallKey, CachedCall>,
+}
+
+/// A function's name and its constant arguments, then (when the result
+/// read graph variables) which ones were in scope.
+type CallKey = (String, Vec<u64>);
+
+struct CachedCall {
+    val: Val,
+    used: Vec<&'static str>,
+    reads: Vec<Read>,
+    deps: Vec<Dep>,
+}
+
+struct Cached {
+    expr: Expr,
+    deps: Vec<Dep>,
+    value: Result<Value, String>,
+}
+
+/// Something a value was worked out from.
+#[derive(Clone)]
+enum Dep {
+    /// Another variable, with the value it had.
+    Var(String, Rc<Result<Value, String>>),
+    /// A function, with its definition at the time.
+    Func(String, Rc<FuncDef>),
+    /// A name that was not defined.
+    Missing(String),
+}
+
+/// A name read while working a value out. Only the name is noted, since the
+/// values read are already kept; they are looked up once the value is done.
+#[derive(Clone, PartialEq)]
+enum Read {
+    Var(String),
+    Func(String, Rc<FuncDef>),
+    Missing(String),
+}
+
+/// Whether two values are the same, counting undefined as equal to itself.
+fn same_value(a: &Result<Value, String>, b: &Result<Value, String>) -> bool {
+    fn bits(v: &Value) -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut push = |tag: u64, xs: &[f64]| {
+            out.push(tag);
+            out.extend(
+                xs.iter()
+                    .map(|x| if x.is_nan() { u64::MAX } else { x.to_bits() }),
+            );
+        };
+        match v {
+            Value::Number(n) => push(0, &[*n]),
+            Value::Point(a, b) => push(1, &[*a, *b]),
+            Value::Complex(a, b) => push(2, &[*a, *b]),
+            Value::Numbers(ns) => push(3, ns),
+            Value::Points(ps) => push(4, ps.as_flattened()),
+            Value::Complexes(zs) => push(5, zs.as_flattened()),
+            Value::Polygon(p) => push(6, p.as_flattened()),
+            Value::Polygons(ps) => {
+                for p in ps {
+                    push(7, p.as_flattened());
+                }
+            }
+        }
+        out
+    }
+    match (a, b) {
+        (Ok(x), Ok(y)) => bits(x) == bits(y),
+        (Err(x), Err(y)) => x == y,
+        _ => false,
+    }
 }
 
 enum Def {
@@ -263,6 +361,29 @@ enum Def {
 enum Item {
     Num(Low),
     Point(Low, Low),
+    /// A polygon's vertices, which are always constants.
+    Polygon(Vec<[f64; 2]>),
+    /// A complex number with a nonzero imaginary part: real, imaginary.
+    Complex(Low, Low),
+}
+
+impl Item {
+    /// A complex number, or a real one when its imaginary part is zero.
+    fn complex(re: Low, im: Low) -> Item {
+        match im {
+            Low::Const(0.0) => Item::Num(re),
+            im => Item::Complex(re, im),
+        }
+    }
+
+    /// The real and imaginary parts of a number.
+    fn parts(&self) -> Option<(Low, Low)> {
+        match self {
+            Item::Num(l) => Some((l.clone(), Low::Const(0.0))),
+            Item::Complex(a, b) => Some((a.clone(), b.clone())),
+            _ => None,
+        }
+    }
 }
 
 /// What an expression lowers to: a single item, or a list of them.
@@ -300,6 +421,14 @@ impl Val {
         self.items.iter().any(|i| matches!(i, Item::Point(..)))
     }
 
+    fn has_polygons(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Polygon(_)))
+    }
+
+    fn has_complex(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Complex(..)))
+    }
+
     /// The value as constants, when nothing in it depends on a graph
     /// variable.
     fn constant(&self) -> Option<Value> {
@@ -307,13 +436,43 @@ impl Val {
             Low::Const(v) => Some(v),
             _ => None,
         };
+        if self.has_polygons() {
+            let polygons = self
+                .items
+                .iter()
+                .map(|i| match i {
+                    Item::Polygon(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(if self.list {
+                Value::Polygons(polygons)
+            } else {
+                Value::Polygon(polygons.into_iter().next()?)
+            });
+        }
+        if self.has_complex() {
+            let numbers = self
+                .items
+                .iter()
+                .map(|i| {
+                    let (a, b) = i.parts()?;
+                    Some([num(&a)?, num(&b)?])
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(if self.list {
+                Value::Complexes(numbers)
+            } else {
+                Value::Complex(numbers[0][0], numbers[0][1])
+            });
+        }
         if self.has_points() {
             let points = self
                 .items
                 .iter()
                 .map(|i| match i {
                     Item::Point(a, b) => Some([num(a)?, num(b)?]),
-                    Item::Num(_) => None,
+                    _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?;
             return Some(if self.list {
@@ -327,7 +486,7 @@ impl Val {
             .iter()
             .map(|i| match i {
                 Item::Num(l) => num(l),
-                Item::Point(..) => None,
+                _ => None,
             })
             .collect::<Option<Vec<_>>>()?;
         Some(if self.list {
@@ -349,15 +508,253 @@ impl Val {
             Value::Points(ps) => {
                 Val::list(ps.iter().map(|p| Item::Point(c(p[0]), c(p[1]))).collect())
             }
+            Value::Polygon(p) => Val {
+                items: vec![Item::Polygon(p.clone())],
+                list: false,
+            },
+            Value::Polygons(ps) => Val::list(ps.iter().cloned().map(Item::Polygon).collect()),
+            Value::Complex(a, b) => Val {
+                items: vec![Item::complex(c(*a), c(*b))],
+                list: false,
+            },
+            Value::Complexes(zs) => {
+                Val::list(zs.iter().map(|z| Item::complex(c(z[0]), c(z[1]))).collect())
+            }
         }
     }
 }
 
 fn bin(op: BinOp, a: Low, b: Low) -> Low {
-    Low::Bin(op, Box::new(a), Box::new(b))
+    match (&a, &b) {
+        (Low::Const(x), Low::Const(y)) => Low::Const(op.apply(*x, *y)),
+        _ => Low::Bin(op, Box::new(a), Box::new(b)),
+    }
+}
+
+/// Works out a node at once when its operands are already numbers, so
+/// sums of thousands of constant terms stay numbers instead of growing
+/// into trees.
+fn call1(f: Builtin, a: Low) -> Low {
+    shallow(Low::Call(f, vec![a]))
+}
+
+/// e to the power of a complex number.
+fn complex_exp(a: Low, b: Low) -> Item {
+    let scale = call1(Builtin::Exp, a);
+    Item::complex(
+        bin(BinOp::Mul, scale.clone(), call1(Builtin::Cos, b.clone())),
+        bin(BinOp::Mul, scale, call1(Builtin::Sin, b)),
+    )
+}
+
+/// The arithmetic of complex numbers, on real and imaginary parts.
+fn complex_op(op: BinOp, (a, b): (Low, Low), (c, d): (Low, Low)) -> Result<Item, String> {
+    let (add, sub, mul, div) = (
+        |x: Low, y: Low| bin(BinOp::Add, x, y),
+        |x: Low, y: Low| bin(BinOp::Sub, x, y),
+        |x: Low, y: Low| bin(BinOp::Mul, x, y),
+        |x: Low, y: Low| bin(BinOp::Div, x, y),
+    );
+    Ok(match op {
+        BinOp::Add => Item::complex(add(a, c), add(b, d)),
+        BinOp::Sub => Item::complex(sub(a, c), sub(b, d)),
+        BinOp::Mul => Item::complex(
+            sub(mul(a.clone(), c.clone()), mul(b.clone(), d.clone())),
+            add(mul(a, d), mul(b, c)),
+        ),
+        BinOp::Div => {
+            let den = add(mul(c.clone(), c.clone()), mul(d.clone(), d.clone()));
+            Item::complex(
+                div(
+                    add(mul(a.clone(), c.clone()), mul(b.clone(), d.clone())),
+                    den.clone(),
+                ),
+                div(sub(mul(b, c), mul(a, d)), den),
+            )
+        }
+        BinOp::Pow => {
+            // Whole powers multiply out exactly, as z^2 should.
+            if let (Low::Const(n), Low::Const(m)) = (&c, &d) {
+                if *m == 0.0 && n.fract() == 0.0 && n.abs() <= 64.0 {
+                    let mut result = Item::Num(Low::Const(1.0));
+                    for _ in 0..n.abs() as u32 {
+                        result = complex_op(
+                            BinOp::Mul,
+                            result.parts().expect("number"),
+                            (a.clone(), b.clone()),
+                        )?;
+                    }
+                    if *n < 0.0 {
+                        result = complex_op(
+                            BinOp::Div,
+                            (Low::Const(1.0), Low::Const(0.0)),
+                            result.parts().expect("number"),
+                        )?;
+                    }
+                    return Ok(result);
+                }
+            }
+            // e^w directly, and z^w as e^(w ln z) otherwise.
+            if matches!((&a, &b), (Low::Const(e), Low::Const(z)) if *e == std::f64::consts::E && *z == 0.0)
+            {
+                return Ok(complex_exp(c, d));
+            }
+            let modulus = call1(
+                Builtin::Sqrt,
+                add(mul(a.clone(), a.clone()), mul(b.clone(), b.clone())),
+            );
+            let ln_r = call1(Builtin::Ln, modulus);
+            let theta = shallow(Low::Call(Builtin::Arctan, vec![b, a]));
+            let p = sub(mul(c.clone(), ln_r.clone()), mul(d.clone(), theta.clone()));
+            let q = add(mul(c, theta), mul(d, ln_r));
+            complex_exp(p, q)
+        }
+        _ => return Err("Complex numbers can't be compared".into()),
+    })
+}
+
+/// A hash map keyed by names, with a hash much quicker than the standard
+/// one: names come from the user's own rows, so resisting crafted keys does
+/// not matter, and heavy graphs look names up millions of times.
+type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
+/// The Fx hash (from Firefox and rustc).
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Notes in the innermost recording that the value being worked out read all
+/// of `reads`.
+fn record_into(recording: &mut [Vec<Read>], reads: &[Read]) {
+    if let Some(frame) = recording.last_mut() {
+        for r in reads {
+            if !frame.contains(r) {
+                frame.push(r.clone());
+            }
+        }
+    }
+}
+
+/// A plain number as its real and imaginary parts (0 for a real number), for
+/// [`Env::quick`].
+type Scalar = (f64, f64);
+
+/// The number `v` holds, when it is one constant real or complex number.
+fn scalar_of(v: &Val) -> Option<Scalar> {
+    if v.list || v.items.len() != 1 {
+        return None;
+    }
+    scalar_item(&v.items[0])
+}
+
+fn scalar_item(item: &Item) -> Option<Scalar> {
+    match item {
+        Item::Num(Low::Const(a)) => Some((*a, 0.0)),
+        Item::Complex(Low::Const(a), Low::Const(b)) => Some((*a, *b)),
+        _ => None,
+    }
+}
+
+/// `op` on two numbers, exactly as [`Env::arithmetic`] works it out: the
+/// complex cases follow [`complex_op`] step for step, on plain floats.
+fn scalar_op(op: BinOp, (a, b): Scalar, (c, d): Scalar) -> Option<Scalar> {
+    if b == 0.0 && d == 0.0 {
+        return Some((op.apply(a, c), 0.0));
+    }
+    // A real number's imaginary part is +0 there, whatever its sign here.
+    let tidy = |v: f64| if v == 0.0 { 0.0 } else { v };
+    let (b, d) = (tidy(b), tidy(d));
+    let mul = |(a, b): Scalar, (c, d): Scalar| (a * c - b * d, a * d + b * c);
+    Some(match op {
+        BinOp::Add => (a + c, b + d),
+        BinOp::Sub => (a - c, b - d),
+        BinOp::Mul => mul((a, b), (c, d)),
+        BinOp::Div => {
+            let den = c * c + d * d;
+            ((a * c + b * d) / den, (b * c - a * d) / den)
+        }
+        BinOp::Pow => {
+            if d == 0.0 && c.fract() == 0.0 && c.abs() <= 64.0 {
+                let mut result = (1.0, 0.0);
+                for _ in 0..c.abs() as u32 {
+                    let (re, im) = mul(result, (a, b));
+                    result = (re, tidy(im));
+                }
+                if c < 0.0 {
+                    let (x, y) = result;
+                    let den = x * x + y * y;
+                    result = ((1.0 * x + 0.0 * y) / den, tidy((0.0 * x - 1.0 * y) / den));
+                }
+                return Some(result);
+            }
+            let exp = |p: f64, q: f64| {
+                let scale = Builtin::Exp.eval(&[p]);
+                (
+                    scale * Builtin::Cos.eval(&[q]),
+                    scale * Builtin::Sin.eval(&[q]),
+                )
+            };
+            if a == std::f64::consts::E && b == 0.0 {
+                return Some(exp(c, d));
+            }
+            let ln_r = Builtin::Ln.eval(&[Builtin::Sqrt.eval(&[a * a + b * b])]);
+            let theta = Builtin::Arctan.eval(&[b, a]);
+            exp(c * ln_r - d * theta, c * theta + d * ln_r)
+        }
+        _ => return None,
+    })
+}
+
+fn shallow(l: Low) -> Low {
+    match l {
+        Low::Neg(a) => match *a {
+            Low::Const(v) => Low::Const(-v),
+            a => Low::Neg(Box::new(a)),
+        },
+        Low::Call(f, args) if args.iter().all(|a| matches!(a, Low::Const(_))) => {
+            let values: Vec<f64> = args
+                .iter()
+                .map(|a| match a {
+                    Low::Const(v) => *v,
+                    _ => f64::NAN,
+                })
+                .collect();
+            Low::Const(f.eval(&values))
+        }
+        Low::Select(c, a, b) => match *c {
+            Low::Const(v) if v.is_nan() => Low::Const(f64::NAN),
+            Low::Const(v) if v != 0.0 => *a,
+            Low::Const(_) => *b,
+            c => Low::Select(Box::new(c), a, b),
+        },
+        other => other,
+    }
 }
 
 pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
+    analyze_cached(rows, &mut Cache::default())
+}
+
+/// As `analyze`, reusing variable values from `cache` where nothing they
+/// depend on has changed, and leaving this analysis's values in it.
+pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> {
     let parsed: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| (r.table.is_none() && !r.latex.trim().is_empty()).then(|| parse(&r.latex)))
@@ -404,10 +801,17 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
     }
 
     let mut env = Env {
-        vars: HashMap::new(),
-        funcs: HashMap::new(),
-        values: HashMap::new(),
+        vars: FastMap::default(),
+        funcs: FastMap::default(),
+        values: FastMap::default(),
         next_hole: 0,
+        actions: HashSet::new(),
+        calls: FastMap::default(),
+        snapshots: FastMap::default(),
+        checked: FastMap::default(),
+        old: std::mem::take(cache),
+        new: Cache::default(),
+        recording: Vec::new(),
     };
     for table in tables.iter().flatten() {
         for column in &table.columns {
@@ -425,16 +829,31 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
             Def::Func(name, f) => {
                 env.funcs.insert(
                     name.clone(),
-                    FuncDef {
+                    Rc::new(FuncDef {
                         params: f.params.clone(),
                         body: f.body.clone(),
-                    },
+                    }),
                 );
             }
         }
     }
 
-    rows.iter()
+    // Names of actions, including names for other names of actions.
+    loop {
+        let found: Vec<String> = env
+            .vars
+            .iter()
+            .filter(|(n, e)| !env.actions.contains(*n) && env.is_action(e))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if found.is_empty() {
+            break;
+        }
+        env.actions.extend(found);
+    }
+
+    let results = rows
+        .iter()
         .zip(parsed)
         .zip(defs)
         .zip(tables)
@@ -445,6 +864,13 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
                 (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
                 (Some(Err(e)), _) => RowAnalysis::error(row.id, e),
                 (Some(Ok(_)), Some(Err(e))) => RowAnalysis::error(row.id, e),
+                (Some(Ok(_)), Some(Ok(Def::Var(name, _)))) if env.actions.contains(&name) => {
+                    let expr = env.vars[&name].clone();
+                    env.action_row(row.id, &expr)
+                }
+                (Some(Ok(Statement::Expr(e))), None) if env.is_action(&e) => {
+                    env.action_row(row.id, &e)
+                }
                 (Some(Ok(_)), Some(Ok(Def::Var(name, expr)))) => {
                     point = Some(expr.clone());
                     env.variable_row(row.id, &name, &expr)
@@ -462,7 +888,9 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
             }
             out
         })
-        .collect()
+        .collect::<Vec<_>>();
+    *cache = std::mem::take(&mut env.new);
+    results
 }
 
 fn def_name(def: &Def) -> &str {
@@ -624,13 +1052,48 @@ impl Table {
 }
 
 struct Env {
-    vars: HashMap<String, Expr>,
-    funcs: HashMap<String, FuncDef>,
+    vars: FastMap<String, Expr>,
+    /// Shared, so inlining a call does not copy the function's body.
+    funcs: FastMap<String, Rc<FuncDef>>,
     /// Memoised variable values.
-    values: HashMap<String, Result<Value, String>>,
+    values: FastMap<String, Result<Value, String>>,
     /// The next unused placeholder for a variable being differentiated or
     /// integrated over.
     next_hole: u32,
+    /// Variables that name actions, as in `A = a \to a + 1`.
+    actions: HashSet<String>,
+    /// Results of function calls with constant arguments, so a function
+    /// called thousands of times with the same arguments is worked out once.
+    calls: FastMap<CallKey, (Val, Vec<&'static str>, Vec<Read>)>,
+    /// The value each variable had when a remembered value read it, shared
+    /// by everything remembered in this analysis.
+    snapshots: FastMap<String, Rc<Result<Value, String>>>,
+    /// Variables already compared with the last analysis's values.
+    checked: FastMap<String, bool>,
+    /// Values from the last analysis, and this one's, for the next.
+    old: Cache,
+    new: Cache,
+    /// What each value being worked out has read so far, innermost last.
+    recording: Vec<Vec<Read>>,
+}
+
+/// A value's constants as bits, to key remembered function calls; None
+/// when it depends on a graph variable.
+fn constant_key(v: &Val, key: &mut Vec<u64>) -> Option<()> {
+    let bits = |l: &Low| match l {
+        Low::Const(c) => Some(c.to_bits()),
+        _ => None,
+    };
+    key.push(if v.list { v.items.len() as u64 + 1 } else { 0 });
+    for item in &v.items {
+        match item {
+            Item::Num(a) => key.extend([0, bits(a)?]),
+            Item::Point(a, b) => key.extend([1, bits(a)?, bits(b)?]),
+            Item::Complex(a, b) => key.extend([2, bits(a)?, bits(b)?]),
+            Item::Polygon(_) => return None,
+        }
+    }
+    Some(())
 }
 
 /// Collected while resolving names.
@@ -696,6 +1159,116 @@ impl Env {
         (drag[0].is_some() || drag[1].is_some()).then_some(drag)
     }
 
+    /// Whether `e` is an action, by its form or because it names one.
+    fn is_action(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Var(n) => self.actions.contains(n),
+            Expr::Piecewise(branches, otherwise) => {
+                branches.iter().any(|(_, v)| self.is_action(v))
+                    || otherwise.as_ref().is_some_and(|o| self.is_action(o))
+            }
+            other => other.is_action(),
+        }
+    }
+
+    fn action_row(&mut self, id: u64, e: &Expr) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Action);
+        let mut problems = Problems::default();
+        match self.run(e, &mut problems, &mut HashSet::new()) {
+            Some(updates) if problems.errors.is_empty() && problems.missing.is_empty() => {
+                row.updates = updates
+            }
+            _ => {
+                row.error = problems.first_message();
+                row.missing = slider_names(&problems.missing);
+            }
+        }
+        row
+    }
+
+    /// What running the action `e` would set each variable to, from the
+    /// current values. Every new value is worked out before any is set, as
+    /// in Desmos, so `a \to b, b \to a` swaps them.
+    fn run(
+        &mut self,
+        e: &Expr,
+        problems: &mut Problems,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Vec<(String, Value)>> {
+        match e {
+            Expr::Update(name, value) => {
+                if !self.vars.contains_key(name) || self.actions.contains(name) {
+                    if self.actions.contains(name) || self.funcs.contains_key(name) {
+                        problems.error(format!("'{name}' can't be updated by an action"));
+                    } else if definable(name) {
+                        problems.missing(name);
+                    } else {
+                        problems.error(format!("'{name}' can't be updated by an action"));
+                    }
+                    return None;
+                }
+                let val = self.lower_with(value, &HashMap::new(), NO_FREE, 0, problems, visiting);
+                if !problems.errors.is_empty() || !problems.missing.is_empty() {
+                    return None;
+                }
+                match val.constant() {
+                    Some(v) => Some(vec![(name.clone(), v)]),
+                    None => {
+                        problems.error("An action's new value can't depend on x or y");
+                        None
+                    }
+                }
+            }
+            Expr::Actions(items) => {
+                let mut all: Vec<(String, Value)> = Vec::new();
+                for item in items {
+                    for (name, v) in self.run(item, problems, visiting)? {
+                        if all.iter().any(|(n, _)| *n == name) {
+                            problems.error(format!("'{name}' is updated twice by one action"));
+                            return None;
+                        }
+                        all.push((name, v));
+                    }
+                }
+                Some(all)
+            }
+            Expr::Var(name) if self.actions.contains(name) => {
+                if !visiting.insert(name.clone()) {
+                    problems.error(format!("'{name}' is defined in terms of itself"));
+                    return None;
+                }
+                let body = self.vars[name].clone();
+                let out = self.run(&body, problems, visiting);
+                visiting.remove(name);
+                out
+            }
+            Expr::Piecewise(branches, otherwise) => {
+                for (condition, value) in branches {
+                    let c =
+                        self.condition(condition, &HashMap::new(), NO_FREE, 0, problems, visiting);
+                    let holds = match c.constant() {
+                        Some(Value::Number(v)) => v != 0.0 && !v.is_nan(),
+                        _ => {
+                            problems.error("An action's conditions can't depend on x or y");
+                            return None;
+                        }
+                    };
+                    if holds {
+                        return self.run(value, problems, visiting);
+                    }
+                }
+                match otherwise {
+                    Some(o) => self.run(o, problems, visiting),
+                    None => Some(Vec::new()),
+                }
+            }
+            _ => {
+                problems.error("This isn't an action; an action looks like a \\to a+1");
+                None
+            }
+        }
+    }
+
     fn variable_row(&mut self, id: u64, name: &str, expr: &Expr) -> RowAnalysis {
         let mut row = RowAnalysis::new(id, RowKind::Variable(name.to_owned()));
         match self.value_of(name, &mut HashSet::new()) {
@@ -706,8 +1279,12 @@ impl Env {
                     (_, _) if is_literal(expr) => {}
                     _ => row.value = Some(value.clone()),
                 }
-                // A point variable is drawn, as in Desmos.
+                // A point or polygon variable is drawn, as in Desmos.
                 row.points = points_of(&value);
+                row.polygons = polygons_of(&value);
+                if !row.polygons.is_empty() {
+                    row.value = None;
+                }
             }
             Err(e) => {
                 row.error = Some(e);
@@ -1010,10 +1587,10 @@ impl Env {
             for item in items {
                 match item {
                     Item::Num(l) => args.push(l.clone()),
-                    Item::Point(..) => return Err("Points can't be compared".into()),
+                    _ => return Err("Points can't be compared".into()),
                 }
             }
-            Ok(Item::Num(Low::Call(Builtin::Max, args)))
+            Ok(Item::Num(shallow(Low::Call(Builtin::Max, args))))
         });
         let compare = if strict { Compare::Lt } else { Compare::Le };
         self.region_from(id, largest, compare, problems)
@@ -1190,7 +1767,11 @@ impl Env {
             row.value = val.constant();
             if let Some(v) = &row.value {
                 row.points = points_of(v);
-                if !row.points.is_empty() || matches!(v, Value::Point(..)) {
+                row.polygons = polygons_of(v);
+                if !row.points.is_empty()
+                    || !row.polygons.is_empty()
+                    || matches!(v, Value::Point(..))
+                {
                     // Points are shown on the graph, not echoed under the row.
                     row.kind = RowKind::Curve;
                     row.value = None;
@@ -1208,8 +1789,17 @@ impl Env {
 
     /// The value of a variable, evaluated once and remembered.
     fn value_of(&mut self, name: &str, visiting: &mut HashSet<String>) -> Result<Value, String> {
+        self.value_of_ref(name, visiting)?;
+        self.values[name].clone()
+    }
+
+    /// Makes sure the variable's value is worked out and remembered.
+    fn value_of_ref(&mut self, name: &str, visiting: &mut HashSet<String>) -> Result<(), String> {
         if let Some(v) = self.values.get(name) {
-            return v.clone();
+            return v.as_ref().map(|_| ()).map_err(Clone::clone);
+        }
+        if self.actions.contains(name) {
+            return Err(format!("'{name}' is an action; it can only be run"));
         }
         if !visiting.insert(name.to_owned()) {
             return Err(format!("'{name}' is defined in terms of itself"));
@@ -1219,16 +1809,416 @@ impl Env {
             .get(name)
             .cloned()
             .expect("caller checked the variable exists");
-        let mut problems = Problems::default();
-        let val = self.lower_with(&expr, &HashMap::new(), NO_FREE, 0, &mut problems, visiting);
-        visiting.remove(name);
-        let result = match (problems.first_message(), val.constant()) {
-            (Some(e), _) => Err(e),
-            (None, Some(v)) => Ok(v),
-            (None, None) => Err("Variables can't depend on x or y".into()),
+        // Reuse the last analysis's value if the definition and everything
+        // it read are unchanged.
+        let reused = match self.old.vars.remove(name) {
+            Some(c) if c.expr == expr && self.still_valid(&c.deps, visiting) => Some(c),
+            _ => None,
         };
-        self.values.insert(name.to_owned(), result.clone());
-        result
+        let (result, deps) = match reused {
+            Some(c) => (c.value, c.deps),
+            None => {
+                self.recording.push(Vec::new());
+                let mut problems = Problems::default();
+                let val =
+                    self.lower_with(&expr, &HashMap::new(), NO_FREE, 0, &mut problems, visiting);
+                let reads = self.recording.pop().unwrap_or_default();
+                let deps = self.deps_of(&reads);
+                let result = match (problems.first_message(), val.constant()) {
+                    (Some(e), _) => Err(e),
+                    (None, Some(v)) => Ok(v),
+                    (None, None) => Err("Variables can't depend on x or y".into()),
+                };
+                (result, deps)
+            }
+        };
+        visiting.remove(name);
+        self.new.vars.insert(
+            name.to_owned(),
+            Cached {
+                expr,
+                deps,
+                value: result.clone(),
+            },
+        );
+        let out = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        self.values.insert(name.to_owned(), result);
+        out
+    }
+
+    /// The reads of a value just worked out, with the values they saw, to
+    /// remember it by.
+    fn deps_of(&mut self, reads: &[Read]) -> Vec<Dep> {
+        reads
+            .iter()
+            .map(|r| match r {
+                Read::Var(n) => {
+                    if !self.snapshots.contains_key(n) {
+                        let v = self.values.get(n).cloned();
+                        let v = Rc::new(v.unwrap_or_else(|| Err(String::new())));
+                        self.snapshots.insert(n.clone(), v);
+                    }
+                    Dep::Var(n.clone(), Rc::clone(&self.snapshots[n]))
+                }
+                Read::Func(n, f) => Dep::Func(n.clone(), Rc::clone(f)),
+                Read::Missing(n) => Dep::Missing(n.clone()),
+            })
+            .collect()
+    }
+
+    /// Whether everything a remembered value read is as it was.
+    fn still_valid(&mut self, deps: &[Dep], visiting: &mut HashSet<String>) -> bool {
+        deps.iter().all(|d| match d {
+            Dep::Var(n, v) => {
+                // Everything remembered saw the same value of each variable
+                // (the last analysis's), so each is compared only once.
+                if let Some(&same) = self.checked.get(n) {
+                    return same;
+                }
+                if !self.vars.contains_key(n) {
+                    return false;
+                }
+                match self.value_of_ref(n, visiting) {
+                    Ok(()) => {
+                        let same = same_value(&self.values[n], v);
+                        self.checked.insert(n.clone(), same);
+                        same
+                    }
+                    Err(e) => matches!(&**v, Err(old) if *old == e),
+                }
+            }
+            Dep::Func(n, f) => self.funcs.get(n).is_some_and(|g| g == f),
+            Dep::Missing(n) => !self.vars.contains_key(n) && !self.funcs.contains_key(n),
+        })
+    }
+
+    /// Notes that the value being worked out read `dep`.
+    fn record(&mut self, read: Read) {
+        if let Some(frame) = self.recording.last_mut() {
+            if !frame.contains(&read) {
+                frame.push(read);
+            }
+        }
+    }
+
+    /// Notes that the value being worked out read all of `reads`.
+    fn record_all(&mut self, reads: &[Read]) {
+        record_into(&mut self.recording, reads);
+    }
+
+    /// Works out `e` straight to a number when everything it uses is a
+    /// plain constant number: sums and function calls over numbers, the
+    /// common case in heavy graphs such as Fourier drawings. None means some
+    /// part needs the general path (a list, a point, x or y, an error), which
+    /// then lowers `e` as usual and gives the same result, only slower.
+    /// `scope` holds the names bound here, None for any that is not a
+    /// constant number.
+    fn quick(
+        &mut self,
+        e: &Expr,
+        scope: &[(&str, Option<Scalar>)],
+        free: Free,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Scalar> {
+        macro_rules! go {
+            ($e:expr) => {
+                self.quick($e, scope, free, depth, visiting)?
+            };
+        }
+        let real = |(a, b): Scalar| (b == 0.0).then_some(a);
+        Some(match e {
+            Expr::Num(v) => (*v, 0.0),
+            Expr::Var(name) => {
+                if let Some((_, v)) = scope.iter().rev().find(|(n, _)| n == name) {
+                    return *v;
+                }
+                if free.iter().any(|(n, _)| n == name) {
+                    return None;
+                }
+                if let Some((_, v)) = CONSTANTS.iter().find(|(c, _)| c == name) {
+                    return Some((*v, 0.0));
+                }
+                if !self.values.contains_key(name) && self.vars.contains_key(name) {
+                    self.value_of_ref(name, visiting).ok()?;
+                }
+                if let Some(v) = self.values.get(name) {
+                    let v = match v.as_ref().ok()? {
+                        Value::Number(n) => (*n, 0.0),
+                        Value::Complex(a, b) => (*a, *b),
+                        _ => return None,
+                    };
+                    self.note_var(name);
+                    return Some(v);
+                }
+                if name == "i" && !self.vars.contains_key(name) && !self.funcs.contains_key(name) {
+                    self.note_missing(name);
+                    return Some((0.0, 1.0));
+                }
+                return None;
+            }
+            Expr::Neg(a) => match go!(a) {
+                (a, 0.0) => (-a, 0.0),
+                (a, b) => (-a, -b),
+            },
+            Expr::Add(a, b) => scalar_op(BinOp::Add, go!(a), go!(b))?,
+            Expr::Sub(a, b) => scalar_op(BinOp::Sub, go!(a), go!(b))?,
+            Expr::Mul(a, b) => scalar_op(BinOp::Mul, go!(a), go!(b))?,
+            Expr::Div(a, b) => scalar_op(BinOp::Div, go!(a), go!(b))?,
+            Expr::Pow(a, b) => scalar_op(BinOp::Pow, go!(a), go!(b))?,
+            Expr::Factorial(a) => {
+                let a = real(go!(a))?;
+                scalar_item(&Item::Num(call1(Builtin::Factorial, Low::Const(a))))?
+            }
+            Expr::Call(f, args) => {
+                if *f == Builtin::Length {
+                    return None;
+                }
+                let mut parts = Vec::with_capacity(args.len());
+                for a in args {
+                    parts.push(go!(a));
+                }
+                let k = Low::Const;
+                if parts.iter().any(|p| p.1 != 0.0) {
+                    // As Env::call does for complex numbers.
+                    let [(a, b)] = parts[..] else {
+                        return None;
+                    };
+                    return scalar_item(&match f {
+                        Builtin::Abs => Item::Num(call1(
+                            Builtin::Sqrt,
+                            bin(
+                                BinOp::Add,
+                                bin(BinOp::Mul, k(a), k(a)),
+                                bin(BinOp::Mul, k(b), k(b)),
+                            ),
+                        )),
+                        Builtin::Exp => complex_exp(k(a), k(b)),
+                        Builtin::Sqrt => {
+                            complex_op(BinOp::Pow, (k(a), k(b)), (k(0.5), k(0.0))).ok()?
+                        }
+                        _ => return None,
+                    });
+                }
+                if parts.is_empty() {
+                    return None;
+                }
+                let lows = parts.iter().map(|p| k(p.0)).collect();
+                scalar_item(&Item::Num(shallow(Low::Call(*f, lows))))?
+            }
+            Expr::Index(base, index) => {
+                let Expr::Var(name) = &**base else {
+                    return None;
+                };
+                let global = !scope.iter().any(|(n, _)| n == name)
+                    && !free.iter().any(|(n, _)| n == name)
+                    && self.vars.contains_key(name);
+                if !global {
+                    return None;
+                }
+                let n = real(go!(index))?.round();
+                self.value_of_ref(name, visiting).ok()?;
+                self.note_var(name);
+                let value = self.values.get(name)?.as_ref().ok()?;
+                let len = match value {
+                    Value::Numbers(v) => v.len(),
+                    Value::Complexes(v) => v.len(),
+                    _ => return None,
+                };
+                if n < 1.0 || n as usize > len {
+                    return Some((f64::NAN, 0.0));
+                }
+                let k = n as usize - 1;
+                match value {
+                    Value::Numbers(v) => (v[k], 0.0),
+                    Value::Complexes(v) => {
+                        scalar_item(&Item::complex(Low::Const(v[k][0]), Low::Const(v[k][1])))?
+                    }
+                    _ => return None,
+                }
+            }
+            Expr::Shape(
+                f @ (ShapeFn::Real | ShapeFn::Imag | ShapeFn::Conj | ShapeFn::Arg),
+                args,
+            ) => {
+                let [a] = &args[..] else {
+                    return None;
+                };
+                let (a, b) = go!(a);
+                match f {
+                    ShapeFn::Real => (a, 0.0),
+                    ShapeFn::Imag => (b, 0.0),
+                    ShapeFn::Conj if b == 0.0 => (a, 0.0),
+                    ShapeFn::Conj => (a, -b),
+                    _ => scalar_item(&Item::Num(shallow(Low::Call(
+                        Builtin::Arctan,
+                        vec![Low::Const(b), Low::Const(a)],
+                    ))))?,
+                }
+            }
+            Expr::Apply(name, args) => {
+                if scope.iter().any(|(n, _)| n == name) || depth >= MAX_INLINE_DEPTH {
+                    return None;
+                }
+                let f = Rc::clone(self.funcs.get(name)?);
+                if f.params.len() != args.len() {
+                    return None;
+                }
+                self.note_func(name, &f);
+                let mut inner = Vec::with_capacity(args.len());
+                // The key Env::lower_with gives these arguments, so results
+                // are shared with it.
+                let mut key = Vec::with_capacity(3 * args.len());
+                for (p, a) in f.params.iter().zip(args) {
+                    let (re, im) = go!(a);
+                    key.push(0);
+                    if im == 0.0 {
+                        key.extend([0, re.to_bits()]);
+                    } else {
+                        key.extend([2, re.to_bits(), im.to_bits()]);
+                    }
+                    inner.push((p.as_str(), Some((re, im))));
+                }
+                let key = (name.clone(), key);
+                if let Some((v, used)) = self.remembered_call([Some(&key), None], free, visiting) {
+                    if !used.is_empty() {
+                        return None;
+                    }
+                    return scalar_of(&v);
+                }
+                // Inside the body only its parameters are in scope.
+                self.recording.push(Vec::new());
+                self.note_func(name, &f);
+                let result = self.quick(&f.body, &inner, free, depth + 1, visiting);
+                let reads = self.recording.pop().unwrap_or_default();
+                self.record_all(&reads);
+                let (re, im) = result?;
+                let v = Val {
+                    items: vec![Item::complex(Low::Const(re), Low::Const(im))],
+                    list: false,
+                };
+                self.remember_call(key, v, Vec::new(), reads);
+                (re, im)
+            }
+            Expr::Repeat(kind, var, lo, hi, body) => {
+                let bound = |v: Scalar| real(v).filter(|n| n.is_finite()).map(f64::round);
+                let a = bound(go!(lo))?;
+                let b = bound(go!(hi))?;
+                let (op, empty) = match kind {
+                    Repeat::Sum => (BinOp::Add, 0.0),
+                    Repeat::Product => (BinOp::Mul, 1.0),
+                };
+                if b < a {
+                    return Some((empty, 0.0));
+                }
+                if b - a >= MAX_LIST as f64 {
+                    return None;
+                }
+                let mut inner = scope.to_vec();
+                inner.push((var.as_str(), None));
+                let last = inner.len() - 1;
+                let mut total: Option<Scalar> = None;
+                let mut k = a;
+                while k <= b {
+                    inner[last].1 = Some((k, 0.0));
+                    let term = self.quick(body, &inner, free, depth, visiting)?;
+                    total = Some(match total {
+                        None => term,
+                        Some(acc) => scalar_op(op, acc, term)?,
+                    });
+                    k += 1.0;
+                }
+                total.unwrap_or((empty, 0.0))
+            }
+            _ => return None,
+        })
+    }
+
+    /// A function result already worked out, in this analysis or (if
+    /// nothing it read has changed) the last, under the first of `keys` that
+    /// has one: with what it read recorded, and the graph variables it used.
+    /// `keys` are the key for any scope, which serves only if the result
+    /// read none of the graph variables in `free`, and the key for `free`.
+    fn remembered_call(
+        &mut self,
+        keys: [Option<&CallKey>; 2],
+        free: Free,
+        visiting: &mut HashSet<String>,
+    ) -> Option<(Val, Vec<&'static str>)> {
+        for k in keys.into_iter().flatten() {
+            if self.calls.contains_key(k) {
+                continue;
+            }
+            let Some(c) = self.old.calls.remove(k) else {
+                continue;
+            };
+            if self.still_valid(&c.deps, visiting) {
+                let kept = (c.val.clone(), c.used.clone(), c.reads.clone());
+                self.calls.insert(k.clone(), kept);
+                self.new.calls.insert(k.clone(), c);
+            }
+        }
+        let reads_free = |reads: &[Read]| {
+            reads.iter().any(|d| match d {
+                Read::Var(n) | Read::Missing(n) => free.iter().any(|(f, _)| f == n),
+                Read::Func(..) => false,
+            })
+        };
+        let [any, key] = keys;
+        let (v, used, reads) = any
+            .and_then(|k| self.calls.get(k))
+            .filter(|(_, _, reads)| !reads_free(reads))
+            .or_else(|| key.and_then(|k| self.calls.get(k)))?;
+        record_into(&mut self.recording, reads);
+        Some((v.clone(), used.clone()))
+    }
+
+    /// Keeps a function result for the rest of this analysis, and when it
+    /// is constant, for the next.
+    fn remember_call(&mut self, k: CallKey, v: Val, used: Vec<&'static str>, reads: Vec<Read>) {
+        // Anything not constant may hold this analysis's numbered holes.
+        if v.constant().is_some() {
+            let call = CachedCall {
+                val: v.clone(),
+                used: used.clone(),
+                deps: self.deps_of(&reads),
+                reads: reads.clone(),
+            };
+            self.new.calls.insert(k.clone(), call);
+        }
+        self.calls.insert(k, (v, used, reads));
+    }
+
+    /// Records a read of variable `name`, without allocating when it was
+    /// already recorded.
+    fn note_var(&mut self, name: &str) {
+        if let Some(frame) = self.recording.last_mut() {
+            if !frame.iter().any(|r| matches!(r, Read::Var(n) if n == name)) {
+                frame.push(Read::Var(name.to_owned()));
+            }
+        }
+    }
+
+    fn note_missing(&mut self, name: &str) {
+        if let Some(frame) = self.recording.last_mut() {
+            if !frame
+                .iter()
+                .any(|r| matches!(r, Read::Missing(n) if n == name))
+            {
+                frame.push(Read::Missing(name.to_owned()));
+            }
+        }
+    }
+
+    fn note_func(&mut self, name: &str, f: &Rc<FuncDef>) {
+        if let Some(frame) = self.recording.last_mut() {
+            let seen = frame
+                .iter()
+                .any(|r| matches!(r, Read::Func(n, g) if n == name && Rc::ptr_eq(g, f)));
+            if !seen {
+                frame.push(Read::Func(name.to_owned(), Rc::clone(f)));
+            }
+        }
     }
 
     fn lower(
@@ -1273,6 +2263,15 @@ impl Env {
         self.broadcast(&[a, b], problems, |items| {
             use Item::*;
             let op2 = |a: &Low, b: &Low| bin(op, a.clone(), b.clone());
+            if matches!(items[0], Polygon(_)) || matches!(items[1], Polygon(_)) {
+                return Err("Polygons can't be used in arithmetic".into());
+            }
+            if matches!(items[0], Complex(..)) || matches!(items[1], Complex(..)) {
+                return match (items[0].parts(), items[1].parts()) {
+                    (Some(z), Some(w)) => complex_op(op, z, w),
+                    _ => Err("Points and complex numbers can't be combined".into()),
+                };
+            }
             Ok(match (op, items[0], items[1]) {
                 (_, Num(a), Num(b)) => Num(op2(a, b)),
                 (BinOp::Add | BinOp::Sub, Point(a, b), Point(c, d)) => Point(op2(a, c), op2(b, d)),
@@ -1313,10 +2312,12 @@ impl Env {
             Expr::Neg(a) => {
                 let a = go!(a);
                 self.broadcast(&[a], problems, |items| {
-                    let neg = |l: &Low| Low::Neg(Box::new(l.clone()));
+                    let neg = |l: &Low| shallow(Low::Neg(Box::new(l.clone())));
                     Ok(match items[0] {
                         Item::Num(a) => Item::Num(neg(a)),
                         Item::Point(a, b) => Item::Point(neg(a), neg(b)),
+                        Item::Polygon(_) => return Err("Polygons can't be negated".into()),
+                        Item::Complex(a, b) => Item::Complex(neg(a), neg(b)),
                     })
                 })
             }
@@ -1362,7 +2363,7 @@ impl Env {
                         Coord::X => x.clone(),
                         Coord::Y => y.clone(),
                     })),
-                    Item::Num(_) => Err("Only points have .x and .y".into()),
+                    _ => Err("Only points have .x and .y".into()),
                 })
             }
             Expr::List(items) => {
@@ -1415,42 +2416,24 @@ impl Env {
                 )
             }
             Expr::Index(base, index) => {
+                // `L[n]` with L a variable reads the one element straight from
+                // L's remembered value, without copying the whole list.
+                if let Expr::Var(name) = &**base {
+                    let global = !bindings.contains_key(name)
+                        && !free.iter().any(|(n, _)| n == name)
+                        && self.vars.contains_key(name);
+                    if global {
+                        let index_val = go!(index);
+                        if let Some(v) = self.element_of(name, &index_val, problems, visiting) {
+                            return v;
+                        }
+                        let base = self.resolve_name(name, bindings, free, problems, visiting);
+                        return self.index(base, index_val, problems);
+                    }
+                }
                 let base = go!(base);
                 let index = go!(index);
-                if !base.list {
-                    // `a[1, 2]` with `a` a number is a product.
-                    return self.arithmetic(BinOp::Mul, base, index, problems);
-                }
-                let pick = |i: &Item| -> Result<Item, String> {
-                    let Item::Num(low) = i else {
-                        return Err("List indices must be numbers".into());
-                    };
-                    match low.clone().fold() {
-                        Low::Const(n) => {
-                            let n = n.round();
-                            if n >= 1.0 && (n as usize) <= base.items.len() {
-                                Ok(base.items[n as usize - 1].clone())
-                            } else {
-                                Ok(Item::Num(Low::Const(f64::NAN)))
-                            }
-                        }
-                        _ => Err("List indices can't depend on x or y yet".into()),
-                    }
-                };
-                let mut out = Vec::new();
-                for i in &index.items {
-                    match pick(i) {
-                        Ok(item) => out.push(item),
-                        Err(e) => {
-                            problems.error(e);
-                            return Val::nan();
-                        }
-                    }
-                }
-                Val {
-                    items: out,
-                    list: index.list,
-                }
+                self.index(base, index, problems)
             }
             Expr::Comprehension(body, generators) => {
                 let mut lists = Vec::new();
@@ -1502,11 +2485,11 @@ impl Env {
                     let v = go!(value);
                     result = self.broadcast(&[c, v, result], problems, |items| {
                         let sel = |c: &Low, a: &Low, b: &Low| {
-                            Low::Select(
+                            shallow(Low::Select(
                                 Box::new(c.clone()),
                                 Box::new(a.clone()),
                                 Box::new(b.clone()),
-                            )
+                            ))
                         };
                         let nan = Low::Const(f64::NAN);
                         Ok(match (items[0], items[1], items[2]) {
@@ -1517,6 +2500,15 @@ impl Env {
                             // No else: a point that is undefined elsewhere.
                             (Item::Num(c), Item::Point(a, b), Item::Num(_)) => {
                                 Item::Point(sel(c, a, &nan), sel(c, b, &nan))
+                            }
+                            (
+                                Item::Num(c),
+                                a @ (Item::Num(_) | Item::Complex(..)),
+                                b @ (Item::Num(_) | Item::Complex(..)),
+                            ) => {
+                                let ((ar, ai), (br, bi)) =
+                                    (a.parts().expect("number"), b.parts().expect("number"));
+                                Item::complex(sel(c, &ar, &br), sel(c, &ai, &bi))
                             }
                             _ => {
                                 return Err(
@@ -1552,12 +2544,14 @@ impl Env {
                     .funcs
                     .get(name)
                     .filter(|_| !bindings.contains_key(name))
+                    .cloned()
                 else {
                     problems.error(format!(
                         "'{name}' is not a function, so {name}' has no meaning"
                     ));
                     return Val::nan();
                 };
+                self.record(Read::Func(name.clone(), Rc::clone(&f)));
                 if f.params.len() != 1 || args.len() != 1 {
                     problems.error(format!("{name}' needs a function of one variable"));
                     return Val::nan();
@@ -1591,6 +2585,16 @@ impl Env {
                 })
             }
             Expr::Repeat(kind, var, lo, hi, body) => {
+                let scope: Vec<(&str, Option<Scalar>)> = bindings
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), scalar_of(v)))
+                    .collect();
+                if let Some((re, im)) = self.quick(e, &scope, free, depth, visiting) {
+                    return Val {
+                        items: vec![Item::complex(Low::Const(re), Low::Const(im))],
+                        list: false,
+                    };
+                }
                 let what = if *kind == Repeat::Sum {
                     "sum"
                 } else {
@@ -1653,13 +2657,20 @@ impl Env {
                     }
                 })
             }
+            Expr::Shape(f, args) => {
+                let args: Vec<Val> = args.iter().map(|a| go!(a)).collect();
+                self.shape(*f, args, problems)
+            }
+            Expr::Update(..) | Expr::Actions(_) => {
+                problems.error("An action can only be run, not used in a calculation");
+                Val::nan()
+            }
             Expr::Apply(name, args) => {
                 let is_function = self.funcs.contains_key(name) && !bindings.contains_key(name);
                 if is_function {
-                    let (params, body) = {
-                        let f = &self.funcs[name];
-                        (f.params.clone(), f.body.clone())
-                    };
+                    let f = Rc::clone(&self.funcs[name]);
+                    self.record(Read::Func(name.clone(), Rc::clone(&f)));
+                    let (params, body) = (&f.params, &f.body);
                     if params.len() != args.len() {
                         problems.error(format!(
                             "Function '{}' takes {} argument{}",
@@ -1674,13 +2685,55 @@ impl Env {
                         return Val::nan();
                     }
                     let mut lowered: HashMap<String, Val> = HashMap::new();
+                    let mut key = Some(Vec::new());
                     for (p, a) in params.iter().zip(args) {
                         let value = go!(a);
+                        if let Some(k) = key.as_mut() {
+                            if constant_key(&value, k).is_none() {
+                                key = None;
+                            }
+                        }
                         lowered.insert(p.clone(), value);
                     }
+                    // With constant arguments the result depends only on
+                    // which graph variables are in scope, so it is kept. A
+                    // result that read none of them is kept for every scope
+                    // (under `any`), as long as no name it read is one of
+                    // the graph variables where it is used again.
+                    let any = key.clone().map(|k| (name.clone(), k));
+                    let key = key.map(|mut k| {
+                        k.push(u64::MAX);
+                        k.extend(
+                            free.iter()
+                                .flat_map(|(n, _)| n.bytes().map(u64::from).chain([0])),
+                        );
+                        (name.clone(), k)
+                    });
+                    if let Some((v, used)) =
+                        self.remembered_call([any.as_ref(), key.as_ref()], free, visiting)
+                    {
+                        problems.used.extend(used);
+                        return v;
+                    }
+                    let before = (problems.errors.len(), problems.missing.len());
+                    let used_before = problems.used.len();
+                    self.recording.push(Vec::new());
+                    // The result is remembered by what it read, its own
+                    // definition included.
+                    self.record(Read::Func(name.clone(), Rc::clone(&f)));
                     // Inside the function body only its parameters (and the
                     // caller's graph variables) are in scope.
-                    self.lower_with(&body, &lowered, free, depth + 1, problems, visiting)
+                    let v = self.lower_with(body, &lowered, free, depth + 1, problems, visiting);
+                    let deps = self.recording.pop().unwrap_or_default();
+                    self.record_all(&deps);
+                    if let (Some(k), Some(any)) = (key, any) {
+                        if (problems.errors.len(), problems.missing.len()) == before {
+                            let used = problems.used[used_before..].to_vec();
+                            let k = if used.is_empty() { any } else { k };
+                            self.remember_call(k, v.clone(), used, deps);
+                        }
+                    }
+                    v
                 } else if args.len() <= 2 {
                     // `a(x+1)` with `a` not a function is multiplication, and
                     // `a(1, 2)` scales a point.
@@ -1698,6 +2751,268 @@ impl Env {
                     problems.error(format!("Function '{name}' is not defined"));
                     Val::nan()
                 }
+            }
+        }
+    }
+
+    /// `base[index]`: elements of a list, or a product when `base` is not
+    /// one.
+    fn index(&self, base: Val, index: Val, problems: &mut Problems) -> Val {
+        if !base.list {
+            // `a[1, 2]` with `a` a number is a product.
+            return self.arithmetic(BinOp::Mul, base, index, problems);
+        }
+        let pick = |i: &Item| -> Result<Item, String> {
+            let Item::Num(low) = i else {
+                return Err("List indices must be numbers".into());
+            };
+            match low.clone().fold() {
+                Low::Const(n) => {
+                    let n = n.round();
+                    if n >= 1.0 && (n as usize) <= base.items.len() {
+                        Ok(base.items[n as usize - 1].clone())
+                    } else {
+                        Ok(Item::Num(Low::Const(f64::NAN)))
+                    }
+                }
+                _ => Err("List indices can't depend on x or y yet".into()),
+            }
+        };
+        let mut out = Vec::new();
+        for i in &index.items {
+            match pick(i) {
+                Ok(item) => out.push(item),
+                Err(e) => {
+                    problems.error(e);
+                    return Val::nan();
+                }
+            }
+        }
+        Val {
+            items: out,
+            list: index.list,
+        }
+    }
+
+    /// The elements of variable `name` at constant `index` positions, read
+    /// without copying the variable's whole value. None when that shortcut
+    /// does not apply.
+    fn element_of(
+        &mut self,
+        name: &str,
+        index: &Val,
+        problems: &mut Problems,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Val> {
+        let positions = index
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::Num(Low::Const(n)) => Some(n.round()),
+                _ => None,
+            })
+            .collect::<Option<Vec<f64>>>()?;
+        let read = self.value_of_ref(name, visiting);
+        self.record(Read::Var(name.to_owned()));
+        if let Err(e) = read {
+            problems.error(e);
+            return Some(Val::nan());
+        }
+        let value = self.values.get(name)?.as_ref().ok()?;
+        let c = |v: f64| Low::Const(v);
+        let len = match value {
+            Value::Numbers(v) => v.len(),
+            Value::Points(v) => v.len(),
+            Value::Complexes(v) => v.len(),
+            Value::Polygons(v) => v.len(),
+            _ => return None,
+        };
+        let items = positions
+            .iter()
+            .map(|&n| {
+                if n < 1.0 || n as usize > len {
+                    return Item::Num(c(f64::NAN));
+                }
+                let k = n as usize - 1;
+                match value {
+                    Value::Numbers(v) => Item::Num(c(v[k])),
+                    Value::Points(v) => Item::Point(c(v[k][0]), c(v[k][1])),
+                    Value::Complexes(v) => Item::complex(c(v[k][0]), c(v[k][1])),
+                    Value::Polygons(v) => Item::Polygon(v[k].clone()),
+                    _ => unreachable!("checked above"),
+                }
+            })
+            .collect();
+        Some(Val {
+            items,
+            list: index.list,
+        })
+    }
+
+    /// `polygon`, `join`, `sort` and the other functions of whole lists
+    /// and points.
+    fn shape(&self, f: ShapeFn, args: Vec<Val>, problems: &mut Problems) -> Val {
+        let constant = |l: &Low| match l.clone().fold() {
+            Low::Const(v) => Some(v),
+            _ => None,
+        };
+        let point_of = |item: &Item| match item {
+            Item::Point(a, b) => Some([constant(a)?, constant(b)?]),
+            _ => None,
+        };
+        match f {
+            ShapeFn::Join => {
+                let items = args.into_iter().flat_map(|v| v.items).collect::<Vec<_>>();
+                if items.len() > MAX_LIST {
+                    problems.error("Lists can have at most 10,000 elements");
+                    return Val::nan();
+                }
+                Val::list(items)
+            }
+            ShapeFn::Polygon => {
+                let polygon_error =
+                    "A polygon's vertices must be points that don't depend on x, y or t";
+                // polygon(xs, ys) pairs up two lists of numbers.
+                let numbers = |v: &Val| v.items.iter().all(|i| matches!(i, Item::Num(_)));
+                if args.len() == 2 && numbers(&args[0]) && numbers(&args[1]) {
+                    let paired =
+                        self.broadcast(&args, problems, |items| match (items[0], items[1]) {
+                            (Item::Num(a), Item::Num(b)) => Ok(Item::Point(a.clone(), b.clone())),
+                            _ => Err(polygon_error.into()),
+                        });
+                    return self.shape(ShapeFn::Polygon, vec![paired], problems);
+                }
+                // A single list is the vertices of one polygon.
+                if args.len() == 1 {
+                    let vertices = args[0]
+                        .items
+                        .iter()
+                        .map(point_of)
+                        .collect::<Option<Vec<_>>>();
+                    return match vertices {
+                        Some(v) => Val {
+                            items: vec![Item::Polygon(v)],
+                            list: false,
+                        },
+                        None => {
+                            problems.error(polygon_error);
+                            Val::nan()
+                        }
+                    };
+                }
+                // Several points, any of them lists, make one polygon per
+                // element.
+                self.broadcast(&args, problems, |items| {
+                    items
+                        .iter()
+                        .map(|i| point_of(i))
+                        .collect::<Option<Vec<_>>>()
+                        .map(Item::Polygon)
+                        .ok_or_else(|| polygon_error.to_owned())
+                })
+            }
+            ShapeFn::Sort | ShapeFn::Unique => {
+                let name = if f == ShapeFn::Sort { "sort" } else { "unique" };
+                let keys_given = f == ShapeFn::Sort && args.len() == 2;
+                if args.is_empty() || args.len() > if f == ShapeFn::Sort { 2 } else { 1 } {
+                    problems.error(format!("Function '{name}' takes a list"));
+                    return Val::nan();
+                }
+                let list = &args[0];
+                if f == ShapeFn::Unique {
+                    let mut seen: Vec<Item> = Vec::new();
+                    for item in &list.items {
+                        let key = |i: &Item| match i {
+                            Item::Num(l) => constant(l).map(|v| vec![v]),
+                            Item::Point(..) => point_of(i).map(|p| p.to_vec()),
+                            Item::Complex(a, b) => Some(vec![constant(a)?, constant(b)?]),
+                            Item::Polygon(_) => None,
+                        };
+                        let Some(k) = key(item) else {
+                            problems.error("Function 'unique' needs numbers or points that don't depend on x or y");
+                            return Val::nan();
+                        };
+                        let same = |a: &[f64], b: &[f64]| {
+                            a.iter()
+                                .zip(b)
+                                .all(|(x, y)| x == y || (x.is_nan() && y.is_nan()))
+                        };
+                        if !seen.iter().any(|s| key(s).is_some_and(|sk| same(&sk, &k))) {
+                            seen.push(item.clone());
+                        }
+                    }
+                    return Val::list(seen);
+                }
+                let keys_val = if keys_given { &args[1] } else { list };
+                let keys = keys_val
+                    .items
+                    .iter()
+                    .map(|i| match i {
+                        Item::Num(l) => constant(l),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<f64>>>();
+                let Some(keys) = keys else {
+                    problems.error("Function 'sort' needs numbers that don't depend on x or y");
+                    return Val::nan();
+                };
+                let n = list.items.len().min(keys.len());
+                let mut order: Vec<usize> = (0..n).collect();
+                // Undefined keys go last, and equal keys keep their order.
+                order.sort_by(|&a, &b| match (keys[a].is_nan(), keys[b].is_nan()) {
+                    (false, false) => keys[a].total_cmp(&keys[b]),
+                    (x, y) => x.cmp(&y),
+                });
+                Val::list(order.into_iter().map(|i| list.items[i].clone()).collect())
+            }
+            ShapeFn::Real | ShapeFn::Imag | ShapeFn::Conj | ShapeFn::Arg => {
+                if args.len() != 1 {
+                    problems.error("This function takes 1 argument");
+                    return Val::nan();
+                }
+                self.broadcast(&args, problems, |items| {
+                    let (a, b) = items[0]
+                        .parts()
+                        .ok_or_else(|| "This function takes a number".to_owned())?;
+                    Ok(match f {
+                        ShapeFn::Real => Item::Num(a),
+                        ShapeFn::Imag => Item::Num(b),
+                        ShapeFn::Conj => Item::complex(a, shallow(Low::Neg(Box::new(b)))),
+                        _ => Item::Num(shallow(Low::Call(Builtin::Arctan, vec![b, a]))),
+                    })
+                })
+            }
+            ShapeFn::Distance | ShapeFn::Midpoint => {
+                let name = if f == ShapeFn::Distance {
+                    "distance"
+                } else {
+                    "midpoint"
+                };
+                if args.len() != 2 {
+                    problems.error(format!("Function '{name}' takes 2 points"));
+                    return Val::nan();
+                }
+                self.broadcast(&args, problems, |items| match (items[0], items[1]) {
+                    (Item::Point(a, b), Item::Point(c, d)) => Ok(if f == ShapeFn::Distance {
+                        let dx = bin(BinOp::Sub, a.clone(), c.clone());
+                        let dy = bin(BinOp::Sub, b.clone(), d.clone());
+                        let sq = |l: Low| bin(BinOp::Mul, l.clone(), l);
+                        Item::Num(shallow(Low::Call(
+                            Builtin::Sqrt,
+                            vec![bin(BinOp::Add, sq(dx), sq(dy))],
+                        )))
+                    } else {
+                        let half = |p: &Low, q: &Low| {
+                            bin(
+                                BinOp::Div,
+                                bin(BinOp::Add, p.clone(), q.clone()),
+                                Low::Const(2.0),
+                            )
+                        };
+                        Item::Point(half(a, c), half(b, d))
+                    }),
+                    _ => Err(format!("Function '{name}' takes 2 points")),
+                })
             }
         }
     }
@@ -1739,11 +3054,11 @@ impl Env {
                 // does, false where it does not.
                 Some(acc) => {
                     self.broadcast(&[acc, cmp], problems, |items| match (items[0], items[1]) {
-                        (Item::Num(a), Item::Num(b)) => Ok(Item::Num(Low::Select(
+                        (Item::Num(a), Item::Num(b)) => Ok(Item::Num(shallow(Low::Select(
                             Box::new(a.clone()),
                             Box::new(b.clone()),
                             Box::new(Low::Const(0.0)),
-                        ))),
+                        )))),
                         _ => Err("Points can't be compared".into()),
                     })
                 }
@@ -1754,6 +3069,59 @@ impl Env {
 
     fn call(&self, f: Builtin, args: Vec<Val>, problems: &mut Problems) -> Val {
         let point_error = || format!("Function '{}' can't take a point", f.name());
+        if f == Builtin::Length {
+            // Counts points and polygons as well as numbers.
+            let n: usize = args.iter().map(|v| v.items.len()).sum();
+            return Val::num(Low::Const(n as f64));
+        }
+        let complex = args.iter().any(Val::has_complex);
+        if complex && matches!(f, Builtin::Total | Builtin::Mean) {
+            // Sums and means of complex numbers add up each part.
+            let (mut res, mut ims) = (Vec::new(), Vec::new());
+            for item in args.iter().flat_map(|v| &v.items) {
+                match item.parts() {
+                    Some((a, b)) => {
+                        res.push(a);
+                        ims.push(b);
+                    }
+                    None => {
+                        problems.error(point_error());
+                        return Val::nan();
+                    }
+                }
+            }
+            return Val {
+                items: vec![Item::complex(
+                    shallow(Low::Call(f, res)),
+                    shallow(Low::Call(f, ims)),
+                )],
+                list: false,
+            };
+        }
+        if complex && matches!(f, Builtin::Abs | Builtin::Exp | Builtin::Sqrt) {
+            return self.broadcast(&args, problems, |items| {
+                let (a, b) = items[0].parts().ok_or_else(point_error)?;
+                Ok(match f {
+                    Builtin::Abs => Item::Num(call1(
+                        Builtin::Sqrt,
+                        bin(
+                            BinOp::Add,
+                            bin(BinOp::Mul, a.clone(), a),
+                            bin(BinOp::Mul, b.clone(), b),
+                        ),
+                    )),
+                    Builtin::Exp => complex_exp(a, b),
+                    _ => complex_op(BinOp::Pow, (a, b), (Low::Const(0.5), Low::Const(0.0)))?,
+                })
+            });
+        }
+        if complex {
+            problems.error(format!(
+                "Function '{}' doesn't take complex numbers yet",
+                f.name()
+            ));
+            return Val::nan();
+        }
         if f.takes_list() {
             // total([1, 2, 3]) and max(a, b) both reduce every element.
             let mut flat = Vec::new();
@@ -1761,7 +3129,7 @@ impl Env {
                 for item in &v.items {
                     match item {
                         Item::Num(l) => flat.push(l.clone()),
-                        Item::Point(..) => {
+                        _ => {
                             problems.error(point_error());
                             return Val::nan();
                         }
@@ -1771,17 +3139,17 @@ impl Env {
             if flat.is_empty() {
                 return Val::num(Low::Const(f.eval(&[])));
             }
-            return Val::num(Low::Call(f, flat));
+            return Val::num(shallow(Low::Call(f, flat)));
         }
         self.broadcast(&args, problems, |items| {
             let mut lows = Vec::with_capacity(items.len());
             for item in items {
                 match item {
                     Item::Num(l) => lows.push(l.clone()),
-                    Item::Point(..) => return Err(point_error()),
+                    _ => return Err(point_error()),
                 }
             }
-            Ok(Item::Num(Low::Call(f, lows)))
+            Ok(Item::Num(shallow(Low::Call(f, lows))))
         })
     }
 
@@ -1798,7 +3166,8 @@ impl Env {
             // function's parameter named x holding a number does not count.
             let reads_plane = v.items.iter().any(|i| match i {
                 Item::Num(l) => l.uses_arg(),
-                Item::Point(a, b) => a.uses_arg() || b.uses_arg(),
+                Item::Point(a, b) | Item::Complex(a, b) => a.uses_arg() || b.uses_arg(),
+                Item::Polygon(_) => false,
             });
             if let Some(g) = GRAPH_VARIABLES.iter().find(|g| **g == name) {
                 if reads_plane {
@@ -1815,7 +3184,9 @@ impl Env {
             return Val::num(Low::Const(*v));
         }
         if self.vars.contains_key(name) {
-            return match self.value_of(name, visiting) {
+            let value = self.value_of(name, visiting);
+            self.record(Read::Var(name.to_owned()));
+            return match value {
                 Ok(v) => Val::from_value(&v),
                 Err(e) => {
                     problems.error(e);
@@ -1826,6 +3197,14 @@ impl Env {
         if self.funcs.contains_key(name) {
             problems.error(format!("'{name}' is a function; give it an argument"));
             return Val::nan();
+        }
+        self.record(Read::Missing(name.to_owned()));
+        // i is the imaginary unit unless a row defines it.
+        if name == "i" {
+            return Val {
+                items: vec![Item::Complex(Low::Const(0.0), Low::Const(1.0))],
+                list: false,
+            };
         }
         if GRAPH_VARIABLES.contains(&name) {
             problems.error(match name {
@@ -1870,6 +3249,14 @@ fn numbers_of(v: &Value, rows: usize, error: &mut Option<String>) -> Option<Vec<
             *error = Some("Table cells hold numbers, not points".into());
             None
         }
+        Value::Polygon(_) | Value::Polygons(_) => {
+            *error = Some("Table cells hold numbers, not polygons".into());
+            None
+        }
+        Value::Complex(..) | Value::Complexes(_) => {
+            *error = Some("Table cells hold real numbers".into());
+            None
+        }
     }
 }
 
@@ -1878,6 +3265,14 @@ fn points_of(v: &Value) -> Vec<[f64; 2]> {
     match v {
         Value::Point(a, b) => [[*a, *b]].into_iter().filter(finite).collect(),
         Value::Points(ps) => ps.iter().copied().filter(finite).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn polygons_of(v: &Value) -> Vec<Vec<[f64; 2]>> {
+    match v {
+        Value::Polygon(p) => vec![p.clone()],
+        Value::Polygons(ps) => ps.clone(),
         _ => Vec::new(),
     }
 }

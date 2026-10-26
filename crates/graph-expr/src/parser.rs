@@ -2,7 +2,7 @@
 //! implicit multiplication, `\sin x` without brackets, `\sin^2 x`,
 //! `\sin^{-1}x`, `\log_2 x`, subscripted names and so on.
 
-use crate::ast::{Condition, Coord, Expr, Relation, Repeat, Statement};
+use crate::ast::{Condition, Coord, Expr, Relation, Repeat, ShapeFn, Statement};
 use crate::builtins::{self, Builtin};
 use crate::lexer::{tokenize, Tok};
 
@@ -14,7 +14,18 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
         pipe_depth: 0,
         integral_depth: 0,
     };
-    let statement = p.statement()?;
+    let mut statement = p.statement()?;
+    // `a \to 1, b \to 2` runs both actions, as does `A, B` for actions
+    // with names.
+    if let Statement::Expr(first) = &statement {
+        if p.peek() == Some(&Tok::Comma) {
+            let mut actions = vec![first.clone()];
+            while p.eat(&Tok::Comma) {
+                actions.push(p.expr()?);
+            }
+            statement = Statement::Expr(Expr::Actions(actions));
+        }
+    }
     match p.peek() {
         None => Ok(statement),
         Some(tok) => Err(unexpected(tok)),
@@ -132,6 +143,25 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Result<Expr, String> {
+        let e = self.sum()?;
+        // `n^2 for n = [1...5]`, with or without brackets around it.
+        if matches!(self.peek(), Some(Tok::OpName(n)) if n == "for") {
+            self.pos += 1;
+            return Ok(Expr::Comprehension(Box::new(e), self.generators()?));
+        }
+        if !self.eat(&Tok::Arrow) {
+            return Ok(e);
+        }
+        let Expr::Var(name) = e else {
+            return Err("Only a variable can be updated by an action, as in a \\to a+1".into());
+        };
+        if self.peek().is_none() {
+            return Err("Incomplete expression".into());
+        }
+        Ok(Expr::Update(name, Box::new(self.sum()?)))
+    }
+
+    fn sum(&mut self) -> Result<Expr, String> {
         let mut e = self.term()?;
         loop {
             if self.eat(&Tok::Plus) {
@@ -324,6 +354,15 @@ impl Parser {
             }
             Tok::LParen => {
                 let e = self.expr()?;
+                if e.is_action() {
+                    // `(a \to 1, b \to 2)` groups actions.
+                    let mut actions = vec![e];
+                    while self.eat(&Tok::Comma) {
+                        actions.push(self.expr()?);
+                    }
+                    self.expect(&Tok::RParen)?;
+                    return Ok(Expr::Actions(actions));
+                }
                 if self.eat(&Tok::Comma) {
                     let y = self.expr()?;
                     if self.peek() == Some(&Tok::Comma) {
@@ -434,6 +473,31 @@ impl Parser {
 
     /// The rest of a list after its `[`: `]`, `1, 2]`, `1...10]`,
     /// `1, 3, ..., 11]` or `n^2 for n = [1...5]]`.
+    /// The `n = [1...5], m = [1, 2]` after `for`.
+    fn generators(&mut self) -> Result<Vec<(String, Expr)>, String> {
+        let mut generators = Vec::new();
+        loop {
+            let name = match self.next() {
+                Some(Tok::Letter(l)) => self.subscripted(l)?,
+                _ => return Err("'for' needs a variable, like n=[1...5]".into()),
+            };
+            self.expect(&Tok::Eq)?;
+            generators.push((name, self.sum()?));
+            // Another generator follows a comma only as `name =`.
+            let more = self.peek() == Some(&Tok::Comma)
+                && matches!(self.toks.get(self.pos + 1), Some(Tok::Letter(_)))
+                && self.toks[self.pos + 2..]
+                    .iter()
+                    .take_while(|t| !matches!(t, Tok::Comma | Tok::RBracket | Tok::RParen))
+                    .any(|t| *t == Tok::Eq);
+            if !more {
+                break;
+            }
+            self.pos += 1;
+        }
+        Ok(generators)
+    }
+
     fn list(&mut self) -> Result<Expr, String> {
         if self.eat(&Tok::RBracket) {
             return Ok(Expr::List(Vec::new()));
@@ -444,22 +508,8 @@ impl Parser {
             self.expect(&Tok::RBracket)?;
             return Ok(Expr::Range(Box::new(items.remove(0)), None, Box::new(end)));
         }
-        if matches!(self.peek(), Some(Tok::OpName(n)) if n == "for") {
-            self.pos += 1;
-            let mut generators = Vec::new();
-            loop {
-                let name = match self.next() {
-                    Some(Tok::Letter(l)) => self.subscripted(l)?,
-                    _ => return Err("'for' needs a variable, like n=[1...5]".into()),
-                };
-                self.expect(&Tok::Eq)?;
-                generators.push((name, self.expr()?));
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-            }
-            self.expect(&Tok::RBracket)?;
-            return Ok(Expr::Comprehension(Box::new(items.remove(0)), generators));
+        if matches!(items[0], Expr::Comprehension(..)) && self.eat(&Tok::RBracket) {
+            return Ok(items.remove(0));
         }
         while self.eat(&Tok::Comma) {
             if self.eat(&Tok::Dots) {
@@ -578,6 +628,12 @@ impl Parser {
     }
 
     fn function(&mut self, name: &str) -> Result<Expr, String> {
+        if let Some(shape) = ShapeFn::from_name(name) {
+            if self.peek() != Some(&Tok::LParen) {
+                return Err(format!("Function '{name}' needs parentheses"));
+            }
+            return Ok(Expr::Shape(shape, self.paren_args()?));
+        }
         let mut builtin =
             builtins::from_name(name).ok_or_else(|| format!("'{name}' isn't supported yet"))?;
         let mut power = None;

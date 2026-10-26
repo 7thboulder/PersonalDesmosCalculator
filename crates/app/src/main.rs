@@ -24,6 +24,9 @@ USAGE:
     graphcalc --bench-implicit [WxH] [FRAMES]
                                        time the implicit benchmark set: conics,
                                        dense curves and shaded inequalities
+    graphcalc --bench-ticker FILE [TICKS]
+                                       run a graph's ticker (default 100 times)
+                                       and time each run against its step
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency
@@ -87,6 +90,14 @@ fn run(args: &[String]) -> Result<(), String> {
             } else {
                 headless::bench_sliders(w, h, frames)
             }
+        }
+        Some("--bench-ticker") => {
+            let path = args.get(1).ok_or("--bench-ticker needs a file name")?;
+            let ticks = match args.get(2) {
+                Some(n) => n.parse().map_err(|_| format!("bad tick count: {n}"))?,
+                None => 100,
+            };
+            headless::bench_ticker(path, ticks)
         }
         Some("--dump-panel-html") => {
             let path = args.get(1).ok_or("--dump-panel-html needs a file name")?;

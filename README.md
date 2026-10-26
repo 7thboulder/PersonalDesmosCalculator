@@ -42,6 +42,19 @@ on the right. What you type is graphed as you type it:
   graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.
   The session is autosaved, so the next launch carries on where you left
   off, unsaved changes included; New and Open ask before dropping them.
+- Complex numbers, always on: `i`, `e^{iθ}`, `3+2i` arithmetic and powers,
+  and `real`, `imag`, `conj`, `arg` and `abs`, in lists too.
+- List tools: `sort(L, keys)`, `join`, `unique`, `distance`, `midpoint`,
+  comprehensions written `f(n) for n = L`, and `L[n].x`.
+- Polygons: `polygon((0,0), (4,0), (2,3))`, or one per element with `for`,
+  filled at 40% (the style menu's **Fill** slider changes it).
+- Actions: `a \to a + 1` (type `->`) gets a **Run** button, `l = a \to 1`
+  names one, and `l_1, l_2` runs several at once. The + menu's **ticker**
+  runs an action over and over, every so many milliseconds.
+- Opening a Desmos graph: save what `Calc.getState()` gives in Desmos's
+  browser console as a `.json` or `.txt` file and open it with Ctrl+O.
+  Expressions, tables, sliders, styles, the ticker and the view come across;
+  folders, notes and images are left out. Save writes a new `.gcalc` file.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with

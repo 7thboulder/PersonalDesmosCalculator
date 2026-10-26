@@ -455,3 +455,70 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
         Err("slider drag misses 60 fps".into())
     }
 }
+
+/// Opens a graph (a saved graph or a Desmos graph state), then runs its
+/// ticker `ticks` times as the panel would: each run's updates rewrite their
+/// rows, and the next run sees the new values. Times the app's own work per
+/// tick (analysis and scene building) against the ticker's step.
+pub fn bench_ticker(path: &str, ticks: u32) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let (rows, view, _) = crate::files::open_any(&text)?;
+    let mut rows = rows.as_array().cloned().unwrap_or_default();
+    for (i, r) in rows.iter_mut().enumerate() {
+        r["id"] = json!(i + 1);
+    }
+    let ticker = rows
+        .iter()
+        .position(|r| r.get("ticker").is_some())
+        .ok_or("this graph has no ticker")?;
+    let step: f64 = rows[ticker]["ticker"]["step"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let mut vp = Viewport::new(1600.0, 1000.0);
+    if let Some(view) = view {
+        view.apply(&mut vp);
+    }
+    let mut text = TextAtlas::system();
+    let mut engine = Engine::default();
+    let mut times = Vec::with_capacity(ticks as usize);
+    let mut analysis = Duration::ZERO;
+    for _ in 0..ticks {
+        let start = Instant::now();
+        let reply = engine.update(&serde_json::Value::Array(rows.clone()));
+        analysis += start.elapsed();
+        engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+        times.push(start.elapsed());
+        if let Some(e) = reply[ticker]["error"].as_str() {
+            return Err(format!("the ticker failed: {e}"));
+        }
+        for u in reply[ticker]["updates"].as_array().into_iter().flatten() {
+            let Some(r) = rows.iter_mut().find(|r| r["id"] == u["row"]) else {
+                continue;
+            };
+            let latex = r["latex"].as_str().unwrap_or("");
+            if let Some(eq) = latex.find('=') {
+                r["latex"] = json!(format!(
+                    "{}={}",
+                    &latex[..eq],
+                    u["latex"].as_str().unwrap_or("")
+                ));
+            }
+        }
+    }
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let first = times.first().copied().unwrap_or_default();
+    let mut rest: Vec<Duration> = times.iter().skip(1).copied().collect();
+    rest.sort();
+    let avg = rest.iter().sum::<Duration>() / rest.len().max(1) as u32;
+    let max = rest.last().copied().unwrap_or_default();
+    println!(
+        "{ticks} ticks: first {:.1} ms, then average {:.1} ms, worst {:.1} ms (step {step} ms); \
+         analysis {:.1} ms a tick on average",
+        ms(first),
+        ms(avg),
+        ms(max),
+        ms(analysis) / f64::from(ticks.max(1)),
+    );
+    Ok(())
+}

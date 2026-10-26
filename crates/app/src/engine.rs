@@ -5,11 +5,12 @@
 
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
 use graph_core::{
-    Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points,
+    Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points, Polygon,
 };
-use graph_expr::format::{result_latex, value_latex};
+use graph_expr::format::{exact_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze, wgsl, ColumnInput, Compare, Interval, Program, RowAnalysis, RowInput, RowKind,
+    analyze_cached, wgsl, Cache, ColumnInput, Compare, Interval, Program, RowAnalysis, RowInput,
+    RowKind,
 };
 use graph_render::{Shading, Test};
 use serde_json::{json, Value};
@@ -17,6 +18,8 @@ use std::collections::HashMap;
 
 /// How much of the colour Desmos lays down inside an inequality.
 const SHADE_OPACITY: f32 = 0.4;
+/// And inside a polygon, unless the row says otherwise.
+const POLYGON_FILL: f64 = 0.4;
 
 /// One curve ready to draw.
 pub struct GraphCurve {
@@ -72,6 +75,15 @@ impl GraphPoints {
     }
 }
 
+/// One polygon ready to draw.
+pub struct GraphPolygon {
+    pub points: Vec<[f64; 2]>,
+    pub color: [f32; 4],
+    pub fill: f32,
+    pub width: f32,
+    pub style: LineStyle,
+}
+
 /// One implicit equation or inequality ready to draw: its boundary is
 /// traced on the CPU, and the shading, when it has any, on the GPU.
 pub struct GraphRegion {
@@ -115,6 +127,7 @@ pub struct Engine {
     pub parametrics: Vec<GraphParametric>,
     pub regions: Vec<GraphRegion>,
     pub points: Vec<GraphPoints>,
+    pub polygons: Vec<GraphPolygon>,
     /// The LaTeX of every row, in order, as last received.
     pub latex: Vec<String>,
     /// The row selected in the panel, whose curves show points of interest.
@@ -123,6 +136,8 @@ pub struct Engine {
     pub sliders: HashMap<String, u64>,
     /// Bumped on every update, so cached work knows the rows changed.
     pub generation: u64,
+    /// Variable values from the last update, reused where unchanged.
+    cache: Cache,
 }
 
 impl Engine {
@@ -155,7 +170,7 @@ impl Engine {
                 }),
             })
             .collect();
-        let results = analyze(&inputs);
+        let results = analyze_cached(&inputs, &mut self.cache);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
         self.generation += 1;
@@ -170,6 +185,7 @@ impl Engine {
         self.parametrics.clear();
         self.regions.clear();
         self.points.clear();
+        self.polygons.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -208,6 +224,18 @@ impl Engine {
                     style,
                 });
             }
+            for polygon in &result.polygons {
+                self.polygons.push(GraphPolygon {
+                    points: polygon.clone(),
+                    color,
+                    fill: row["fillOpacity"]
+                        .as_f64()
+                        .unwrap_or(POLYGON_FILL)
+                        .clamp(0.0, 1.0) as f32,
+                    width,
+                    style,
+                });
+            }
             if !result.points.is_empty() {
                 let mut points = GraphPoints::styled(result.id, result.points.clone(), row);
                 points.drag = result.drag.clone();
@@ -222,7 +250,16 @@ impl Engine {
                 }
             }
         }
-        Value::Array(results.iter().map(row_json).collect())
+        // Actions name the variables they set; the panel rewrites the rows
+        // that define them.
+        let defined: HashMap<&str, u64> = results
+            .iter()
+            .filter_map(|r| match &r.kind {
+                RowKind::Variable(name) => Some((name.as_str(), r.id)),
+                _ => None,
+            })
+            .collect();
+        Value::Array(results.iter().map(|r| row_json(r, &defined)).collect())
     }
 
     /// Calls `draw` with everything to plot, in the form graph-core takes.
@@ -296,10 +333,22 @@ impl Engine {
                 line: p.line,
             })
             .collect();
+        let polygons: Vec<Polygon> = self
+            .polygons
+            .iter()
+            .map(|p| Polygon {
+                points: &p.points,
+                color: p.color,
+                fill: p.fill,
+                width: p.width,
+                style: p.style,
+            })
+            .collect();
         draw(&Plot {
             curves: &curves,
             parametrics: &parametrics,
             implicits: &implicits,
+            polygons: &polygons,
             points: &points,
             marks,
         })
@@ -308,7 +357,11 @@ impl Engine {
     /// How many things are drawn, for the smoke test's report.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn drawn(&self) -> usize {
-        self.curves.len() + self.parametrics.len() + self.regions.len() + self.points.len()
+        self.curves.len()
+            + self.parametrics.len()
+            + self.regions.len()
+            + self.points.len()
+            + self.polygons.len()
     }
 
     /// What the GPU draws for this frame: the fill inside every inequality
@@ -383,7 +436,7 @@ fn point_style(row: &Value) -> PointStyle {
     }
 }
 
-fn row_json(r: &RowAnalysis) -> Value {
+fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
     let (kind, name) = match &r.kind {
         RowKind::Empty => ("empty", None),
         RowKind::Variable(n) => ("variable", Some(n)),
@@ -391,6 +444,7 @@ fn row_json(r: &RowAnalysis) -> Value {
         RowKind::Curve => ("curve", None),
         RowKind::Table => ("table", None),
         RowKind::Value => ("value", None),
+        RowKind::Action => ("action", None),
         RowKind::NotYet => ("notyet", None),
         RowKind::Error => ("error", None),
     };
@@ -404,6 +458,11 @@ fn row_json(r: &RowAnalysis) -> Value {
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
         "points": !r.points.is_empty(),
+        "polygons": !r.polygons.is_empty(),
+        "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
+            "row": defined.get(name.as_str())?,
+            "latex": exact_latex(v),
+        }))).collect::<Vec<_>>(),
         "lines": !(r.curves.is_empty() && r.parametrics.is_empty() && r.regions.is_empty()),
         "columns": r.columns.iter().map(|c| json!({
             "error": c.error,
@@ -467,6 +526,40 @@ pub fn parse_color(hex: &str, opacity: f64) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polygons_draw_and_actions_name_their_rows() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "a=0.1"},
+            {"id": 2, "latex": "a\\to a+0.2,L\\to\\operatorname{join}\\left(L,a\\right)"},
+            {"id": 3, "latex": "L=\\left[1\\right]"},
+            {"id": 4, "latex": "\\operatorname{polygon}\\left(\\left(0,0\\right),\\left(1,0\\right),\\left(0,a\\right)\\right)",
+             "fillOpacity": 0.25},
+            {"id": 5, "latex": "a\\to1", "hidden": true},
+        ]));
+        assert_eq!(reply[1]["kind"], "action");
+        // Exact values, so running an action never loses precision.
+        assert_eq!(
+            reply[1]["updates"],
+            json!([
+                {"row": 1, "latex": "0.30000000000000004"},
+                {"row": 3, "latex": "\\left[1,0.1\\right]"},
+            ])
+        );
+        assert_eq!(reply[3]["polygons"], true);
+        assert_eq!(engine.polygons.len(), 1);
+        assert_eq!(
+            engine.polygons[0].points,
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 0.1]]
+        );
+        assert_eq!(engine.polygons[0].fill, 0.25);
+        assert_eq!(
+            reply[4]["updates"],
+            json!([{"row": 1, "latex": "1"}]),
+            "hidden rows still run"
+        );
+    }
 
     #[test]
     fn table_columns_draw_with_their_own_styles() {

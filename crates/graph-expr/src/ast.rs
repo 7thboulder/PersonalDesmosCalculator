@@ -43,6 +43,45 @@ pub enum Expr {
     Repeat(Repeat, String, Box<Expr>, Box<Expr>, Box<Expr>),
     /// `\int_a^b body dt`: the variable, the bounds and the body.
     Integral(String, Box<Expr>, Box<Expr>, Box<Expr>),
+    /// A function that works on whole lists or builds shapes rather than
+    /// numbers: `polygon(...)`, `join(...)`, `sort(...)`.
+    Shape(ShapeFn, Vec<Expr>),
+    /// `a \to a + 1`: an action that sets `a` when it runs.
+    Update(String, Box<Expr>),
+    /// Several actions run together: `a \to 1, b \to 2`.
+    Actions(Vec<Expr>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeFn {
+    Polygon,
+    Join,
+    Sort,
+    Unique,
+    Distance,
+    Midpoint,
+    Real,
+    Imag,
+    Conj,
+    Arg,
+}
+
+impl ShapeFn {
+    pub fn from_name(name: &str) -> Option<ShapeFn> {
+        Some(match name {
+            "polygon" => ShapeFn::Polygon,
+            "join" => ShapeFn::Join,
+            "sort" => ShapeFn::Sort,
+            "unique" => ShapeFn::Unique,
+            "distance" => ShapeFn::Distance,
+            "midpoint" => ShapeFn::Midpoint,
+            "real" => ShapeFn::Real,
+            "imag" => ShapeFn::Imag,
+            "conj" => ShapeFn::Conj,
+            "arg" => ShapeFn::Arg,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,11 +192,31 @@ impl Expr {
                     e.visit_names(f);
                 }
             }
-            Expr::Call(_, args) => args.iter().for_each(|a| a.visit_names(f)),
+            Expr::Call(_, args) | Expr::Shape(_, args) | Expr::Actions(args) => {
+                args.iter().for_each(|a| a.visit_names(f))
+            }
+            Expr::Update(name, value) => {
+                f(name, false);
+                value.visit_names(f);
+            }
             Expr::Apply(name, args) => {
                 f(name, true);
                 args.iter().for_each(|a| a.visit_names(f));
             }
+        }
+    }
+
+    /// Whether this is an action by its form: `a \to 1`, several of them,
+    /// or a piecewise choice between them. A name that refers to an action
+    /// is only known once every row is.
+    pub fn is_action(&self) -> bool {
+        match self {
+            Expr::Update(..) | Expr::Actions(_) => true,
+            Expr::Piecewise(branches, otherwise) => {
+                branches.iter().any(|(_, v)| v.is_action())
+                    || otherwise.as_ref().is_some_and(|o| o.is_action())
+            }
+            _ => false,
         }
     }
 

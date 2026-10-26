@@ -1,7 +1,9 @@
 use crate::grid::{grid_spacing, line_indices};
 use crate::implicit::{trace_implicit, Field};
 use crate::sample::{sample_curve, sample_parametric, Axis};
-use crate::tess::{disc, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex};
+use crate::tess::{
+    disc, fill_polygon, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex,
+};
 use crate::text::TextAtlas;
 use crate::Viewport;
 
@@ -108,6 +110,17 @@ pub struct Points<'a> {
     pub line: Option<(f32, LineStyle)>,
 }
 
+/// A filled polygon with its outline, as `polygon(...)` draws.
+pub struct Polygon<'a> {
+    pub points: &'a [[f64; 2]],
+    pub color: [f32; 4],
+    /// The fill's opacity; Desmos's default is 0.4.
+    pub fill: f32,
+    /// Outline thickness in logical pixels; 0 draws no outline.
+    pub width: f32,
+    pub style: LineStyle,
+}
+
 /// How a mark on top of the graph looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkKind {
@@ -138,6 +151,7 @@ pub struct Plot<'a> {
     pub curves: &'a [Curve<'a>],
     pub parametrics: &'a [Parametric<'a>],
     pub implicits: &'a [Implicit<'a>],
+    pub polygons: &'a [Polygon<'a>],
     pub points: &'a [Points<'a>],
     pub marks: &'a [Mark],
 }
@@ -159,6 +173,7 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
         curves,
         parametrics,
         implicits,
+        polygons,
         points,
         marks,
     } = *plot;
@@ -233,6 +248,9 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
             finish(implicit_jobs),
         )
     });
+    for polygon in polygons {
+        draw_polygon(vp, scale, polygon, &mut out);
+    }
     let stroke = |lines: Vec<Vec<[f32; 2]>>, width: f32, style, color, out: &mut Vec<Vertex>| {
         for line in lines {
             stroke_styled(&line, width * scale, style, color, out);
@@ -262,6 +280,38 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
     Scene {
         vertices: out,
         shade_after,
+    }
+}
+
+fn draw_polygon(vp: &Viewport, scale: f32, polygon: &Polygon, out: &mut Vec<Vertex>) {
+    // Far-off vertices are clamped so f32 vertices stay accurate.
+    const CLAMP: f64 = 1.0e5;
+    let ring: Vec<[f32; 2]> = polygon
+        .points
+        .iter()
+        .map(|p| vp.to_screen(p[0], p[1]))
+        .filter(|s| s[0].is_finite() && s[1].is_finite())
+        .map(|s| {
+            [
+                s[0].clamp(-CLAMP, CLAMP) as f32,
+                s[1].clamp(-CLAMP, CLAMP) as f32,
+            ]
+        })
+        .collect();
+    let [r, g, b, a] = polygon.color;
+    if polygon.fill > 0.0 {
+        fill_polygon(&ring, [r, g, b, a * polygon.fill], out);
+    }
+    if polygon.width > 0.0 && ring.len() >= 2 {
+        let mut closed = ring.clone();
+        closed.push(ring[0]);
+        stroke_styled(
+            &closed,
+            polygon.width * scale,
+            polygon.style,
+            polygon.color,
+            out,
+        );
     }
 }
 
