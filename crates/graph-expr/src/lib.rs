@@ -6,9 +6,12 @@ pub mod ast;
 pub mod builtins;
 pub mod compile;
 pub mod format;
+pub mod interval;
 pub mod lexer;
 pub mod parser;
+pub mod wgsl;
 
-pub use analyze::{analyze, Axis, Curve, RowAnalysis, RowInput, RowKind};
+pub use analyze::{analyze, Axis, Compare, Curve, Region, RowAnalysis, RowInput, RowKind};
 pub use compile::Program;
+pub use interval::Interval;
 pub use parser::parse;

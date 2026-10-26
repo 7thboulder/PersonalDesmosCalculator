@@ -1,4 +1,5 @@
 use crate::grid::{grid_spacing, line_indices};
+use crate::implicit::{trace_implicit, Field};
 use crate::sample::{sample_curve, Axis};
 use crate::tess::{fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex};
 use crate::text::TextAtlas;
@@ -60,14 +61,34 @@ impl<'a> Curve<'a> {
     }
 }
 
+/// An implicit curve f(x, y) = 0, including the boundary of a shaded
+/// inequality. The shading itself is drawn by the renderer, not here.
+pub struct Implicit<'a> {
+    pub field: &'a dyn Field,
+    pub color: [f32; 4],
+    /// Thickness in logical pixels.
+    pub width: f32,
+    pub style: LineStyle,
+}
+
+/// One frame's triangles, in two parts: the renderer draws `vertices` up to
+/// `shade_after` (paper, grid and axes), then any inequality shading, then
+/// the rest (axis numbers and curves), so shading sits over the grid and
+/// under everything that has to stay readable.
+pub struct Scene {
+    pub vertices: Vec<Vertex>,
+    pub shade_after: usize,
+}
+
 /// Builds the triangles for one frame: paper, grid, axes, axis numbers, then
 /// curves. `scale` is the display's DPI scale (1.0 at 100%, 1.5 at 150%).
 pub fn build_scene(
     vp: &Viewport,
     scale: f32,
     curves: &[Curve],
+    implicits: &[Implicit],
     text: &mut TextAtlas,
-) -> Vec<Vertex> {
+) -> Scene {
     let mut out = Vec::with_capacity(64 * 1024);
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
     fill_rect(0.0, 0.0, w, h, BACKGROUND, &mut out);
@@ -110,37 +131,42 @@ pub fn build_scene(
         stroke_polyline(&[[0.0, oy], [w, oy]], axis_w, AXIS, &mut out);
     }
 
+    let shade_after = out.len();
     labels(vp, scale, spacing.major, text, &mut out);
 
-    // Sampling is the expensive part, so curves are sampled in parallel.
-    let sampled: Vec<Vec<Vec<[f32; 2]>>> = if curves.len() > 1 {
-        std::thread::scope(|scope| {
-            let jobs: Vec<_> = curves
-                .iter()
-                .map(|c| scope.spawn(move || sample_curve(c.f, vp, c.axis)))
-                .collect();
+    // Sampling and tracing are the expensive parts, so every curve runs on
+    // its own thread.
+    let (sampled, traced) = std::thread::scope(|scope| {
+        let curve_jobs: Vec<_> = curves
+            .iter()
+            .map(|c| scope.spawn(move || sample_curve(c.f, vp, c.axis)))
+            .collect();
+        let implicit_jobs: Vec<_> = implicits
+            .iter()
+            .map(|i| scope.spawn(move || trace_implicit(i.field, vp)))
+            .collect();
+        let finish = |jobs: Vec<std::thread::ScopedJoinHandle<Vec<Vec<[f32; 2]>>>>| {
             jobs.into_iter()
                 .map(|j| j.join().unwrap_or_default())
-                .collect()
-        })
-    } else {
-        curves
-            .iter()
-            .map(|c| sample_curve(c.f, vp, c.axis))
-            .collect()
-    };
-    for (curve, lines) in curves.iter().zip(sampled) {
+                .collect::<Vec<_>>()
+        };
+        (finish(curve_jobs), finish(implicit_jobs))
+    });
+    let stroke = |lines: Vec<Vec<[f32; 2]>>, width: f32, style, color, out: &mut Vec<Vertex>| {
         for line in lines {
-            stroke_styled(
-                &line,
-                curve.width * scale,
-                curve.style,
-                curve.color,
-                &mut out,
-            );
+            stroke_styled(&line, width * scale, style, color, out);
         }
+    };
+    for (c, lines) in curves.iter().zip(sampled) {
+        stroke(lines, c.width, c.style, c.color, &mut out);
     }
-    out
+    for (i, lines) in implicits.iter().zip(traced) {
+        stroke(lines, i.width, i.style, i.color, &mut out);
+    }
+    Scene {
+        vertices: out,
+        shade_after,
+    }
 }
 
 /// Text of the axis number at `i` major steps, as Desmos writes it: plain
@@ -301,11 +327,26 @@ mod tests {
     fn scene_has_paper_grid_axes_and_curve() {
         let vp = Viewport::new(1000.0, 600.0);
         let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
-        let verts = build_scene(&vp, 1.0, &[curve], &mut TextAtlas::empty());
+        let verts = build_scene(&vp, 1.0, &[curve], &[], &mut TextAtlas::empty()).vertices;
         assert!(verts.len() > 1000);
         assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[0]));
         assert!(verts.iter().any(|v| v.color == AXIS));
         assert!(verts.iter().any(|v| v.color == MINOR_GRID));
+    }
+
+    #[test]
+    fn an_implicit_circle_reaches_the_scene() {
+        let vp = Viewport::new(600.0, 600.0);
+        let field = |x: f64, y: f64| x * x + y * y - 9.0;
+        let implicit = Implicit {
+            field: &field,
+            color: DESMOS_COLORS[1],
+            width: DEFAULT_CURVE_WIDTH,
+            style: LineStyle::Solid,
+        };
+        let scene = build_scene(&vp, 1.0, &[], &[implicit], &mut TextAtlas::empty());
+        let verts = scene.vertices;
+        assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[1]));
     }
 
     #[test]
@@ -329,7 +370,7 @@ mod tests {
             return;
         }
         let vp = Viewport::new(1000.0, 600.0);
-        let verts = build_scene(&vp, 1.0, &[], &mut text);
+        let verts = build_scene(&vp, 1.0, &[], &[], &mut text).vertices;
         assert!(verts.iter().any(|v| v.color == LABEL));
     }
 }

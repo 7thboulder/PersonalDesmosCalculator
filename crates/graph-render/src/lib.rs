@@ -2,8 +2,11 @@
 //! Vulkan or software fallbacks), so nothing extra needs installing.
 
 use graph_core::text::{ATLAS_CHANNELS, ATLAS_SIZE};
-use graph_core::{TextAtlas, Vertex};
+use graph_core::{Scene, TextAtlas, Vertex};
 use wgpu::util::DeviceExt;
+
+mod shade;
+pub use shade::{Shading, ShadingRenderer, Test};
 
 const SHADER: &str = r#"
 struct Uniforms {
@@ -300,6 +303,47 @@ impl GraphRenderer {
         vertices: &[Vertex],
         text: &TextAtlas,
     ) {
+        self.draw_parts(gpu, target, target_size, area, vertices, text, &[], None);
+    }
+
+    /// Draws one frame: the scene's background, then each shaded region on
+    /// top of it, then the rest of the scene.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_scene(
+        &mut self,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        target_size: (u32, u32),
+        area: Area,
+        scene: &Scene,
+        text: &TextAtlas,
+        shadings: &[Shading],
+        shader: &mut ShadingRenderer,
+    ) {
+        self.draw_parts(
+            gpu,
+            target,
+            target_size,
+            area,
+            &scene.vertices,
+            text,
+            shadings,
+            Some((scene.shade_after, shader)),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_parts(
+        &mut self,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        target_size: (u32, u32),
+        area: Area,
+        vertices: &[Vertex],
+        text: &TextAtlas,
+        shadings: &[Shading],
+        split: Option<(usize, &mut ShadingRenderer)>,
+    ) {
         let (device, queue) = (&gpu.device, &gpu.queue);
         if text.generation != self.atlas_generation {
             self.atlas_generation = text.generation;
@@ -354,30 +398,47 @@ impl GraphRenderer {
             _ => (target, None),
         };
 
+        let ax = area.x.min(w);
+        let ay = area.y.min(h);
+        let aw = area.width.min(w - ax);
+        let ah = area.height.min(h - ay);
+        if aw == 0 || ah == 0 {
+            return;
+        }
+        let (shade_after, shader) = match split {
+            Some((at, shader)) => (at.min(vertices.len()), Some(shader)),
+            None => (vertices.len(), None),
+        };
         let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("graph pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let ax = area.x.min(w);
-            let ay = area.y.min(h);
-            let aw = area.width.min(w - ax);
-            let ah = area.height.min(h - ay);
-            if aw > 0 && ah > 0 && count > 0 {
-                pass.set_viewport(
+        // Up to three passes over the same attachment: only the first
+        // clears, so shading lands between the scene's background and its
+        // foreground.
+        let mut first = true;
+        macro_rules! begin_pass {
+            () => {{
+                let load = if first {
+                    wgpu::LoadOp::Clear(wgpu::Color::WHITE)
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                first = false;
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("graph pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                rp.set_viewport(
                     ax as f32,
                     ay as f32,
                     area.width as f32,
@@ -385,17 +446,37 @@ impl GraphRenderer {
                     0.0,
                     1.0,
                 );
-                pass.set_scissor_rect(ax, ay, aw, ah);
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(
-                    0,
-                    self.vertices
-                        .slice(..count * std::mem::size_of::<Vertex>() as u64),
-                );
-                pass.draw(0..count as u32, 0..1);
+                rp.set_scissor_rect(ax, ay, aw, ah);
+                rp
+            }};
+        }
+        let stride = std::mem::size_of::<Vertex>() as u64;
+        macro_rules! draw_scene_part {
+            ($range:expr) => {{
+                let range: std::ops::Range<u32> = $range;
+                if !range.is_empty() {
+                    let mut rp = begin_pass!();
+                    rp.set_pipeline(&self.pipeline);
+                    rp.set_bind_group(0, &self.bind_group, &[]);
+                    rp.set_vertex_buffer(0, self.vertices.slice(..count * stride));
+                    rp.draw(range, 0..1);
+                }
+            }};
+        }
+        draw_scene_part!(0..shade_after as u32);
+        if let Some(shader) = shader {
+            if !shadings.is_empty() {
+                shader.prepare(gpu, self.format, self.samples, shadings);
+                let mut rp = begin_pass!();
+                shader.draw(&mut rp, shadings);
             }
         }
+        draw_scene_part!(shade_after as u32..count as u32);
+        if first {
+            // Nothing to draw at all; the target is still cleared.
+            let _ = begin_pass!();
+        }
+        let _ = first;
         queue.submit(Some(encoder.finish()));
     }
 }
@@ -406,8 +487,9 @@ pub fn render_offscreen(
     gpu: &Gpu,
     width: u32,
     height: u32,
-    vertices: &[Vertex],
+    scene: &Scene,
     text: &TextAtlas,
+    shadings: &[Shading],
 ) -> Vec<u8> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = GraphRenderer::new(gpu, format);
@@ -432,7 +514,17 @@ pub fn render_offscreen(
         width,
         height,
     };
-    renderer.draw(gpu, &view, (width, height), area, vertices, text);
+    let mut shader = ShadingRenderer::new(gpu);
+    renderer.draw_scene(
+        gpu,
+        &view,
+        (width, height),
+        area,
+        scene,
+        text,
+        shadings,
+        &mut shader,
+    );
 
     let padded_row = (width * 4).div_ceil(256) * 256;
     let readback = gpu
@@ -480,6 +572,37 @@ mod tests {
     use graph_core::{build_scene, Curve, Viewport};
 
     #[test]
+    fn shaded_inequality_fills_its_side() {
+        let Ok(gpu) = Gpu::new(&new_instance(), None) else {
+            return;
+        };
+        let (w, h) = (200, 200);
+        let vp = Viewport::new(w as f64, h as f64);
+        let mut text = graph_core::TextAtlas::empty();
+        let scene = build_scene(&vp, 1.0, &[], &[], &mut text);
+        // y > 0, in blue at Desmos's shading opacity.
+        let shading = Shading {
+            body: "    return y;\n".into(),
+            test: Some(Test::Greater),
+            color: [0.176, 0.439, 0.702, 1.0],
+            fill_opacity: 0.4,
+            line_px: 2.5,
+            origin: [
+                vp.to_world(0.0, 0.0)[0] as f32,
+                vp.to_world(0.0, 0.0)[1] as f32,
+            ],
+            units_per_px: vp.units_per_px as f32,
+        };
+        let px = render_offscreen(&gpu, w, h, &scene, &text, &[shading]);
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        // Away from the axes and grid lines, which have colours of their own.
+        let above = at(37, 43);
+        let below = at(37, 157);
+        assert!(above[2] > above[0] + 20, "shaded above: {above:?}");
+        assert!(below[2] <= below[0], "nothing shaded below: {below:?}");
+    }
+
+    #[test]
     fn offscreen_sine_has_red_curve_on_white() {
         let gpu = match Gpu::new(&new_instance(), None) {
             Ok(gpu) => gpu,
@@ -492,8 +615,8 @@ mod tests {
         let vp = Viewport::new(w as f64, h as f64);
         let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
         let mut text = graph_core::TextAtlas::system();
-        let scene = build_scene(&vp, 1.0, &[curve], &mut text);
-        let px = render_offscreen(&gpu, w, h, &scene, &text);
+        let scene = build_scene(&vp, 1.0, &[curve], &[], &mut text);
+        let px = render_offscreen(&gpu, w, h, &scene, &text, &[]);
         let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
         // Corner is white paper.
         assert_eq!(at(3, 3), &[255, 255, 255, 255]);

@@ -176,7 +176,7 @@ impl Sampler<'_> {
 /// Ramer-Douglas-Peucker: keeps only the points needed to stay within
 /// `tolerance` pixels of the sampled line. Smooth curves sampled once per
 /// pixel shrink to a small fraction of their points.
-fn simplify(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
+pub(crate) fn simplify(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
     let n = points.len();
     if n <= 2 {
         return points.to_vec();

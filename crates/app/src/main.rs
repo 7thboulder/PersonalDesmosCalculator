@@ -18,6 +18,9 @@ USAGE:
     graphcalc --bench [WxH] [FRAMES]   time a simulated slider drag (analyze,
                                        build and GPU render per frame) against
                                        the 60 fps budget
+    graphcalc --bench-implicit [WxH] [FRAMES]
+                                       time the implicit benchmark set: conics,
+                                       dense curves and shaded inequalities
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency
@@ -66,7 +69,8 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", engine::Engine::default().update(&rows));
             Ok(())
         }
-        Some("--bench") => {
+        Some("--bench" | "--bench-implicit") => {
+            let implicit = args[0] == "--bench-implicit";
             let (w, h) = match args.get(1) {
                 Some(size) => parse_size(size)?,
                 None => (1600, 1000),
@@ -75,7 +79,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some(n) => n.parse().map_err(|_| format!("bad frame count: {n}"))?,
                 None => 600,
             };
-            headless::bench_sliders(w, h, frames)
+            if implicit {
+                headless::bench_implicit(w, h, frames)
+            } else {
+                headless::bench_sliders(w, h, frames)
+            }
         }
         Some("--dump-panel-html") => {
             let path = args.get(1).ok_or("--dump-panel-html needs a file name")?;

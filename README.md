@@ -5,11 +5,15 @@ its math and drawing with the machine's own CPU and GPU instead of a browser.
 Private, personal-use project. The full plan lives in the
 [plan doc](https://claude.ai/artifact/DZCzUyaNRYjCzz5fdBDS7n).
 
-**Status: Phase 1 preview.** The window opens with a Desmos-style expression
+**Status: Phase 2 preview.** The window opens with a Desmos-style expression
 list on the left (the same MathQuill editor Desmos uses) and a GPU-drawn graph
 on the right. What you type is graphed as you type it:
 
 - Curves `y = f(x)`, `x = g(y)`, and bare expressions in x such as `x^2`.
+- Implicit equations such as `x^2 + y^2 = 25` or `sin(xy) = cos(x)`, however
+  densely they fold.
+- Inequalities such as `y > x^2` or `x^2 - y^2 < 4`, with Desmos's shading on
+  the side that satisfies them.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
@@ -20,8 +24,10 @@ on the right. What you type is graphed as you type it:
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: implicit equations (`x^2 + y^2 = 1`), inequalities, polar, points,
-lists, derivatives, sums and integrals. Those rows say they arrive later.
+Not yet: polar, points, lists, derivatives, sums and integrals. Those rows say
+they arrive later. Shading is computed by the GPU in single precision, so a
+very deep zoom on an implicit curve will eventually look grainy; a
+double-precision fallback at that zoom is still to come.
 
 ## Trying it on Windows 10 or 11
 
@@ -36,6 +42,9 @@ Click **More info**, then **Run anyway**.
 Things to check:
 
 - Type `y=mx+b`, press **all** under it, then drag and play the sliders.
+- Type `x^2+y^2=a^2`, add the slider, and play it: the circle should stay
+  smooth and keep up. Then try `y>x^2`, `\sin\left(xy\right)=\cos\left(x\right)`
+  and a dashed or dotted implicit curve from the style menu.
 - Typing behaves like Desmos (`/` makes a fraction, `^` an exponent, `sqrt` a
   root, Enter a new row) and the results match what Desmos shows.
 - Dragging the graph pans it and the scroll wheel zooms around the cursor.
@@ -48,9 +57,9 @@ from a command prompt and note whether that looks better.
 
 | Path | What it is |
 | --- | --- |
-| `crates/graph-expr` | The expression engine: Desmos-rules LaTeX parser, cross-row analysis, compiled curve programs. Golden tests in `tests/golden.rs`. |
-| `crates/graph-core` | Viewport, grid, curve sampling, line styles, axis labels and tessellation. Pure Rust, unit tested. |
-| `crates/graph-render` | Draws scenes with wgpu (DirectX 12 on Windows), on screen or offscreen. |
+| `crates/graph-expr` | The expression engine: Desmos-rules LaTeX parser, cross-row analysis, compiled curve programs, interval arithmetic and WGSL generation. Golden tests in `tests/golden.rs`. |
+| `crates/graph-core` | Viewport, grid, curve sampling, the implicit quadtree tracer, line styles, axis labels and tessellation. Pure Rust, unit tested. |
+| `crates/graph-render` | Draws scenes with wgpu (DirectX 12 on Windows), on screen or offscreen, including per-pixel shading of relations. |
 | `crates/app` | The `graphcalc` executable: window, input, and the WebView2 expression panel. |
 | `crates/app/ui` | Panel HTML, CSS and JS, plus vendored MathQuill 0.10.1 (MPL-2.0) and jQuery 3.7.1 (MIT). Everything is embedded in the exe. |
 
@@ -61,6 +70,7 @@ cargo test --workspace                          # runs everywhere, GPU test skip
 cargo build --release -p app                    # target/release/graphcalc(.exe)
 graphcalc --render-png out.png 1200x800 'y=x^2' # offscreen render of LaTeX rows, no window needed
 graphcalc --bench                               # slider-drag frame time against the 60 fps budget
+graphcalc --bench-implicit                      # the same budget over eleven implicit and shaded relations
 echo '[{"id":1,"latex":"1+1"}]' | graphcalc --analyze   # the engine's reply to panel rows
 graphcalc --dump-panel-html panel.html          # the panel page, for testing in a browser
 cargo check -p app --target x86_64-pc-windows-msvc   # type-check the window code from Linux or macOS
