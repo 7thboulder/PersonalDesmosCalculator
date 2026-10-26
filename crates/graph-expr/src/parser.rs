@@ -2,7 +2,7 @@
 //! implicit multiplication, `\sin x` without brackets, `\sin^2 x`,
 //! `\sin^{-1}x`, `\log_2 x`, subscripted names and so on.
 
-use crate::ast::{Expr, Relation, Statement};
+use crate::ast::{Condition, Coord, Expr, Relation, Statement};
 use crate::builtins::{self, Builtin};
 use crate::lexer::{tokenize, Tok};
 
@@ -20,9 +20,6 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
     }
 }
 
-const LATER_LISTS: &str = "Lists arrive in a later version";
-const LATER_POINTS: &str = "Points arrive in a later version";
-const LATER_PIECEWISE: &str = "Piecewise definitions arrive in a later version";
 const LATER_CALCULUS: &str = "Sums, products, integrals and derivatives arrive in a later version";
 
 struct Parser {
@@ -38,10 +35,10 @@ fn unexpected(tok: &Tok) -> String {
         Tok::RParen | Tok::RBrace | Tok::AbsClose | Tok::RBracket | Tok::RCurly => {
             "Unbalanced brackets".into()
         }
-        Tok::Comma => LATER_POINTS.into(),
-        Tok::Eq | Tok::Lt | Tok::Gt | Tok::Le | Tok::Ge => {
-            "Chained comparisons arrive in a later version".into()
-        }
+        Tok::Comma => "Points are written with brackets, like (1, 2)".into(),
+        Tok::Colon => "A ':' only belongs inside a piecewise definition like {x<0: 1}".into(),
+        Tok::Dots => "A '...' only belongs inside a list like [1...10]".into(),
+        Tok::Eq | Tok::Lt | Tok::Gt | Tok::Le | Tok::Ge => "Unexpected comparison".into(),
         other => format!("Unexpected {}", describe(other)),
     }
 }
@@ -85,21 +82,51 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Statement, String> {
-        let lhs = self.expr()?;
-        let rel = match self.peek() {
-            Some(Tok::Eq) => Relation::Eq,
-            Some(Tok::Lt) => Relation::Lt,
-            Some(Tok::Gt) => Relation::Gt,
-            Some(Tok::Le) => Relation::Le,
-            Some(Tok::Ge) => Relation::Ge,
-            _ => return Ok(Statement::Expr(lhs)),
-        };
-        self.pos += 1;
-        if self.peek().is_none() {
-            return Err("Incomplete expression".into());
+        let mut condition = self.comparison()?;
+        match condition.relations.len() {
+            0 => Ok(Statement::Expr(condition.operands.remove(0))),
+            1 => {
+                let rhs = condition.operands.pop().expect("two operands");
+                let lhs = condition.operands.pop().expect("two operands");
+                Ok(Statement::Relation(lhs, condition.relations[0], rhs))
+            }
+            _ => {
+                if condition.relations.contains(&Relation::Eq) {
+                    return Err("Equations can't be chained; try an inequality like 0<y<x".into());
+                }
+                Ok(Statement::Chain(condition))
+            }
         }
-        let rhs = self.expr()?;
-        Ok(Statement::Relation(lhs, rel, rhs))
+    }
+
+    fn relation(&self) -> Option<Relation> {
+        Some(match self.peek()? {
+            Tok::Eq => Relation::Eq,
+            Tok::Lt => Relation::Lt,
+            Tok::Gt => Relation::Gt,
+            Tok::Le => Relation::Le,
+            Tok::Ge => Relation::Ge,
+            _ => return None,
+        })
+    }
+
+    /// An expression followed by any number of comparisons: `x`, `x < 2`,
+    /// `0 < x \le 2`.
+    fn comparison(&mut self) -> Result<Condition, String> {
+        let mut operands = vec![self.expr()?];
+        let mut relations = Vec::new();
+        while let Some(rel) = self.relation() {
+            self.pos += 1;
+            if self.peek().is_none() {
+                return Err("Incomplete expression".into());
+            }
+            relations.push(rel);
+            operands.push(self.expr()?);
+        }
+        Ok(Condition {
+            operands,
+            relations,
+        })
     }
 
     fn expr(&mut self) -> Result<Expr, String> {
@@ -132,6 +159,8 @@ impl Parser {
 
     fn starts_factor(&self) -> bool {
         match self.peek() {
+            // `for` ends the body of a list comprehension.
+            Some(Tok::OpName(n)) if n == "for" => false,
             Some(
                 Tok::Num(_)
                 | Tok::Letter(_)
@@ -194,6 +223,20 @@ impl Parser {
         loop {
             if self.eat(&Tok::Bang) {
                 e = Expr::Factorial(Box::new(e));
+            } else if self.peek() == Some(&Tok::LBracket) && indexable(&e) {
+                self.pos += 1;
+                let index = match self.list()? {
+                    Expr::List(mut items) if items.len() == 1 => items.remove(0),
+                    other => other,
+                };
+                e = Expr::Index(Box::new(e), Box::new(index));
+            } else if self.eat(&Tok::Dot) {
+                e = match self.next() {
+                    Some(Tok::Letter(l)) if l == "x" => Expr::Coord(Box::new(e), Coord::X),
+                    Some(Tok::Letter(l)) if l == "y" => Expr::Coord(Box::new(e), Coord::Y),
+                    Some(Tok::OpName(n)) if n == "length" => Expr::Call(Builtin::Length, vec![e]),
+                    _ => return Err("Only .x, .y and .length can follow a '.'".into()),
+                };
             } else if self.peek() == Some(&Tok::Prime) {
                 return Err(LATER_CALCULUS.into());
             } else {
@@ -248,8 +291,13 @@ impl Parser {
             }
             Tok::LParen => {
                 let e = self.expr()?;
-                if self.peek() == Some(&Tok::Comma) {
-                    return Err(LATER_POINTS.into());
+                if self.eat(&Tok::Comma) {
+                    let y = self.expr()?;
+                    if self.peek() == Some(&Tok::Comma) {
+                        return Err("Points have two coordinates in 2D".into());
+                    }
+                    self.expect(&Tok::RParen)?;
+                    return Ok(Expr::Point(Box::new(e), Box::new(y)));
                 }
                 self.expect(&Tok::RParen)?;
                 Ok(e)
@@ -272,14 +320,116 @@ impl Parser {
                 self.expect(&Tok::RBrace)?;
                 Ok(e)
             }
-            Tok::LBracket => Err(LATER_LISTS.into()),
-            Tok::LCurly => Err(LATER_PIECEWISE.into()),
+            Tok::LBracket => self.list(),
+            Tok::LCurly => self.piecewise(),
             Tok::Unsupported(name) => match name.as_str() {
                 "sum" | "prod" | "int" => Err(LATER_CALCULUS.into()),
                 _ => Err(format!("'\\{name}' isn't supported yet")),
             },
             other => Err(unexpected(&other)),
         }
+    }
+
+    /// The rest of a list after its `[`: `]`, `1, 2]`, `1...10]`,
+    /// `1, 3, ..., 11]` or `n^2 for n = [1...5]]`.
+    fn list(&mut self) -> Result<Expr, String> {
+        if self.eat(&Tok::RBracket) {
+            return Ok(Expr::List(Vec::new()));
+        }
+        let mut items = vec![self.expr()?];
+        if self.eat(&Tok::Dots) {
+            let end = self.expr()?;
+            self.expect(&Tok::RBracket)?;
+            return Ok(Expr::Range(Box::new(items.remove(0)), None, Box::new(end)));
+        }
+        if matches!(self.peek(), Some(Tok::OpName(n)) if n == "for") {
+            self.pos += 1;
+            let mut generators = Vec::new();
+            loop {
+                let name = match self.next() {
+                    Some(Tok::Letter(l)) => self.subscripted(l)?,
+                    _ => return Err("'for' needs a variable, like n=[1...5]".into()),
+                };
+                self.expect(&Tok::Eq)?;
+                generators.push((name, self.expr()?));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RBracket)?;
+            return Ok(Expr::Comprehension(Box::new(items.remove(0)), generators));
+        }
+        while self.eat(&Tok::Comma) {
+            if self.eat(&Tok::Dots) {
+                // [1, 3, ..., 11]: the first two elements set the step.
+                self.eat(&Tok::Comma);
+                let end = self.expr()?;
+                self.expect(&Tok::RBracket)?;
+                if items.len() != 2 {
+                    return Err("A range like [1, 3, ..., 11] starts with two elements".into());
+                }
+                let second = items.pop().expect("two items");
+                let first = items.pop().expect("two items");
+                return Ok(Expr::Range(
+                    Box::new(first),
+                    Some(Box::new(second)),
+                    Box::new(end),
+                ));
+            }
+            items.push(self.expr()?);
+            if self.eat(&Tok::Dots) {
+                // [1, 3...11]
+                let end = self.expr()?;
+                self.expect(&Tok::RBracket)?;
+                if items.len() != 2 {
+                    return Err("A range like [1, 3, ..., 11] starts with two elements".into());
+                }
+                let second = items.pop().expect("two items");
+                let first = items.pop().expect("two items");
+                return Ok(Expr::Range(
+                    Box::new(first),
+                    Some(Box::new(second)),
+                    Box::new(end),
+                ));
+            }
+        }
+        self.expect(&Tok::RBracket)?;
+        Ok(Expr::List(items))
+    }
+
+    /// The rest of a piecewise definition after its `{`.
+    fn piecewise(&mut self) -> Result<Expr, String> {
+        let mut branches = Vec::new();
+        let mut otherwise = None;
+        if self.peek() == Some(&Tok::RCurly) {
+            return Err("Empty piecewise definition".into());
+        }
+        loop {
+            if otherwise.is_some() {
+                return Err(
+                    "The value for everything else comes last in a piecewise definition".into(),
+                );
+            }
+            let mut c = self.comparison()?;
+            if c.relations.is_empty() {
+                otherwise = Some(Box::new(c.operands.remove(0)));
+            } else {
+                let value = if self.eat(&Tok::Colon) {
+                    self.expr()?
+                } else {
+                    Expr::Num(1.0)
+                };
+                branches.push((c, value));
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RCurly)?;
+        if branches.is_empty() {
+            return Err("A piecewise definition needs a condition, like {x<0: 1}".into());
+        }
+        Ok(Expr::Piecewise(branches, otherwise))
     }
 
     /// Reads an optional subscript after a letter: `a_1`, `x_{12}`, `a_{bc}`.
@@ -386,6 +536,20 @@ impl Parser {
     }
 }
 
+/// Whether `[...]` straight after `e` indexes it (`L[2]`) rather than
+/// starting a new factor.
+fn indexable(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Var(_)
+            | Expr::List(_)
+            | Expr::Range(..)
+            | Expr::Comprehension(..)
+            | Expr::Index(..)
+            | Expr::Apply(..)
+    )
+}
+
 fn is_derivative(num: &Expr, den: &Expr) -> bool {
     num == &Expr::Var("d".into())
         && matches!(den, Expr::Mul(a, b) if **a == Expr::Var("d".into()) && matches!(**b, Expr::Var(_)))
@@ -466,9 +630,52 @@ mod tests {
     }
 
     #[test]
+    fn points_lists_and_ranges() {
+        assert_eq!(
+            e("\\left(1,a\\right)"),
+            Expr::Point(Box::new(n(1.0)), Box::new(v("a")))
+        );
+        assert_eq!(e("\\left[1,2\\right]"), Expr::List(vec![n(1.0), n(2.0)]));
+        assert_eq!(
+            e("\\left[1...10\\right]"),
+            Expr::Range(Box::new(n(1.0)), None, Box::new(n(10.0)))
+        );
+        assert_eq!(
+            e("\\left[1,3,...,11\\right]"),
+            Expr::Range(Box::new(n(1.0)), Some(Box::new(n(3.0))), Box::new(n(11.0)))
+        );
+        assert_eq!(
+            e("L\\left[2\\right]"),
+            Expr::Index(Box::new(v("L")), Box::new(n(2.0)))
+        );
+        assert_eq!(e("p.x"), Expr::Coord(Box::new(v("p")), Coord::X));
+        assert!(matches!(
+            e("\\left[n^2\\operatorname{for}n=\\left[1...5\\right]\\right]"),
+            Expr::Comprehension(_, ref g) if g[0].0 == "n"
+        ));
+    }
+
+    #[test]
+    fn piecewise_and_chains() {
+        let Expr::Piecewise(branches, otherwise) = e("\\left\\{x<0:-x,x\\right\\}") else {
+            panic!()
+        };
+        assert_eq!(branches.len(), 1);
+        assert_eq!(otherwise, Some(Box::new(v("x"))));
+        // A restriction is worth 1 where it holds.
+        let Expr::Mul(_, restriction) = e("x^2\\left\\{0<x<2\\right\\}") else {
+            panic!()
+        };
+        let Expr::Piecewise(branches, None) = *restriction else {
+            panic!()
+        };
+        assert_eq!(branches[0].0.relations, vec![Relation::Lt, Relation::Lt]);
+        assert_eq!(branches[0].1, n(1.0));
+        assert!(matches!(parse("-1<y<x").unwrap(), Statement::Chain(_)));
+    }
+
+    #[test]
     fn friendly_errors() {
-        assert_eq!(parse("\\left(1,2\\right)").unwrap_err(), LATER_POINTS);
-        assert_eq!(parse("\\left[1,2\\right]").unwrap_err(), LATER_LISTS);
         assert_eq!(parse("y=").unwrap_err(), "Incomplete expression");
         assert_eq!(
             parse("\\sin").unwrap_err(),

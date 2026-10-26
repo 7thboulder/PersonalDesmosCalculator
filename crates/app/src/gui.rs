@@ -314,7 +314,7 @@ impl Running {
         let (viewport, text) = (&self.viewport, &mut self.text);
         let scene = self
             .engine
-            .with_plot(|curves, implicits| build_scene(viewport, scale, curves, implicits, text));
+            .with_plot(|plot| build_scene(viewport, scale, plot, text));
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
@@ -415,7 +415,7 @@ fn finish_smoke_test(state: Option<&Running>, path: &std::path::Path) -> Result<
                 _ => 0.0,
             };
             (
-                s.panel_ready && s.frames > 0 && !s.engine.curves.is_empty(),
+                s.panel_ready && s.frames > 0 && s.engine.drawn() > 0,
                 format!(
                     "adapter: {}\nframes rendered: {}\npanel ready: {}\nrows from panel: {:?}\n\
                      curves drawn: {}\nframes per second while a slider plays: {fps:.1}\n",
@@ -423,7 +423,7 @@ fn finish_smoke_test(state: Option<&Running>, path: &std::path::Path) -> Result<
                     s.frames,
                     s.panel_ready,
                     s.engine.latex,
-                    s.engine.curves.len(),
+                    s.engine.drawn(),
                 ),
             )
         }

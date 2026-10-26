@@ -173,6 +173,153 @@ impl Sampler<'_> {
     }
 }
 
+/// Starting intervals across a parametric domain, before refinement.
+const PARAMETRIC_STEPS: usize = 1024;
+/// Deepest bisection of one starting interval.
+const PARAMETRIC_DEPTH: u32 = 14;
+/// How far, in pixels, a curve may bow away from a straight segment before
+/// the segment is split.
+const PARAMETRIC_BOW_PX: f64 = 0.25;
+
+/// Samples a parametric curve (x(t), y(t)) for t across `domain` and returns
+/// screen-space polylines.
+///
+/// Splits each interval until its midpoint lies within a quarter pixel of
+/// the straight segment, breaks the line where the curve is undefined, and
+/// breaks it at jumps that survive full refinement, as the explicit sampler
+/// does.
+pub fn sample_parametric(
+    fx: &dyn Fn(f64) -> f64,
+    fy: &dyn Fn(f64) -> f64,
+    domain: (f64, f64),
+    vp: &Viewport,
+) -> Vec<Vec<[f32; 2]>> {
+    let mut p = Parametric {
+        fx,
+        fy,
+        vp,
+        lines: Vec::new(),
+        current: Vec::new(),
+    };
+    let (t0, t1) = domain;
+    if !(t0.is_finite() && t1.is_finite()) {
+        return Vec::new();
+    }
+    let step = (t1 - t0) / PARAMETRIC_STEPS as f64;
+    let mut prev = p.eval(t0);
+    for i in 1..=PARAMETRIC_STEPS {
+        let next = p.eval(t0 + step * i as f64);
+        p.segment(prev, next, 0);
+        prev = next;
+    }
+    p.flush();
+    p.lines
+}
+
+struct Parametric<'a> {
+    fx: &'a dyn Fn(f64) -> f64,
+    fy: &'a dyn Fn(f64) -> f64,
+    vp: &'a Viewport,
+    lines: Vec<Vec<[f32; 2]>>,
+    current: Vec<[f32; 2]>,
+}
+
+/// One evaluation of a parametric curve, in screen pixels.
+#[derive(Clone, Copy)]
+struct Point {
+    t: f64,
+    s: [f64; 2],
+    ok: bool,
+}
+
+impl Parametric<'_> {
+    fn eval(&self, t: f64) -> Point {
+        let (x, y) = ((self.fx)(t), (self.fy)(t));
+        let ok = x.is_finite() && y.is_finite();
+        Point {
+            t,
+            s: if ok {
+                self.vp.to_screen(x, y)
+            } else {
+                [0.0; 2]
+            },
+            ok,
+        }
+    }
+
+    /// Whether both ends lie beyond the same edge of the screen, so nothing
+    /// between them can be visible unless the curve swings back, which the
+    /// starting intervals are fine enough to catch.
+    fn hidden(&self, a: Point, b: Point) -> bool {
+        let (w, h) = (self.vp.width_px, self.vp.height_px);
+        (a.s[0] < 0.0 && b.s[0] < 0.0)
+            || (a.s[0] > w && b.s[0] > w)
+            || (a.s[1] < 0.0 && b.s[1] < 0.0)
+            || (a.s[1] > h && b.s[1] > h)
+    }
+
+    fn segment(&mut self, a: Point, b: Point, depth: u32) {
+        if !a.ok && !b.ok {
+            return;
+        }
+        if a.ok && b.ok && self.hidden(a, b) {
+            self.extend(a);
+            self.extend(b);
+            return;
+        }
+        let mid = self.eval((a.t + b.t) / 2.0);
+        let len = dist(a.s, b.s);
+        let fine = a.ok
+            && b.ok
+            && mid.ok
+            && len < 32.0
+            && dist(mid.s, [(a.s[0] + b.s[0]) / 2.0, (a.s[1] + b.s[1]) / 2.0]) < PARAMETRIC_BOW_PX;
+        if !fine && depth < PARAMETRIC_DEPTH {
+            self.segment(a, mid, depth + 1);
+            self.segment(mid, b, depth + 1);
+            return;
+        }
+        if !b.ok {
+            self.extend(a);
+            self.flush();
+            return;
+        }
+        if !a.ok {
+            self.flush();
+            self.extend(b);
+            return;
+        }
+        if !fine && len > JUMP_PX {
+            // Still a long segment after full refinement: a discontinuity.
+            self.extend(a);
+            self.flush();
+            self.extend(b);
+            return;
+        }
+        self.extend(a);
+        self.extend(b);
+    }
+
+    fn extend(&mut self, p: Point) {
+        let c = |v: f64| v.clamp(-SCREEN_CLAMP_PX, SCREEN_CLAMP_PX) as f32;
+        let q = [c(p.s[0]), c(p.s[1])];
+        if self.current.last() != Some(&q) {
+            self.current.push(q);
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.current.len() >= 2 {
+            self.lines.push(simplify(&self.current, SIMPLIFY_PX));
+        }
+        self.current.clear();
+    }
+}
+
+fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
+
 /// Ramer-Douglas-Peucker: keeps only the points needed to stay within
 /// `tolerance` pixels of the sampled line. Smooth curves sampled once per
 /// pixel shrink to a small fraction of their points.
@@ -214,6 +361,53 @@ pub(crate) fn simplify(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
         .zip(keep)
         .filter_map(|(p, k)| k.then_some(*p))
         .collect()
+}
+
+#[cfg(test)]
+mod parametric_tests {
+    use super::*;
+
+    #[test]
+    fn circle_is_one_smooth_closed_line() {
+        let vp = Viewport::new(800.0, 600.0);
+        let tau = std::f64::consts::TAU;
+        let lines = sample_parametric(&|t| 3.0 * t.cos(), &|t| 3.0 * t.sin(), (0.0, tau), &vp);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        let (first, last) = (line[0], line[line.len() - 1]);
+        assert!((first[0] - last[0]).abs() < 0.01 && (first[1] - last[1]).abs() < 0.01);
+        // Every vertex sits on the circle's radius in pixels.
+        let centre = vp.to_screen(0.0, 0.0);
+        let radius = 3.0 / vp.units_per_px;
+        for p in line {
+            let r = dist([p[0] as f64, p[1] as f64], centre);
+            assert!((r - radius).abs() < 0.5, "{r} vs {radius}");
+        }
+    }
+
+    #[test]
+    fn breaks_where_undefined_and_at_jumps() {
+        let vp = Viewport::new(800.0, 600.0);
+        // (t, sqrt(t)) is undefined for t < 0.
+        let lines = sample_parametric(&|t| t, &|t| t.sqrt(), (-5.0, 5.0), &vp);
+        assert_eq!(lines.len(), 1);
+        // (t, floor(t)) is a staircase of separate steps.
+        let lines = sample_parametric(&|t| t, &|t: f64| t.floor(), (-3.0, 3.0), &vp);
+        assert_eq!(lines.len(), 6);
+    }
+
+    #[test]
+    fn a_spiral_runs_unbroken_off_screen() {
+        // r = θ for θ up to 12π leaves the view after about a turn and a half.
+        let vp = Viewport::new(800.0, 800.0);
+        let lines = sample_parametric(
+            &|t: f64| t * t.cos(),
+            &|t: f64| t * t.sin(),
+            (0.0, 12.0 * std::f64::consts::PI),
+            &vp,
+        );
+        assert_eq!(lines.len(), 1);
+    }
 }
 
 #[cfg(test)]

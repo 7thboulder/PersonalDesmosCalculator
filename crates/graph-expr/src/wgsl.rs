@@ -32,12 +32,15 @@ pub fn body(program: &Program) -> Option<String> {
     };
     for op in program.ops() {
         match *op {
-            Op::Const(v) => {
-                if !v.is_finite() {
-                    return None;
-                }
-                stack.push(float(v));
-            }
+            Op::Const(v) => stack.push(if v.is_nan() {
+                "gc_nan()".into()
+            } else if v.is_infinite() {
+                // The largest finite float behaves like infinity in every
+                // comparison a relation makes.
+                if v > 0.0 { "3.4e38" } else { "-3.4e38" }.into()
+            } else {
+                float(v)
+            }),
             Op::Arg(Arg::X) => stack.push("x".into()),
             Op::Arg(Arg::Y) => stack.push("y".into()),
             Op::Neg => {
@@ -53,6 +56,11 @@ pub fn body(program: &Program) -> Option<String> {
                     BinOp::Mul => format!("({a}) * ({b})"),
                     BinOp::Div => format!("({a}) / ({b})"),
                     BinOp::Pow => format!("gc_pow({a}, {b})"),
+                    BinOp::Lt => format!("gc_truth({a}, {b}, ({a}) < ({b}))"),
+                    BinOp::Le => format!("gc_truth({a}, {b}, ({a}) <= ({b}))"),
+                    BinOp::Gt => format!("gc_truth({a}, {b}, ({a}) > ({b}))"),
+                    BinOp::Ge => format!("gc_truth({a}, {b}, ({a}) >= ({b}))"),
+                    BinOp::Eq => format!("gc_truth({a}, {b}, ({a}) == ({b}))"),
                 };
                 push(expr, &mut stack, &mut lines);
             }
@@ -60,6 +68,16 @@ pub fn body(program: &Program) -> Option<String> {
                 let at = stack.len().checked_sub(n as usize)?;
                 let args: Vec<String> = stack.split_off(at);
                 push(call(f, &args)?, &mut stack, &mut lines);
+            }
+            Op::Select => {
+                let otherwise = stack.pop()?;
+                let then = stack.pop()?;
+                let c = stack.pop()?;
+                push(
+                    format!("gc_select({c}, {then}, {otherwise})"),
+                    &mut stack,
+                    &mut lines,
+                );
             }
         }
     }
@@ -127,6 +145,7 @@ fn call(f: Builtin, a: &[String]) -> Option<String> {
         (Max, _) => Some(fold("max", a)),
         (Mean, _) => Some(format!("({}) / {}.0", sum(a), a.len())),
         (Total, _) => Some(sum(a)),
+        (Length, n) => Some(format!("{n}.0")),
         // Factorials, gcd, lcm, nCr, nPr and median have no closed form here.
         _ => None,
     }
@@ -154,8 +173,9 @@ mod tests {
         let rows = [RowInput {
             id: 0,
             latex: latex.to_string(),
+            ..Default::default()
         }];
-        let region = analyze(&rows)[0].region.clone()?;
+        let region = analyze(&rows)[0].region()?.clone();
         body(&region.program)
     }
 

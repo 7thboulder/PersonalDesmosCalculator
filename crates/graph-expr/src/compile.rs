@@ -21,6 +21,9 @@ pub enum Low {
     Neg(Box<Low>),
     Bin(BinOp, Box<Low>, Box<Low>),
     Call(Builtin, Vec<Low>),
+    /// The second value where the first is 1 (true), the third where it is
+    /// 0 (false), and undefined where the condition is.
+    Select(Box<Low>, Box<Low>, Box<Low>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +33,13 @@ pub enum BinOp {
     Mul,
     Div,
     Pow,
+    /// Comparisons give 1 for true and 0 for false, or undefined when
+    /// either side is.
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
 }
 
 impl BinOp {
@@ -40,6 +50,11 @@ impl BinOp {
             BinOp::Mul => a.mul(b),
             BinOp::Div => a.div(b),
             BinOp::Pow => a.pow(b),
+            BinOp::Lt => a.compare(b, |x, y| x < y),
+            BinOp::Le => a.compare(b, |x, y| x <= y),
+            BinOp::Gt => a.compare(b, |x, y| x > y),
+            BinOp::Ge => a.compare(b, |x, y| x >= y),
+            BinOp::Eq => a.compare(b, |x, y| x == y),
         }
     }
 
@@ -50,7 +65,33 @@ impl BinOp {
             BinOp::Mul => a * b,
             BinOp::Div => a / b,
             BinOp::Pow => builtins::pow(a, b),
+            BinOp::Lt => truth(a, b, a < b),
+            BinOp::Le => truth(a, b, a <= b),
+            BinOp::Gt => truth(a, b, a > b),
+            BinOp::Ge => truth(a, b, a >= b),
+            BinOp::Eq => truth(a, b, a == b),
         }
+    }
+}
+
+fn truth(a: f64, b: f64, holds: bool) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if holds {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// What a piecewise branch gives for condition `c`.
+fn select(c: f64, then: f64, otherwise: f64) -> f64 {
+    if c.is_nan() {
+        f64::NAN
+    } else if c != 0.0 {
+        then
+    } else {
+        otherwise
     }
 }
 
@@ -62,6 +103,7 @@ impl Low {
             Low::Neg(a) => a.uses(arg),
             Low::Bin(_, a, b) => a.uses(arg) || b.uses(arg),
             Low::Call(_, args) => args.iter().any(|a| a.uses(arg)),
+            Low::Select(c, a, b) => c.uses(arg) || a.uses(arg) || b.uses(arg),
         }
     }
 
@@ -95,6 +137,12 @@ impl Low {
                     Low::Call(f, args)
                 }
             }
+            Low::Select(c, a, b) => match c.fold() {
+                Low::Const(v) if v.is_nan() => Low::Const(f64::NAN),
+                Low::Const(v) if v != 0.0 => a.fold(),
+                Low::Const(_) => b.fold(),
+                c => Low::Select(Box::new(c), Box::new(a.fold()), Box::new(b.fold())),
+            },
             other => other,
         }
     }
@@ -107,6 +155,8 @@ pub enum Op {
     Neg,
     Bin(BinOp),
     Call(Builtin, u8),
+    /// Pops the else value, the then value and the condition.
+    Select,
 }
 
 /// Deepest evaluation stack a program may need.
@@ -188,6 +238,10 @@ impl Program {
                     top -= n - 1;
                     stack[top - 1] = value;
                 }
+                Op::Select => {
+                    top -= 2;
+                    stack[top - 1] = Interval::select(stack[top - 1], stack[top], stack[top + 1]);
+                }
             }
         }
         stack[0]
@@ -221,6 +275,10 @@ impl Program {
                     let value = f.eval(&stack[top - n..top]);
                     top -= n - 1;
                     stack[top - 1] = value;
+                }
+                Op::Select => {
+                    top -= 2;
+                    stack[top - 1] = select(stack[top - 1], stack[top], stack[top + 1]);
                 }
             }
         }
@@ -257,6 +315,13 @@ fn emit(e: &Low, ops: &mut Vec<Op>) -> usize {
             }
             ops.push(Op::Call(*f, args.len() as u8));
             depth.max(1)
+        }
+        Low::Select(c, a, b) => {
+            let dc = emit(c, ops);
+            let da = emit(a, ops);
+            let db = emit(b, ops);
+            ops.push(Op::Select);
+            dc.max(da + 1).max(db + 2)
         }
     }
 }
@@ -331,6 +396,25 @@ mod tests {
         assert!(!p
             .eval_interval(Interval::new(0.0, 3.0), Interval::new(-2.0, 2.0))
             .excludes_zero());
+    }
+
+    #[test]
+    fn piecewise_selects_and_restricts() {
+        // {x < 0: -x, x}
+        let x = || Box::new(Low::Arg(Arg::X));
+        let e = Low::Select(
+            Box::new(Low::Bin(BinOp::Lt, x(), Box::new(Low::Const(0.0)))),
+            Box::new(Low::Neg(x())),
+            x(),
+        );
+        let p = Program::compile(&e).unwrap();
+        assert_eq!(p.eval(-3.0), 3.0);
+        assert_eq!(p.eval(2.0), 2.0);
+        assert!(p.eval(f64::NAN).is_nan());
+        let bound = p.eval_interval(Interval::new(1.0, 2.0), Interval::ANY);
+        assert_eq!((bound.lo, bound.hi), (1.0, 2.0), "only the else branch");
+        let both = p.eval_interval(Interval::new(-1.0, 2.0), Interval::ANY);
+        assert!(both.contains(1.0) && both.contains(2.0));
     }
 
     #[test]

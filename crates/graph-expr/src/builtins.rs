@@ -49,6 +49,7 @@ pub enum Builtin {
     Mean,
     Median,
     Total,
+    Length,
     Factorial,
 }
 
@@ -108,6 +109,7 @@ const NAMES: &[(&str, Builtin)] = &[
     ("mean", Mean),
     ("median", Median),
     ("total", Total),
+    ("length", Length),
 ];
 
 pub fn from_name(name: &str) -> Option<Builtin> {
@@ -137,13 +139,19 @@ impl Builtin {
         let (min, max) = match self {
             LogBase | Root | Mod | NCr | NPr => (2, 2),
             Arctan | Round => (1, 2),
-            Min | Max | Gcd | Lcm | Mean | Median | Total => (1, usize::MAX),
+            Min | Max | Gcd | Lcm | Mean | Median | Total | Length => (1, usize::MAX),
             _ => (1, 1),
         };
         Arity { min, max }
     }
 
     /// `\sin^{-1}` means arcsin, as in Desmos.
+    /// Functions that take a whole list, such as `total`, rather than being
+    /// applied to each element.
+    pub fn takes_list(self) -> bool {
+        matches!(self, Min | Max | Gcd | Lcm | Mean | Median | Total | Length)
+    }
+
     pub fn inverse(self) -> Option<Builtin> {
         Some(match self {
             Sin => Arcsin,
@@ -229,6 +237,7 @@ impl Builtin {
             Mean => a.iter().sum::<f64>() / a.len() as f64,
             Median => median(a),
             Total => a.iter().sum(),
+            Length => a.len() as f64,
             Factorial => factorial(x),
         }
     }

@@ -7,6 +7,7 @@
   var MQ = MathQuill.getInterface(2);
   var COLORS = ['#c74440', '#2d70b3', '#388c46', '#6042a6', '#fa7e19', '#000000'];
   var DEFAULT_WIDTH = 2.5;
+  var DEFAULT_POINT_SIZE = 9;
   // Seconds for a playing slider to cross its whole range once.
   var PLAY_SECONDS = 8;
   var LONG_PRESS_MS = 450;
@@ -17,7 +18,7 @@
 
   // Options matching how Desmos's editor behaves when typing.
   var MATH_OPTIONS = {
-    spaceBehavesLikeTab: true,
+    spaceBehavesLikeTab: false,
     leftRightIntoCmdGoes: 'up',
     restrictMismatchedBrackets: true,
     sumStartsWithNEquals: true,
@@ -28,8 +29,22 @@
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
-      'gcd lcm nCr nPr'
+      'gcd lcm nCr nPr for'
   };
+
+  // Desmos subscripts hold only letters and digits, so typing anything else
+  // at the end of one, like = or a comma, steps out of it first: t_rack=2
+  // types as t_{rack}=2. MathQuill only does this for superscripts.
+  document.addEventListener('keydown', function (e) {
+    if (e.key.length !== 1 || /[A-Za-z0-9_]/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
+    var root = e.target.closest && e.target.closest('.mq-editable-field');
+    var cursor = root && root.querySelector('.mq-cursor');
+    if (!cursor || cursor.nextElementSibling) return;
+    var block = cursor.parentElement;
+    if (!block.classList.contains('mq-sub')) return;
+    var field = MQ(root);
+    if (field) field.keystroke('Right');
+  }, true);
 
   function send(message) {
     if (window.ipc && window.ipc.postMessage) {
@@ -43,7 +58,9 @@
       rows: rows.map(function (r) {
         return {
           id: r.id, latex: r.field.latex(), color: r.color, hidden: r.hidden,
-          style: r.style, width: r.width, opacity: r.opacity
+          style: r.style, width: r.width, opacity: r.opacity,
+          pointStyle: r.pointStyle, pointSize: r.pointSize,
+          domain: r.domain
         };
       })
     });
@@ -201,6 +218,7 @@
       if (!t) return;
       if (t.dataset.color) menuRow.color = t.dataset.color;
       if (t.dataset.style) menuRow.style = t.dataset.style;
+      if (t.dataset.point) menuRow.pointStyle = t.dataset.point;
       paintRow(menuRow);
       refreshMenu();
       sendRows();
@@ -208,6 +226,11 @@
     menu.querySelector('.width').addEventListener('input', function (e) {
       if (!menuRow) return;
       menuRow.width = Number(e.target.value);
+      sendRows();
+    });
+    menu.querySelector('.point-size').addEventListener('input', function (e) {
+      if (!menuRow) return;
+      menuRow.pointSize = Number(e.target.value);
       sendRows();
     });
     menu.querySelector('.opacity').addEventListener('input', function (e) {
@@ -228,6 +251,16 @@
       b.classList.toggle('chosen', b.dataset.style === menuRow.style);
       b.style.color = menuRow.color;
     });
+    menu.querySelectorAll('[data-point]').forEach(function (b) {
+      b.classList.toggle('chosen', b.dataset.point === menuRow.pointStyle);
+      b.style.color = menuRow.color;
+    });
+    // Point rows get point options, curves line options, as in Desmos.
+    var r = menuRow.result || {};
+    var points = !!r.points;
+    menu.classList.toggle('has-points', points);
+    menu.classList.toggle('has-lines', !!r.lines || !points);
+    menu.querySelector('.point-size').value = String(menuRow.pointSize);
     menu.querySelector('.width').value = String(menuRow.width);
     menu.querySelector('.opacity').value = String(menuRow.opacity);
   }
@@ -286,6 +319,23 @@
     el.classList.toggle('has-value', showValue);
     if (showValue) row.valueMath.latex('=' + r.value);
 
+    var p = r.parameter;
+    el.classList.toggle('has-domain', !!p);
+    if (p) {
+      if (!row.domainShown) {
+        // First time: Desmos's defaults, which the engine applies anyway.
+        row.settingDomain = true;
+        row.domainMin.latex(row.domain ? row.domain[0] : p['default'][0]);
+        row.domainMax.latex(row.domain ? row.domain[1] : p['default'][1]);
+        row.settingDomain = false;
+        row.domainShown = true;
+      }
+      MQ.StaticMath(el.querySelector('.dname')).latex(p.latex);
+      var domainEl = el.querySelector('.domain');
+      domainEl.classList.toggle('bad', !!p.error);
+      domainEl.title = p.error || '';
+    }
+
     var missing = r.missing || [];
     el.classList.toggle('has-missing', missing.length > 0);
     row.missingButtons.innerHTML = '';
@@ -323,6 +373,8 @@
       '<span class="lim max" title="Edit range"></span></div>' +
       '<div class="limits"><input class="lmin" size="5"> ≤ <span class="lname"></span> ≤ ' +
       '<input class="lmax" size="5"> Step: <input class="lstep" size="4"></div>' +
+      '<div class="domain"><span class="bound dmin"></span> ≤ <span class="dname"></span> ≤ ' +
+      '<span class="bound dmax"></span></div>' +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
       '</div>' +
       '<button class="remove" title="Delete">&#x2715;</button>';
@@ -345,6 +397,13 @@
       hidden: false,
       style: 'solid',
       width: DEFAULT_WIDTH,
+      pointStyle: 'filled',
+      pointSize: DEFAULT_POINT_SIZE,
+      domain: null,
+      domainShown: false,
+      settingDomain: false,
+      domainMin: null,
+      domainMax: null,
       opacity: 1,
       slider: { min: -10, max: 10, step: null },
       playing: false,
@@ -376,6 +435,22 @@
     rows.splice(at, 0, row);
     row.field = MQ.MathField(el.querySelector('.field'), options);
     row.valueMath = MQ.StaticMath(el.querySelector('.value-math'));
+    // MathQuill keeps and rewrites the options it is given, so each field
+    // needs an object of its own.
+    var domainOptions = function () {
+      return Object.assign({}, MATH_OPTIONS, {
+        handlers: {
+          edit: function () {
+            if (row.settingDomain || !row.domainMin || !row.domainMax) return;
+            row.domain = [row.domainMin.latex(), row.domainMax.latex()];
+            sendRows();
+          },
+          enter: function () { row.field.focus(); }
+        }
+      });
+    };
+    row.domainMin = MQ.MathField(el.querySelector('.dmin'), domainOptions());
+    row.domainMax = MQ.MathField(el.querySelector('.dmax'), domainOptions());
     if (latex) row.field.latex(latex);
 
     el.addEventListener('focusin', function (e) {

@@ -1,7 +1,7 @@
 use crate::grid::{grid_spacing, line_indices};
 use crate::implicit::{trace_implicit, Field};
-use crate::sample::{sample_curve, Axis};
-use crate::tess::{fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex};
+use crate::sample::{sample_curve, sample_parametric, Axis};
+use crate::tess::{disc, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex};
 use crate::text::TextAtlas;
 use crate::Viewport;
 
@@ -33,6 +33,8 @@ const MINUS: char = '\u{2212}';
 const MAJOR_SPACING_LOGICAL: f64 = 100.0;
 /// Desmos's default line thickness, in logical pixels.
 pub const DEFAULT_CURVE_WIDTH: f32 = 2.5;
+/// Desmos's default point size: the diameter in logical pixels.
+pub const DEFAULT_POINT_SIZE: f32 = 9.0;
 
 const fn rgb(r: u8, g: u8, b: u8) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
@@ -71,6 +73,45 @@ pub struct Implicit<'a> {
     pub style: LineStyle,
 }
 
+/// A parametric curve (x(t), y(t)) for t across `domain`; polar curves are
+/// drawn as these too.
+pub struct Parametric<'a> {
+    pub x: &'a (dyn Fn(f64) -> f64 + Sync),
+    pub y: &'a (dyn Fn(f64) -> f64 + Sync),
+    pub domain: (f64, f64),
+    pub color: [f32; 4],
+    /// Thickness in logical pixels.
+    pub width: f32,
+    pub style: LineStyle,
+}
+
+/// How a point is marked, matching Desmos's point styles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointStyle {
+    #[default]
+    Filled,
+    Open,
+    Cross,
+}
+
+/// Points in world coordinates, all drawn alike.
+pub struct Points<'a> {
+    pub points: &'a [[f64; 2]],
+    pub color: [f32; 4],
+    /// Diameter in logical pixels.
+    pub size: f32,
+    pub style: PointStyle,
+}
+
+/// Everything to plot in one frame.
+#[derive(Default)]
+pub struct Plot<'a> {
+    pub curves: &'a [Curve<'a>],
+    pub parametrics: &'a [Parametric<'a>],
+    pub implicits: &'a [Implicit<'a>],
+    pub points: &'a [Points<'a>],
+}
+
 /// One frame's triangles, in two parts: the renderer draws `vertices` up to
 /// `shade_after` (paper, grid and axes), then any inequality shading, then
 /// the rest (axis numbers and curves), so shading sits over the grid and
@@ -80,15 +121,16 @@ pub struct Scene {
     pub shade_after: usize,
 }
 
-/// Builds the triangles for one frame: paper, grid, axes, axis numbers, then
-/// curves. `scale` is the display's DPI scale (1.0 at 100%, 1.5 at 150%).
-pub fn build_scene(
-    vp: &Viewport,
-    scale: f32,
-    curves: &[Curve],
-    implicits: &[Implicit],
-    text: &mut TextAtlas,
-) -> Scene {
+/// Builds the triangles for one frame: paper, grid, axes, axis numbers,
+/// curves, then points on top. `scale` is the display's DPI scale (1.0 at
+/// 100%, 1.5 at 150%).
+pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas) -> Scene {
+    let Plot {
+        curves,
+        parametrics,
+        implicits,
+        points,
+    } = *plot;
     let mut out = Vec::with_capacity(64 * 1024);
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
     fill_rect(0.0, 0.0, w, h, BACKGROUND, &mut out);
@@ -136,10 +178,14 @@ pub fn build_scene(
 
     // Sampling and tracing are the expensive parts, so every curve runs on
     // its own thread.
-    let (sampled, traced) = std::thread::scope(|scope| {
+    let (sampled, swept, traced) = std::thread::scope(|scope| {
         let curve_jobs: Vec<_> = curves
             .iter()
             .map(|c| scope.spawn(move || sample_curve(c.f, vp, c.axis)))
+            .collect();
+        let parametric_jobs: Vec<_> = parametrics
+            .iter()
+            .map(|p| scope.spawn(move || sample_parametric(p.x, p.y, p.domain, vp)))
             .collect();
         let implicit_jobs: Vec<_> = implicits
             .iter()
@@ -150,7 +196,11 @@ pub fn build_scene(
                 .map(|j| j.join().unwrap_or_default())
                 .collect::<Vec<_>>()
         };
-        (finish(curve_jobs), finish(implicit_jobs))
+        (
+            finish(curve_jobs),
+            finish(parametric_jobs),
+            finish(implicit_jobs),
+        )
     });
     let stroke = |lines: Vec<Vec<[f32; 2]>>, width: f32, style, color, out: &mut Vec<Vertex>| {
         for line in lines {
@@ -160,12 +210,54 @@ pub fn build_scene(
     for (c, lines) in curves.iter().zip(sampled) {
         stroke(lines, c.width, c.style, c.color, &mut out);
     }
+    for (p, lines) in parametrics.iter().zip(swept) {
+        stroke(lines, p.width, p.style, p.color, &mut out);
+    }
     for (i, lines) in implicits.iter().zip(traced) {
         stroke(lines, i.width, i.style, i.color, &mut out);
+    }
+    for set in points {
+        draw_points(vp, scale, set, &mut out);
     }
     Scene {
         vertices: out,
         shade_after,
+    }
+}
+
+fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
+    let r = set.size * scale / 2.0;
+    let (w, h) = (vp.width_px as f32, vp.height_px as f32);
+    for p in set.points {
+        let [sx, sy] = vp.to_screen(p[0], p[1]);
+        let c = [sx as f32, sy as f32];
+        let visible = (-r..=w + r).contains(&c[0]) && (-r..=h + r).contains(&c[1]);
+        if !visible {
+            continue;
+        }
+        match set.style {
+            PointStyle::Filled => disc(c, r, set.color, out),
+            PointStyle::Open => {
+                // A white centre inside a ring of the point's colour.
+                disc(c, r, set.color, out);
+                disc(c, r * 0.55, BACKGROUND, out);
+            }
+            PointStyle::Cross => {
+                let (a, k) = (r * 0.8, (r * 0.45).max(1.0));
+                stroke_polyline(
+                    &[[c[0] - a, c[1] - a], [c[0] + a, c[1] + a]],
+                    k,
+                    set.color,
+                    out,
+                );
+                stroke_polyline(
+                    &[[c[0] - a, c[1] + a], [c[0] + a, c[1] - a]],
+                    k,
+                    set.color,
+                    out,
+                );
+            }
+        }
     }
 }
 
@@ -327,7 +419,11 @@ mod tests {
     fn scene_has_paper_grid_axes_and_curve() {
         let vp = Viewport::new(1000.0, 600.0);
         let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
-        let verts = build_scene(&vp, 1.0, &[curve], &[], &mut TextAtlas::empty()).vertices;
+        let plot = Plot {
+            curves: &[curve],
+            ..Plot::default()
+        };
+        let verts = build_scene(&vp, 1.0, &plot, &mut TextAtlas::empty()).vertices;
         assert!(verts.len() > 1000);
         assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[0]));
         assert!(verts.iter().any(|v| v.color == AXIS));
@@ -344,9 +440,49 @@ mod tests {
             width: DEFAULT_CURVE_WIDTH,
             style: LineStyle::Solid,
         };
-        let scene = build_scene(&vp, 1.0, &[], &[implicit], &mut TextAtlas::empty());
+        let plot = Plot {
+            implicits: &[implicit],
+            ..Plot::default()
+        };
+        let scene = build_scene(&vp, 1.0, &plot, &mut TextAtlas::empty());
         let verts = scene.vertices;
         assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[1]));
+    }
+
+    #[test]
+    fn parametrics_and_points_reach_the_scene() {
+        let vp = Viewport::new(600.0, 600.0);
+        let (cos, sin) = (f64::cos, f64::sin);
+        let parametric = Parametric {
+            x: &cos,
+            y: &sin,
+            domain: (0.0, std::f64::consts::TAU),
+            color: DESMOS_COLORS[2],
+            width: DEFAULT_CURVE_WIDTH,
+            style: LineStyle::Solid,
+        };
+        let points = Points {
+            points: &[[1.0, 2.0], [f64::NAN, 0.0], [1e9, 0.0]],
+            color: DESMOS_COLORS[3],
+            size: DEFAULT_POINT_SIZE,
+            style: PointStyle::Filled,
+        };
+        let plot = Plot {
+            parametrics: &[parametric],
+            points: &[points],
+            ..Plot::default()
+        };
+        let verts = build_scene(&vp, 1.0, &plot, &mut TextAtlas::empty()).vertices;
+        assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[2]));
+        let dots: Vec<_> = verts
+            .iter()
+            .filter(|v| v.color == DESMOS_COLORS[3])
+            .collect();
+        assert!(!dots.is_empty(), "the visible point is drawn");
+        let centre = vp.to_screen(1.0, 2.0);
+        assert!(dots
+            .iter()
+            .all(|v| (v.pos[0] as f64 - centre[0]).abs() < 6.0));
     }
 
     #[test]
@@ -370,7 +506,7 @@ mod tests {
             return;
         }
         let vp = Viewport::new(1000.0, 600.0);
-        let verts = build_scene(&vp, 1.0, &[], &[], &mut text).vertices;
+        let verts = build_scene(&vp, 1.0, &Plot::default(), &mut text).vertices;
         assert!(verts.iter().any(|v| v.color == LABEL));
     }
 }

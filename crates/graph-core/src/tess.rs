@@ -175,7 +175,7 @@ fn join(t: &[[f32; 2]], half: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
     }
 }
 
-fn disc(c: [f32; 2], r: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub(crate) fn disc(c: [f32; 2], r: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
     // Enough segments that the polygon edge stays within a tenth of a pixel.
     let segments = ((std::f32::consts::PI / (1.0 - 0.1 / r.max(0.2)).clamp(0.0, 1.0).acos()).ceil()
         as usize)

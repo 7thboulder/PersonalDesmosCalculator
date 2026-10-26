@@ -3,9 +3,9 @@
 //! reply the panel shows (errors, values, slider offers). Kept free of
 //! window code so it is tested on every platform.
 
-use graph_core::scene::DEFAULT_CURVE_WIDTH;
-use graph_core::{Axis, Curve, Field, Implicit, LineStyle};
-use graph_expr::format::value_latex;
+use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
+use graph_core::{Axis, Curve, Field, Implicit, LineStyle, Parametric, Plot, PointStyle, Points};
+use graph_expr::format::result_latex;
 use graph_expr::{analyze, wgsl, Compare, Interval, Program, RowAnalysis, RowInput, RowKind};
 use graph_render::{Shading, Test};
 use serde_json::{json, Value};
@@ -20,6 +20,24 @@ pub struct GraphCurve {
     pub color: [f32; 4],
     pub width: f32,
     pub style: LineStyle,
+}
+
+/// One parametric or polar curve ready to draw.
+pub struct GraphParametric {
+    pub x: Program,
+    pub y: Program,
+    pub domain: (f64, f64),
+    pub color: [f32; 4],
+    pub width: f32,
+    pub style: LineStyle,
+}
+
+/// A row's points ready to draw.
+pub struct GraphPoints {
+    pub points: Vec<[f64; 2]>,
+    pub color: [f32; 4],
+    pub size: f32,
+    pub style: PointStyle,
 }
 
 /// One implicit equation or inequality ready to draw: its boundary is
@@ -62,7 +80,9 @@ impl Field for RegionField<'_> {
 #[derive(Default)]
 pub struct Engine {
     pub curves: Vec<GraphCurve>,
+    pub parametrics: Vec<GraphParametric>,
     pub regions: Vec<GraphRegion>,
+    pub points: Vec<GraphPoints>,
     /// The LaTeX of every row, in order, as last received.
     pub latex: Vec<String>,
 }
@@ -77,51 +97,70 @@ impl Engine {
             .map(|r| RowInput {
                 id: r["id"].as_u64().unwrap_or(0),
                 latex: r["latex"].as_str().unwrap_or("").to_owned(),
+                domain: match (r["domain"][0].as_str(), r["domain"][1].as_str()) {
+                    (Some(lo), Some(hi)) => Some([lo.to_owned(), hi.to_owned()]),
+                    _ => None,
+                },
             })
             .collect();
         let results = analyze(&inputs);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
-        let visible = |row: &&Value| !row["hidden"].as_bool().unwrap_or(false);
-        self.regions = rows
-            .iter()
-            .zip(&results)
-            .filter(|(row, _)| visible(row))
-            .filter_map(|(row, result)| {
-                let region = result.region.as_ref()?;
-                Some(GraphRegion {
-                    shader: wgsl::body(&region.program),
-                    program: region.program.clone(),
-                    compare: region.compare,
-                    color: style_color(row),
-                    width: style_width(row),
-                    style: style_line(row),
-                })
-            })
-            .collect();
-        self.curves = rows
-            .iter()
-            .zip(&results)
-            .filter(|(row, _)| !row["hidden"].as_bool().unwrap_or(false))
-            .filter_map(|(row, result)| {
-                let curve = result.curve.as_ref()?;
-                Some(GraphCurve {
+        self.curves.clear();
+        self.parametrics.clear();
+        self.regions.clear();
+        self.points.clear();
+        for (row, result) in rows.iter().zip(&results) {
+            if row["hidden"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            let (color, width, style) = (style_color(row), style_width(row), style_line(row));
+            for curve in &result.curves {
+                self.curves.push(GraphCurve {
                     program: curve.program.clone(),
                     axis: match curve.axis {
                         graph_expr::Axis::X => Axis::X,
                         graph_expr::Axis::Y => Axis::Y,
                     },
-                    color: style_color(row),
-                    width: style_width(row),
-                    style: style_line(row),
-                })
-            })
-            .collect();
+                    color,
+                    width,
+                    style,
+                });
+            }
+            for p in &result.parametrics {
+                self.parametrics.push(GraphParametric {
+                    x: p.x.clone(),
+                    y: p.y.clone(),
+                    domain: p.domain,
+                    color,
+                    width,
+                    style,
+                });
+            }
+            for region in &result.regions {
+                self.regions.push(GraphRegion {
+                    shader: wgsl::body(&region.program),
+                    program: region.program.clone(),
+                    compare: region.compare,
+                    color,
+                    width,
+                    style,
+                });
+            }
+            if !result.points.is_empty() {
+                self.points.push(GraphPoints {
+                    points: result.points.clone(),
+                    color,
+                    size: point_size(row),
+                    style: point_style(row),
+                });
+            }
+        }
         Value::Array(results.iter().map(row_json).collect())
     }
 
     /// Calls `draw` with everything to plot, in the form graph-core takes.
-    pub fn with_plot<R>(&self, draw: impl FnOnce(&[Curve], &[Implicit]) -> R) -> R {
+    pub fn with_plot<R>(&self, draw: impl FnOnce(&Plot) -> R) -> R {
         let fns: Vec<_> = self
             .curves
             .iter()
@@ -137,6 +176,24 @@ impl Engine {
                 color: c.color,
                 width: c.width,
                 style: c.style,
+            })
+            .collect();
+        let sweeps: Vec<_> = self
+            .parametrics
+            .iter()
+            .map(|p| (move |t: f64| p.x.eval(t), move |t: f64| p.y.eval(t)))
+            .collect();
+        let parametrics: Vec<Parametric> = self
+            .parametrics
+            .iter()
+            .zip(&sweeps)
+            .map(|(p, (x, y))| Parametric {
+                x,
+                y,
+                domain: p.domain,
+                color: p.color,
+                width: p.width,
+                style: p.style,
             })
             .collect();
         // Only the boundaries the GPU cannot draw are traced here.
@@ -156,7 +213,28 @@ impl Engine {
                 style: r.style,
             })
             .collect();
-        draw(&curves, &implicits)
+        let points: Vec<Points> = self
+            .points
+            .iter()
+            .map(|p| Points {
+                points: &p.points,
+                color: p.color,
+                size: p.size,
+                style: p.style,
+            })
+            .collect();
+        draw(&Plot {
+            curves: &curves,
+            parametrics: &parametrics,
+            implicits: &implicits,
+            points: &points,
+        })
+    }
+
+    /// How many things are drawn, for the smoke test's report.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn drawn(&self) -> usize {
+        self.curves.len() + self.parametrics.len() + self.regions.len() + self.points.len()
     }
 
     /// What the GPU draws for this frame: the fill inside every inequality
@@ -217,6 +295,20 @@ fn style_line(row: &Value) -> LineStyle {
     }
 }
 
+fn point_size(row: &Value) -> f32 {
+    row["pointSize"]
+        .as_f64()
+        .map_or(DEFAULT_POINT_SIZE, |s| s.clamp(1.0, 40.0) as f32)
+}
+
+fn point_style(row: &Value) -> PointStyle {
+    match row["pointStyle"].as_str() {
+        Some("open") => PointStyle::Open,
+        Some("cross") => PointStyle::Cross,
+        _ => PointStyle::Filled,
+    }
+}
+
 fn row_json(r: &RowAnalysis) -> Value {
     let (kind, name) = match &r.kind {
         RowKind::Empty => ("empty", None),
@@ -232,10 +324,21 @@ fn row_json(r: &RowAnalysis) -> Value {
         "kind": kind,
         "name": name,
         "error": r.error,
-        "value": r.value.map(value_latex),
+        "value": r.value.as_ref().map(result_latex),
         "slider": r.slider.filter(|v| v.is_finite()),
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
-        "graphed": r.curve.is_some() || r.region.is_some(),
+        "graphed": r.graphed(),
+        "points": !r.points.is_empty(),
+        "lines": !(r.curves.is_empty() && r.parametrics.is_empty() && r.regions.is_empty()),
+        "parameter": r.parameter.as_ref().map(|p| json!({
+            "name": p.name,
+            "latex": name_latex(p.name),
+            "default": match p.name {
+                "theta" => ["0", "12\\pi"],
+                _ => ["0", "1"],
+            },
+            "error": p.error,
+        })),
     })
 }
 
@@ -308,7 +411,7 @@ mod tests {
         assert_eq!(reply[2]["graphed"], true, "hidden rows still analyze");
         assert_eq!(reply[3]["missing"][0]["name"], "m");
         assert_eq!(reply[4]["value"], "2");
-        engine.with_plot(|curves, _| assert_eq!((curves[0].f)(1.5), 3.0));
+        engine.with_plot(|plot| assert_eq!((plot.curves[0].f)(1.5), 3.0));
     }
 
     #[test]
@@ -334,7 +437,8 @@ mod tests {
 
         // A factorial has no GPU form, so that row is traced on the CPU.
         assert!(engine.regions[2].shader.is_none());
-        engine.with_plot(|curves, implicits| {
+        engine.with_plot(|plot| {
+            let (curves, implicits) = (plot.curves, plot.implicits);
             assert!(curves.is_empty());
             assert_eq!(implicits.len(), 1, "only what the GPU cannot draw");
             // x! > y at (3, 4): 3! - 4 = 2.
@@ -348,7 +452,36 @@ mod tests {
             {"id": 1, "latex": "x^2+y^2<4", "color": "#c74440", "style": "dashed"},
         ]));
         assert_eq!(engine.shadings([-10.0, 10.0], 0.02, 1.0)[0].line_px, 0.0);
-        engine.with_plot(|_, implicits| assert_eq!(implicits.len(), 1));
+        engine.with_plot(|plot| assert_eq!(plot.implicits.len(), 1));
+    }
+
+    #[test]
+    fn parametrics_points_and_lists() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "\\left(\\cos t,\\sin t\\right)", "domain": ["0", "2\\pi"]},
+            {"id": 2, "latex": "r=\\theta"},
+            {"id": 3, "latex": "\\left[\\left(1,2\\right),\\left(3,4\\right)\\right]", "pointStyle": "open", "pointSize": 12},
+            {"id": 4, "latex": "y=\\left[1,2\\right]x"},
+            {"id": 5, "latex": "\\left[1,2,3\\right]^2"},
+        ]));
+        assert_eq!(engine.parametrics.len(), 2);
+        assert!((engine.parametrics[0].domain.1 - std::f64::consts::TAU).abs() < 1e-12);
+        assert_eq!(reply[0]["parameter"]["name"], "t");
+        assert_eq!(reply[1]["parameter"]["default"][1], "12\\pi");
+        assert_eq!(engine.points.len(), 1);
+        assert_eq!(engine.points[0].points.len(), 2);
+        assert_eq!(engine.points[0].style, PointStyle::Open);
+        assert_eq!(engine.points[0].size, 12.0);
+        assert_eq!(reply[2]["points"], true);
+        assert_eq!(reply[2]["lines"], false);
+        assert_eq!(engine.curves.len(), 2, "one curve per list element");
+        assert_eq!(reply[4]["value"], "\\left[1,4,9\\right]");
+        assert_eq!(engine.drawn(), 5);
+        engine.with_plot(|plot| {
+            assert_eq!(plot.parametrics.len(), 2);
+            assert_eq!(plot.points[0].points.len(), 2);
+        });
     }
 
     #[test]

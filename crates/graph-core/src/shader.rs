@@ -22,7 +22,20 @@ fn gc_pow(x: f32, y: f32) -> f32 {
     if (abs(inv - ri) < 1e-4 && abs(gc_mod(ri, 2.0) - 1.0) < 0.5) {
         return -pow(-x, y);
     }
-    return bitcast<f32>(0x7fc00000u);
+    return gc_nan();
+}
+
+fn gc_nan() -> f32 { return bitcast<f32>(0x7fc00000u); }
+
+// Comparisons are 1 or 0, and undefined when either side is.
+fn gc_truth(a: f32, b: f32, holds: bool) -> f32 {
+    if (a != a || b != b) { return gc_nan(); }
+    return select(0.0, 1.0, holds);
+}
+
+fn gc_select(c: f32, t: f32, e: f32) -> f32 {
+    if (c != c) { return gc_nan(); }
+    return select(e, t, c != 0.0);
 }
 
 fn gc_sign(x: f32) -> f32 { return sign(x); }
