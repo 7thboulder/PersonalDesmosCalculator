@@ -4,6 +4,7 @@
 pub mod analyze;
 pub mod ast;
 pub mod builtins;
+pub mod calculus;
 pub mod compile;
 pub mod format;
 pub mod interval;

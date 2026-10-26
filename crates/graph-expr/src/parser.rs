@@ -2,7 +2,7 @@
 //! implicit multiplication, `\sin x` without brackets, `\sin^2 x`,
 //! `\sin^{-1}x`, `\log_2 x`, subscripted names and so on.
 
-use crate::ast::{Condition, Coord, Expr, Relation, Statement};
+use crate::ast::{Condition, Coord, Expr, Relation, Repeat, Statement};
 use crate::builtins::{self, Builtin};
 use crate::lexer::{tokenize, Tok};
 
@@ -12,6 +12,7 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
         toks,
         pos: 0,
         pipe_depth: 0,
+        integral_depth: 0,
     };
     let statement = p.statement()?;
     match p.peek() {
@@ -20,14 +21,15 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
     }
 }
 
-const LATER_CALCULUS: &str = "Sums, products, integrals and derivatives arrive in a later version";
-
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
     /// How many bare `|` absolute values are open, so a closing `|` is not
     /// mistaken for the start of another factor.
     pipe_depth: usize,
+    /// How many integrals are open, so the `dx` that ends one is not read
+    /// as a product.
+    integral_depth: usize,
 }
 
 fn unexpected(tok: &Tok) -> String {
@@ -157,7 +159,17 @@ impl Parser {
         }
     }
 
+    /// Whether the next tokens are the `dx` that closes an integral.
+    fn at_differential(&self) -> bool {
+        self.integral_depth > 0
+            && matches!(self.toks.get(self.pos), Some(Tok::Letter(d)) if d == "d")
+            && matches!(self.toks.get(self.pos + 1), Some(Tok::Letter(_)))
+    }
+
     fn starts_factor(&self) -> bool {
+        if self.at_differential() {
+            return false;
+        }
         match self.peek() {
             // `for` ends the body of a list comprehension.
             Some(Tok::OpName(n)) if n == "for" => false,
@@ -172,6 +184,9 @@ impl Parser {
                 | Tok::LBrace
                 | Tok::LBracket
                 | Tok::LCurly
+                | Tok::Sum
+                | Tok::Prod
+                | Tok::Int
                 | Tok::Unsupported(_),
             ) => true,
             Some(Tok::Pipe) => self.pipe_depth == 0,
@@ -238,7 +253,7 @@ impl Parser {
                     _ => return Err("Only .x, .y and .length can follow a '.'".into()),
                 };
             } else if self.peek() == Some(&Tok::Prime) {
-                return Err(LATER_CALCULUS.into());
+                return Err("Only functions can be differentiated with ', like f'(x)".into());
             } else {
                 return Ok(e);
             }
@@ -251,8 +266,20 @@ impl Parser {
             Tok::Num(v) => Ok(Expr::Num(v)),
             Tok::Letter(letter) => {
                 let name = self.subscripted(letter)?;
-                if self.peek() == Some(&Tok::Prime) {
-                    return Err(LATER_CALCULUS.into());
+                let mut primes = 0;
+                while self.eat(&Tok::Prime) {
+                    primes += 1;
+                }
+                if primes > 0 {
+                    if self.peek() != Some(&Tok::LParen) {
+                        return Err(format!(
+                            "{name}{} needs an argument, like {name}{}(x)",
+                            "'".repeat(primes as usize),
+                            "'".repeat(primes as usize)
+                        ));
+                    }
+                    let args = self.paren_args()?;
+                    return Ok(Expr::Prime(name, primes, args));
                 }
                 if self.peek() == Some(&Tok::LParen) {
                     let args = self.paren_args()?;
@@ -268,8 +295,14 @@ impl Parser {
                 self.expect(&Tok::LBrace)?;
                 let den = self.expr()?;
                 self.expect(&Tok::RBrace)?;
-                if is_derivative(&num, &den) {
-                    return Err(LATER_CALCULUS.into());
+                if let Some(var) = derivative_variable(&num, &den) {
+                    if self.peek().is_none()
+                        || !(self.starts_factor() || self.peek() == Some(&Tok::Minus))
+                    {
+                        return Err(format!("d/d{var} needs something to differentiate"));
+                    }
+                    let body = self.term()?;
+                    return Ok(Expr::Derivative(var, Box::new(body)));
                 }
                 Ok(Expr::bin(Expr::Div, num, den))
             }
@@ -322,12 +355,81 @@ impl Parser {
             }
             Tok::LBracket => self.list(),
             Tok::LCurly => self.piecewise(),
-            Tok::Unsupported(name) => match name.as_str() {
-                "sum" | "prod" | "int" => Err(LATER_CALCULUS.into()),
-                _ => Err(format!("'\\{name}' isn't supported yet")),
-            },
+            Tok::Sum => self.repeat(Repeat::Sum),
+            Tok::Prod => self.repeat(Repeat::Product),
+            Tok::Int => self.integral(),
+            Tok::Unsupported(name) => Err(format!("'\\{name}' isn't supported yet")),
             other => Err(unexpected(&other)),
         }
+    }
+
+    /// `\sum_{n=1}^{10} body` after the `\sum`. The body runs over the
+    /// product that follows, stopping at a `+` or `-`, as in Desmos.
+    fn repeat(&mut self, kind: Repeat) -> Result<Expr, String> {
+        let what = if kind == Repeat::Sum {
+            "sum"
+        } else {
+            "product"
+        };
+        let bounds_error = || format!("A {what} needs bounds, like n=1 below and 10 above");
+        if !self.eat(&Tok::Underscore) || !self.eat(&Tok::LBrace) {
+            return Err(bounds_error());
+        }
+        let var = match self.next() {
+            Some(Tok::Letter(l)) => self.subscripted(l)?,
+            _ => return Err(bounds_error()),
+        };
+        if !self.eat(&Tok::Eq) {
+            return Err(bounds_error());
+        }
+        let lo = self.expr()?;
+        self.expect(&Tok::RBrace)?;
+        if !self.eat(&Tok::Caret) {
+            return Err(bounds_error());
+        }
+        let hi = self.script()?;
+        if self.peek().is_none() || !(self.starts_factor() || self.peek() == Some(&Tok::Minus)) {
+            return Err(format!("This {what} needs something to add up"));
+        }
+        let body = self.term()?;
+        Ok(Expr::Repeat(
+            kind,
+            var,
+            Box::new(lo),
+            Box::new(hi),
+            Box::new(body),
+        ))
+    }
+
+    /// `\int_a^b body dx` after the `\int`. The body runs to the `dx`.
+    fn integral(&mut self) -> Result<Expr, String> {
+        let bounds_error = || "An integral needs bounds, like 0 below and 1 above".to_string();
+        if !self.eat(&Tok::Underscore) {
+            return Err(bounds_error());
+        }
+        let lo = self.script()?;
+        if !self.eat(&Tok::Caret) {
+            return Err(bounds_error());
+        }
+        let hi = self.script()?;
+        self.integral_depth += 1;
+        let body = if self.at_differential() {
+            Ok(Expr::Num(1.0))
+        } else {
+            self.expr()
+        };
+        self.integral_depth -= 1;
+        let body = body?;
+        let var = match (self.next(), self.next()) {
+            (Some(Tok::Letter(d)), Some(Tok::Letter(v))) if d == "d" => self.subscripted(v)?,
+            _ => return Err("An integral ends with the variable, like dx".into()),
+        };
+        Ok(Expr::Integral(
+            var,
+            Box::new(lo),
+            Box::new(hi),
+            Box::new(body),
+        ))
     }
 
     /// The rest of a list after its `[`: `]`, `1, 2]`, `1...10]`,
@@ -550,9 +652,18 @@ fn indexable(e: &Expr) -> bool {
     )
 }
 
-fn is_derivative(num: &Expr, den: &Expr) -> bool {
-    num == &Expr::Var("d".into())
-        && matches!(den, Expr::Mul(a, b) if **a == Expr::Var("d".into()) && matches!(**b, Expr::Var(_)))
+/// The variable of `\frac{d}{dx}`, if this fraction is one.
+fn derivative_variable(num: &Expr, den: &Expr) -> Option<String> {
+    if num != &Expr::Var("d".into()) {
+        return None;
+    }
+    match den {
+        Expr::Mul(a, b) if **a == Expr::Var("d".into()) => match &**b {
+            Expr::Var(v) => Some(v.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -672,6 +783,37 @@ mod tests {
         assert_eq!(branches[0].0.relations, vec![Relation::Lt, Relation::Lt]);
         assert_eq!(branches[0].1, n(1.0));
         assert!(matches!(parse("-1<y<x").unwrap(), Statement::Chain(_)));
+    }
+
+    #[test]
+    fn calculus() {
+        assert_eq!(
+            e("\\frac{d}{dx}x^2"),
+            Expr::Derivative("x".into(), Box::new(pow(v("x"), n(2.0))))
+        );
+        assert_eq!(
+            e("f''\\left(x\\right)"),
+            Expr::Prime("f".into(), 2, vec![v("x")])
+        );
+        assert_eq!(
+            e("\\sum_{n=1}^{10}n^2"),
+            Expr::Repeat(
+                Repeat::Sum,
+                "n".into(),
+                Box::new(n(1.0)),
+                Box::new(n(10.0)),
+                Box::new(pow(v("n"), n(2.0)))
+            )
+        );
+        // The body of a sum stops at +.
+        assert!(matches!(e("\\sum_{n=1}^{3}n+1"), Expr::Add(..)));
+        // The body of an integral runs to the dx, + and all.
+        let Expr::Integral(var, _, _, body) = e("\\int_{0}^{x}t^2+1dt") else {
+            panic!()
+        };
+        assert_eq!(var, "t");
+        assert!(matches!(*body, Expr::Add(..)));
+        assert!(parse("\\int_{0}^{1}t^2").is_err(), "no dt");
     }
 
     #[test]

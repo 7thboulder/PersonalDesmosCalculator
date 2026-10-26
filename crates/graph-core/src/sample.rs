@@ -28,41 +28,125 @@ pub enum Axis {
 /// more than a pixel vertically, and breaks the line at undefined points and
 /// at jumps that survive full refinement (for example tan x or floor x), so
 /// asymptotes are not joined by false vertical strokes.
-pub fn sample_explicit(f: &dyn Fn(f64) -> f64, vp: &Viewport) -> Vec<Vec<[f32; 2]>> {
+pub fn sample_explicit(f: &(dyn Fn(f64) -> f64 + Sync), vp: &Viewport) -> Vec<Vec<[f32; 2]>> {
     sample_curve(f, vp, Axis::X)
 }
 
 /// Samples a curve that is a function of x or of y. For `Axis::Y` the same
 /// algorithm runs along screen rows instead of columns.
-pub fn sample_curve(f: &dyn Fn(f64) -> f64, vp: &Viewport, axis: Axis) -> Vec<Vec<[f32; 2]>> {
+///
+/// Expensive curves (an integral, a long sum) are split into strips that
+/// are sampled on separate threads and stitched back together.
+pub fn sample_curve(
+    f: &(dyn Fn(f64) -> f64 + Sync),
+    vp: &Viewport,
+    axis: Axis,
+) -> Vec<Vec<[f32; 2]>> {
     let steps = match axis {
         Axis::X => vp.width_px,
         Axis::Y => vp.height_px,
     };
+    let steps = steps.ceil().max(1.0) as usize;
+    let strips = strip_count(f, vp, axis, steps);
+    let pieces: Vec<Vec<Vec<[f32; 2]>>> = if strips == 1 {
+        vec![sample_strip(f, vp, axis, 0, steps)]
+    } else {
+        let bounds: Vec<usize> = (0..=strips).map(|i| i * steps / strips).collect();
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = bounds
+                .windows(2)
+                .map(|w| {
+                    let (from, to) = (w[0], w[1]);
+                    scope.spawn(move || sample_strip(f, vp, axis, from, to))
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|j| j.join().unwrap_or_default())
+                .collect()
+        })
+    };
+    // Each strip's first piece continues the previous strip's last one; an
+    // empty first piece means the line broke right at the seam.
+    let mut joined: Vec<Vec<[f32; 2]>> = vec![Vec::new()];
+    for strip in pieces {
+        let mut strip = strip.into_iter();
+        if let Some(head) = strip.next() {
+            let last = joined.last_mut().expect("never empty");
+            let skip = usize::from(!head.is_empty() && last.last() == head.first());
+            last.extend_from_slice(&head[skip..]);
+        }
+        joined.extend(strip);
+    }
+    joined
+        .into_iter()
+        .filter(|line| line.len() >= 2)
+        .map(|line| simplify(&line, SIMPLIFY_PX))
+        .collect()
+}
+
+/// How many strips to sample in parallel: one unless a few trial
+/// evaluations say the whole curve would take over two milliseconds.
+fn strip_count(f: &(dyn Fn(f64) -> f64 + Sync), vp: &Viewport, axis: Axis, steps: usize) -> usize {
+    const TRIALS: usize = 8;
+    const PARALLEL_ABOVE: std::time::Duration = std::time::Duration::from_millis(2);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if threads == 1 || steps < 64 {
+        return 1;
+    }
+    let first = vp.to_world(0.5, 0.5);
+    // One untimed call so cold caches do not count.
+    std::hint::black_box(f(match axis {
+        Axis::X => first[0],
+        Axis::Y => first[1],
+    }));
+    let start = std::time::Instant::now();
+    for i in 0..TRIALS {
+        let px = (i * steps / TRIALS) as f64 + 0.5;
+        let t = match axis {
+            Axis::X => vp.to_world(px, 0.0)[0],
+            Axis::Y => vp.to_world(0.0, px)[1],
+        };
+        std::hint::black_box(f(t));
+    }
+    // Refinement roughly doubles the evaluations of a plain column pass.
+    let estimate = start.elapsed() * (2 * steps / TRIALS) as u32;
+    if estimate < PARALLEL_ABOVE {
+        1
+    } else {
+        threads.min(16)
+    }
+}
+
+/// Samples screen columns (or rows) `from..=to` into raw, unsimplified
+/// pieces. The first piece is joined to whatever came before `from`.
+fn sample_strip(
+    f: &dyn Fn(f64) -> f64,
+    vp: &Viewport,
+    axis: Axis,
+    from: usize,
+    to: usize,
+) -> Vec<Vec<[f32; 2]>> {
     let mut s = Sampler {
         f,
         vp,
         axis,
-        lines: Vec::new(),
-        current: Vec::new(),
+        pieces: vec![Vec::new()],
     };
-    let steps = steps.ceil().max(1.0) as usize;
-    let mut prev = s.eval_at_px(0.0);
-    for i in 1..=steps {
+    let mut prev = s.eval_at_px(from as f64);
+    for i in from + 1..=to {
         let next = s.eval_at_px(i as f64);
         s.segment(prev, next, 0);
         prev = next;
     }
-    s.flush();
-    s.lines
+    s.pieces
 }
 
 struct Sampler<'a> {
     f: &'a dyn Fn(f64) -> f64,
     vp: &'a Viewport,
     axis: Axis,
-    lines: Vec<Vec<[f32; 2]>>,
-    current: Vec<[f32; 2]>,
+    /// Polylines so far; the last one is still being extended.
+    pieces: Vec<Vec<[f32; 2]>>,
 }
 
 /// One evaluation: `t` is the input (x for `Axis::X`), `v` the output, and
@@ -159,17 +243,19 @@ impl Sampler<'_> {
 
     fn extend(&mut self, s: Sample) {
         let p = self.screen(s);
-        if self.current.last() != Some(&p) {
-            self.current.push(p);
+        let current = self.pieces.last_mut().expect("never empty");
+        if current.last() != Some(&p) {
+            current.push(p);
         }
     }
 
+    /// Ends the current line; the next point starts a new one. A break
+    /// before anything is drawn leaves the first piece empty, which tells
+    /// the stitcher not to join this strip to the one before.
     fn flush(&mut self) {
-        if self.current.len() >= 2 {
-            let line = simplify(&self.current, SIMPLIFY_PX);
-            self.lines.push(line);
+        if self.pieces.len() == 1 || !self.pieces.last().expect("never empty").is_empty() {
+            self.pieces.push(Vec::new());
         }
-        self.current.clear();
     }
 }
 
@@ -366,6 +452,26 @@ pub(crate) fn simplify(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
 #[cfg(test)]
 mod parametric_tests {
     use super::*;
+
+    #[test]
+    fn slow_curves_sampled_in_strips_match_fast_ones() {
+        let vp = Viewport::new(800.0, 600.0);
+        let fast = |x: f64| (x * 0.7).tan().max(-2.0) + (x.abs() - 3.0).sqrt();
+        let slow = |x: f64| {
+            // Long enough that the sampler splits the curve into strips.
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_micros(20) {}
+            fast(x)
+        };
+        assert!(
+            strip_count(&slow, &vp, Axis::X, 800) > 1
+                || std::thread::available_parallelism().map_or(1, |n| n.get()) == 1
+        );
+        assert_eq!(
+            sample_curve(&fast, &vp, Axis::X),
+            sample_curve(&slow, &vp, Axis::X)
+        );
+    }
 
     #[test]
     fn circle_is_one_smooth_closed_line() {

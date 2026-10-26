@@ -24,6 +24,10 @@ on the right. What you type is graphed as you type it:
   `length`, `min`, `max` and friends. A list in a curve draws one curve per
   element, as `y = [1, 2, 3]x` does in Desmos.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
+- Calculus: `d/dx sin(x^2)`, `f'(x)` and `f''(x)`, sums and products
+  (type `sum` or `prod`, as in Desmos), and integrals such as
+  `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Derivatives are
+  exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
@@ -34,7 +38,7 @@ on the right. What you type is graphed as you type it:
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: derivatives, sums, products and integrals; tables; points of interest,
+Not yet: tables; points of interest,
 trace and draggable points; saving and opening graphs. Those are the rest of
 Phase 3. Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a

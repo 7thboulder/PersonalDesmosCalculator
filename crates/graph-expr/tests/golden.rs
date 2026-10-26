@@ -240,8 +240,49 @@ fn implicit_equations_and_inequalities() {
 }
 
 #[test]
-fn not_yet_supported_is_labelled() {
-    assert_eq!(one("\\frac{d}{dx}x^2").kind, RowKind::Error);
+fn calculus() {
+    let pi = std::f64::consts::PI;
+    // Derivatives, symbolic and evaluated wherever x is.
+    assert!(close(curve_at(&["\\frac{d}{dx}x^3"], 2.0), 12.0));
+    assert!(close(
+        curve_at(&["y=\\frac{d}{dx}\\sin\\left(x^2\\right)"], 1.5),
+        3.0 * (2.25f64).cos()
+    ));
+    let all = rows(&[
+        "f\\left(x\\right)=x^3-2x",
+        "y=f'\\left(x\\right)",
+        "f''\\left(2\\right)",
+        "\\frac{d}{dx}f\\left(x\\right)",
+    ]);
+    assert!(close(all[1].curve().unwrap().program.eval(2.0), 10.0));
+    assert!(close(all[2].number().unwrap(), 12.0));
+    assert!(close(all[3].curve().unwrap().program.eval(1.0), 1.0));
+    // With respect to a slider: d/da of a x² is x².
+    assert!(close(curve_at(&["a=3", "\\frac{d}{da}ax^2"], 2.0), 4.0));
+
+    // Sums and products expand, so they graph like anything else.
+    assert!(close(value(&["\\sum_{n=1}^{100}n"]), 5050.0));
+    assert!(close(value(&["\\prod_{n=1}^{5}n"]), 120.0));
+    assert!(
+        close(value(&["\\sum_{n=1}^{3}n+1"]), 7.0),
+        "the body stops at +"
+    );
+    let taylor = "y=\\sum_{n=0}^{10}\\frac{x^n}{n!}";
+    assert!((curve_at(&[taylor], 1.0) - std::f64::consts::E).abs() < 1e-7);
+
+    // Integrals, with constant or moving bounds, finite or not.
+    assert!(close(value(&["\\int_{0}^{\\pi}\\sin tdt"]), 2.0));
+    assert!(close(value(&["\\int_{0}^{\\infty}e^{-t}dt"]), 1.0));
+    assert!(close(value(&["\\int_{0}^{1}t^2+1dt"]), 4.0 / 3.0));
+    let area = "y=\\int_{0}^{x}\\cos tdt";
+    assert!(close(curve_at(&[area], pi / 2.0), 1.0));
+    // The derivative of an accumulation is the integrand.
+    assert!(close(
+        curve_at(&["\\frac{d}{dx}\\int_{0}^{x}t^2dt"], 3.0),
+        9.0
+    ));
+    // A double integral.
+    assert!(close(value(&["\\int_{0}^{1}\\int_{0}^{2}stdsdt"]), 1.0));
 }
 
 #[test]

@@ -34,6 +34,21 @@ pub enum Expr {
     /// value for everything else. A branch without a value is worth 1, so
     /// `{x > 0}` restricts whatever it multiplies.
     Piecewise(Vec<(Condition, Expr)>, Option<Box<Expr>>),
+    /// `\frac{d}{dx} body`: the derivative of `body` with respect to `x`,
+    /// at the current value of `x`.
+    Derivative(String, Box<Expr>),
+    /// `f''(a)`: function `f` differentiated twice, at `a`.
+    Prime(String, u32, Vec<Expr>),
+    /// `\sum_{n=1}^{10} body` or `\prod`: the variable, the bounds and the body.
+    Repeat(Repeat, String, Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `\int_a^b body dt`: the variable, the bounds and the body.
+    Integral(String, Box<Expr>, Box<Expr>, Box<Expr>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    Sum,
+    Product,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +118,21 @@ impl Expr {
                     b.visit_names(f);
                 }
                 c.visit_names(f);
+            }
+            Expr::Derivative(_, body) => body.visit_names(f),
+            Expr::Prime(name, _, args) => {
+                f(name, true);
+                args.iter().for_each(|a| a.visit_names(f));
+            }
+            Expr::Repeat(_, var, lo, hi, body) | Expr::Integral(var, lo, hi, body) => {
+                lo.visit_names(f);
+                hi.visit_names(f);
+                // The variable is bound inside the body.
+                body.visit_names(&mut |n, applied| {
+                    if applied || n != var {
+                        f(n, applied)
+                    }
+                });
             }
             Expr::Comprehension(body, generators) => {
                 // The comprehension's own variables are not free names.
