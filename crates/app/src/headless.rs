@@ -402,6 +402,22 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
     // CPU, so its GPU time says nothing about a real graphics card. There the
     // check is on the app's own work: analysis and scene building.
     let software = gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu;
+    if software {
+        // The software rasterizer shares the CPU with the app, so analysis
+        // and building are timed again on their own, with no frames being
+        // drawn alongside them.
+        cpu_times.clear();
+        for i in 0..frames {
+            let a = -10.0 + 20.0 * i as f64 / frames.max(2) as f64;
+            latex[0] = format!("a={a:.2}");
+            let start = Instant::now();
+            engine.update(&rows(&latex));
+            let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+            cpu_times.push(start.elapsed());
+            std::hint::black_box(scene);
+        }
+        cpu_times.sort();
+    }
     let cpu_p95 = cpu_times[(cpu_times.len() * 95 / 100).min(cpu_times.len() - 1)];
     let judged = if software { cpu_p95 } else { p95 };
     let pass = judged <= BUDGET;
