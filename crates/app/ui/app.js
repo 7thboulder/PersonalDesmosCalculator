@@ -51,9 +51,22 @@
         return;
       }
     }
-    if (!cursor || cursor.nextElementSibling) return;
+    if (!cursor) return;
     var block = cursor.parentElement;
-    if (!block.classList.contains('mq-sub')) return;
+    // An integral's bounds take any expression, as in Desmos, but MathQuill
+    // keeps them in a subscript and superscript, which + - = < > leave.
+    // Writing the character puts it in the bound instead.
+    if (block.closest('.mq-int') && (block.classList.contains('mq-sub') ||
+        block.classList.contains('mq-sup-inner')) && '+-=<>'.indexOf(e.key) >= 0) {
+      var bound = MQ(root);
+      if (bound) {
+        e.preventDefault();
+        e.stopPropagation();
+        bound.write(e.key);
+      }
+      return;
+    }
+    if (cursor.nextElementSibling || !block.classList.contains('mq-sub')) return;
     var field = MQ(root);
     if (field) field.keystroke('Right');
   }, true);
@@ -1349,6 +1362,7 @@
     ['LISTS', [
       ['\\left[1,2,3\\right],\\ \\left[1...10\\right]', 'Lists and ranges'],
       ['L\\left[2\\right],\\ L\\left[2...4\\right]', 'Element (from 1) and slice'],
+      ['L\\left[L>0\\right]', 'Filter: the elements where a condition holds'],
       ['\\left[n^2\\ \\operatorname{for}\\ n=\\left[1...5\\right]\\right]', 'Comprehension'],
       ['\\operatorname{sort}\\left(L\\right)', 'Sort; sort(L, keys) sorts by keys'],
       ['\\operatorname{join}\\left(A,B\\right)', 'Join lists'],

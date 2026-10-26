@@ -20,7 +20,7 @@ on the right. What you type is graphed as you type it:
   editable domain under the row (Desmos's defaults are 0 ≤ t ≤ 1 and
   0 ≤ θ ≤ 12π). `r` and `θ` also work inside relations, as in `r < 2`.
 - Lists: `[1, 2, 3]`, ranges `[1...10]` and `[1, 3, ..., 11]`, indexing
-  `L[2]`, comprehensions `[n^2 for n = [1...5]]`, and `total`, `mean`,
+  `L[2]`, filters `L[L > 0]`, comprehensions `[n^2 for n = [1...5]]`, and `total`, `mean`,
   `length`, `min`, `max` and friends. A list in a curve draws one curve per
   element, as `y = [1, 2, 3]x` does in Desmos.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.

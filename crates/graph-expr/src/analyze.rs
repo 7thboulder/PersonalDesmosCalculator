@@ -272,6 +272,23 @@ const GRAPH_VARIABLES: &[&str] = &["x", "y", "r", "theta"];
 const MAX_INLINE_DEPTH: usize = 64;
 /// Desmos's limit on list length.
 const MAX_LIST: usize = 10_000;
+/// Sums with at least this many terms (less one) are compiled.
+const FAST_SUM_TERMS: f64 = 7.0;
+
+/// What a name means while compiling a sum: a local of the program, or a
+/// value fixed for the whole sum (None when it has none).
+#[derive(Clone)]
+enum Bind {
+    Slot(u16),
+    Value(Option<Scalar>),
+}
+
+/// A sum being compiled, with the lists it reads by name.
+struct FastCompile<'a> {
+    prog: fastsum::Program,
+    lists: Vec<String>,
+    free: Free<'a>,
+}
 /// Desmos's default domains: 0 ≤ t ≤ 1 and 0 ≤ θ ≤ 12π.
 const T_DOMAIN: (f64, f64) = (0.0, 1.0);
 const THETA_DOMAIN: (f64, f64) = (0.0, 12.0 * std::f64::consts::PI);
@@ -295,6 +312,9 @@ pub struct Cache {
     vars: HashMap<String, Cached>,
     /// Function results, as `Env::calls` keeps them within one analysis.
     calls: FastMap<CallKey, CachedCall>,
+    /// Function definitions, so an unchanged one keeps its pointer and the
+    /// results above are checked against it without comparing bodies.
+    funcs: FastMap<String, Rc<FuncDef>>,
 }
 
 /// A function's name and its constant arguments, then (when the result
@@ -327,11 +347,24 @@ enum Dep {
 
 /// A name read while working a value out. Only the name is noted, since the
 /// values read are already kept; they are looked up once the value is done.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 enum Read {
     Var(String),
     Func(String, Rc<FuncDef>),
     Missing(String),
+}
+
+/// Within one analysis a function has one definition, so reads of it are
+/// told apart by name and pointer: comparing whole bodies made recording
+/// reads a large share of a ticker's time.
+impl PartialEq for Read {
+    fn eq(&self, other: &Read) -> bool {
+        match (self, other) {
+            (Read::Var(a), Read::Var(b)) | (Read::Missing(a), Read::Missing(b)) => a == b,
+            (Read::Func(a, f), Read::Func(b, g)) => Rc::ptr_eq(f, g) && a == b,
+            _ => false,
+        }
+    }
 }
 
 /// Whether two values are the same, counting undefined as equal to itself.
@@ -672,7 +705,7 @@ fn record_into(recording: &mut [Vec<Read>], reads: &[Read]) {
 
 /// A plain number as its real and imaginary parts (0 for a real number), for
 /// [`Env::quick`].
-type Scalar = (f64, f64);
+use crate::fastsum::{self, scalar_op, Scalar};
 
 /// The number `v` holds, when it is one constant real or complex number.
 fn scalar_of(v: &Val) -> Option<Scalar> {
@@ -690,54 +723,36 @@ fn scalar_item(item: &Item) -> Option<Scalar> {
     }
 }
 
-/// `op` on two numbers, exactly as [`Env::arithmetic`] works it out: the
-/// complex cases follow [`complex_op`] step for step, on plain floats.
-fn scalar_op(op: BinOp, (a, b): Scalar, (c, d): Scalar) -> Option<Scalar> {
-    if b == 0.0 && d == 0.0 {
-        return Some((op.apply(a, c), 0.0));
+/// A built-in function of plain numbers, as `Env::call` works it out: real
+/// arguments directly, and a complex one for abs, exp and sqrt.
+pub(crate) fn scalar_call(f: Builtin, parts: &[Scalar]) -> Option<Scalar> {
+    if f == Builtin::Length || parts.is_empty() {
+        return None;
     }
-    // A real number's imaginary part is +0 there, whatever its sign here.
-    let tidy = |v: f64| if v == 0.0 { 0.0 } else { v };
-    let (b, d) = (tidy(b), tidy(d));
-    let mul = |(a, b): Scalar, (c, d): Scalar| (a * c - b * d, a * d + b * c);
-    Some(match op {
-        BinOp::Add => (a + c, b + d),
-        BinOp::Sub => (a - c, b - d),
-        BinOp::Mul => mul((a, b), (c, d)),
-        BinOp::Div => {
-            let den = c * c + d * d;
-            ((a * c + b * d) / den, (b * c - a * d) / den)
-        }
-        BinOp::Pow => {
-            if d == 0.0 && c.fract() == 0.0 && c.abs() <= 64.0 {
-                let mut result = (1.0, 0.0);
-                for _ in 0..c.abs() as u32 {
-                    let (re, im) = mul(result, (a, b));
-                    result = (re, tidy(im));
-                }
-                if c < 0.0 {
-                    let (x, y) = result;
-                    let den = x * x + y * y;
-                    result = ((1.0 * x + 0.0 * y) / den, tidy((0.0 * x - 1.0 * y) / den));
-                }
-                return Some(result);
-            }
-            let exp = |p: f64, q: f64| {
-                let scale = Builtin::Exp.eval(&[p]);
-                (
-                    scale * Builtin::Cos.eval(&[q]),
-                    scale * Builtin::Sin.eval(&[q]),
-                )
-            };
-            if a == std::f64::consts::E && b == 0.0 {
-                return Some(exp(c, d));
-            }
-            let ln_r = Builtin::Ln.eval(&[Builtin::Sqrt.eval(&[a * a + b * b])]);
-            let theta = Builtin::Arctan.eval(&[b, a]);
-            exp(c * ln_r - d * theta, c * theta + d * ln_r)
-        }
-        _ => return None,
-    })
+    let k = Low::Const;
+    if parts.iter().any(|p| p.1 != 0.0) {
+        let [(a, b)] = parts[..] else {
+            return None;
+        };
+        return scalar_item(&match f {
+            Builtin::Abs => Item::Num(call1(
+                Builtin::Sqrt,
+                bin(
+                    BinOp::Add,
+                    bin(BinOp::Mul, k(a), k(a)),
+                    bin(BinOp::Mul, k(b), k(b)),
+                ),
+            )),
+            Builtin::Exp => complex_exp(k(a), k(b)),
+            Builtin::Sqrt => complex_op(BinOp::Pow, (k(a), k(b)), (k(0.5), k(0.0))).ok()?,
+            _ => return None,
+        });
+    }
+    if let [(a, _)] = parts {
+        return Some((f.eval(&[*a]), 0.0));
+    }
+    let values: Vec<f64> = parts.iter().map(|p| p.0).collect();
+    Some((f.eval(&values), 0.0))
 }
 
 fn shallow(l: Low) -> Low {
@@ -822,6 +837,7 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
         vars: FastMap::default(),
         funcs: FastMap::default(),
         values: FastMap::default(),
+        fast_lists: FastMap::default(),
         next_hole: 0,
         actions: HashSet::new(),
         calls: FastMap::default(),
@@ -845,13 +861,14 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
                 env.vars.insert(name.clone(), expr.clone());
             }
             Def::Func(name, f) => {
-                env.funcs.insert(
-                    name.clone(),
-                    Rc::new(FuncDef {
+                let def = match env.old.funcs.get(name) {
+                    Some(old) if old.params == f.params && old.body == f.body => Rc::clone(old),
+                    _ => Rc::new(FuncDef {
                         params: f.params.clone(),
                         body: f.body.clone(),
                     }),
-                );
+                };
+                env.funcs.insert(name.clone(), def);
             }
         }
     }
@@ -930,6 +947,7 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
             out
         })
         .collect::<Vec<_>>();
+    env.new.funcs = std::mem::take(&mut env.funcs);
     *cache = std::mem::take(&mut env.new);
     results
 }
@@ -1098,6 +1116,8 @@ struct Env {
     funcs: FastMap<String, Rc<FuncDef>>,
     /// Memoised variable values.
     values: FastMap<String, Result<Value, String>>,
+    /// List values as compiled sums read them, made once per analysis.
+    fast_lists: FastMap<String, Rc<[Scalar]>>,
     /// The next unused placeholder for a variable being differentiated or
     /// integrated over.
     next_hole: u32,
@@ -1929,7 +1949,10 @@ impl Env {
                     Err(e) => matches!(&**v, Err(old) if *old == e),
                 }
             }
-            Dep::Func(n, f) => self.funcs.get(n).is_some_and(|g| g == f),
+            Dep::Func(n, f) => self
+                .funcs
+                .get(n)
+                .is_some_and(|g| Rc::ptr_eq(g, f) || g == f),
             Dep::Missing(n) => !self.vars.contains_key(n) && !self.funcs.contains_key(n),
         })
     }
@@ -2020,33 +2043,7 @@ impl Env {
                 for a in args {
                     parts.push(go!(a));
                 }
-                let k = Low::Const;
-                if parts.iter().any(|p| p.1 != 0.0) {
-                    // As Env::call does for complex numbers.
-                    let [(a, b)] = parts[..] else {
-                        return None;
-                    };
-                    return scalar_item(&match f {
-                        Builtin::Abs => Item::Num(call1(
-                            Builtin::Sqrt,
-                            bin(
-                                BinOp::Add,
-                                bin(BinOp::Mul, k(a), k(a)),
-                                bin(BinOp::Mul, k(b), k(b)),
-                            ),
-                        )),
-                        Builtin::Exp => complex_exp(k(a), k(b)),
-                        Builtin::Sqrt => {
-                            complex_op(BinOp::Pow, (k(a), k(b)), (k(0.5), k(0.0))).ok()?
-                        }
-                        _ => return None,
-                    });
-                }
-                if parts.is_empty() {
-                    return None;
-                }
-                let lows = parts.iter().map(|p| k(p.0)).collect();
-                scalar_item(&Item::Num(shallow(Low::Call(*f, lows))))?
+                scalar_call(*f, &parts)?
             }
             Expr::Index(base, index) => {
                 let Expr::Var(name) = &**base else {
@@ -2156,6 +2153,14 @@ impl Env {
                 if b - a >= MAX_LIST as f64 {
                     return None;
                 }
+                // A long sum is compiled once rather than read for every term.
+                if b - a >= FAST_SUM_TERMS {
+                    if let Some(v) =
+                        self.fast_repeat(*kind, var, a, b, body, scope, free, depth, visiting)
+                    {
+                        return Some(v);
+                    }
+                }
                 let mut inner = scope.to_vec();
                 inner.push((var.as_str(), None));
                 let last = inner.len() - 1;
@@ -2171,6 +2176,241 @@ impl Env {
                     k += 1.0;
                 }
                 total.unwrap_or((empty, 0.0))
+            }
+            _ => return None,
+        })
+    }
+
+    /// `\sum_{var=a}^{b} body` (or a product) through a compiled program,
+    /// with what it reads recorded as `quick` would. None when the body
+    /// holds something the program cannot do, or a term fails; the caller
+    /// then works the sum out term by term.
+    #[allow(clippy::too_many_arguments)]
+    fn fast_repeat(
+        &mut self,
+        kind: Repeat,
+        var: &str,
+        a: f64,
+        b: f64,
+        body: &Expr,
+        scope: &[(&str, Option<Scalar>)],
+        free: Free,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Scalar> {
+        let mut names: Vec<(String, Bind)> = scope
+            .iter()
+            .map(|(n, v)| (n.to_string(), Bind::Value(*v)))
+            .collect();
+        names.push((var.to_owned(), Bind::Slot(0)));
+        let mut c = FastCompile {
+            prog: fastsum::Program {
+                slots: 1,
+                ..Default::default()
+            },
+            lists: Vec::new(),
+            free,
+        };
+        let mut ops = Vec::new();
+        self.compile_fast(body, &names, &mut ops, &mut c, depth, visiting)?;
+        c.prog.ops = ops;
+        c.prog.repeat(kind == Repeat::Product, 0, a, b)
+    }
+
+    /// Appends ops for `e` to `ops`, returning which locals it reads as a
+    /// bit mask (bit 63 standing for every local past 62).
+    fn compile_fast(
+        &mut self,
+        e: &Expr,
+        names: &[(String, Bind)],
+        ops: &mut Vec<fastsum::Op>,
+        c: &mut FastCompile,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<u64> {
+        use fastsum::Op;
+        if ops.len() + c.prog.len() > fastsum::MAX_OPS {
+            return None;
+        }
+        let bit = |s: u16| 1u64 << (s as u32).min(63);
+        macro_rules! go {
+            ($e:expr) => {
+                self.compile_fast($e, names, ops, c, depth, visiting)?
+            };
+        }
+        Some(match e {
+            Expr::Num(v) => {
+                ops.push(Op::Const((*v, 0.0)));
+                0
+            }
+            Expr::Var(name) => {
+                if let Some((_, bind)) = names.iter().rev().find(|(n, _)| n == name) {
+                    return match bind {
+                        Bind::Slot(s) => {
+                            ops.push(Op::Slot(*s));
+                            Some(bit(*s))
+                        }
+                        Bind::Value(v) => {
+                            ops.push(Op::Const((*v)?));
+                            Some(0)
+                        }
+                    };
+                }
+                let v = self.quick(e, &[], c.free, depth, visiting)?;
+                ops.push(Op::Const(v));
+                0
+            }
+            Expr::Neg(a) => {
+                let m = go!(a);
+                ops.push(Op::Neg);
+                m
+            }
+            Expr::Add(a, b)
+            | Expr::Sub(a, b)
+            | Expr::Mul(a, b)
+            | Expr::Div(a, b)
+            | Expr::Pow(a, b) => {
+                let m = go!(a) | go!(b);
+                ops.push(Op::Bin(match e {
+                    Expr::Add(..) => BinOp::Add,
+                    Expr::Sub(..) => BinOp::Sub,
+                    Expr::Mul(..) => BinOp::Mul,
+                    Expr::Div(..) => BinOp::Div,
+                    _ => BinOp::Pow,
+                }));
+                m
+            }
+            Expr::Call(f, args) => {
+                if *f == Builtin::Length || args.is_empty() || args.len() > 255 {
+                    return None;
+                }
+                let mut m = 0;
+                for a in args {
+                    m |= go!(a);
+                }
+                ops.push(Op::Call(*f, args.len() as u8));
+                m
+            }
+            Expr::Shape(
+                f @ (ShapeFn::Real | ShapeFn::Imag | ShapeFn::Conj | ShapeFn::Arg),
+                args,
+            ) => {
+                let [a] = &args[..] else {
+                    return None;
+                };
+                let m = go!(a);
+                ops.push(match f {
+                    ShapeFn::Real => Op::Real,
+                    ShapeFn::Imag => Op::Imag,
+                    ShapeFn::Conj => Op::Conj,
+                    _ => Op::Arg,
+                });
+                m
+            }
+            Expr::Index(base, index) => {
+                let Expr::Var(name) = &**base else {
+                    return None;
+                };
+                let global = !names.iter().any(|(n, _)| n == name)
+                    && !c.free.iter().any(|(n, _)| n == name)
+                    && self.vars.contains_key(name);
+                if !global {
+                    return None;
+                }
+                let m = go!(index);
+                let id = match c.lists.iter().position(|n| n == name) {
+                    Some(id) => id,
+                    None => {
+                        self.value_of_ref(name, visiting).ok()?;
+                        self.note_var(name);
+                        let list = match self.fast_lists.get(name) {
+                            Some(list) => Rc::clone(list),
+                            None => {
+                                let list: Rc<[Scalar]> =
+                                    match self.values.get(name)?.as_ref().ok()? {
+                                        Value::Numbers(v) => v.iter().map(|x| (*x, 0.0)).collect(),
+                                        Value::Complexes(v) => v
+                                            .iter()
+                                            .map(|[re, im]| {
+                                                scalar_item(&Item::complex(
+                                                    Low::Const(*re),
+                                                    Low::Const(*im),
+                                                ))
+                                            })
+                                            .collect::<Option<_>>()?,
+                                        _ => return None,
+                                    };
+                                self.fast_lists.insert(name.clone(), Rc::clone(&list));
+                                list
+                            }
+                        };
+                        c.lists.push(name.clone());
+                        c.prog.lists.push(list);
+                        c.lists.len() - 1
+                    }
+                };
+                ops.push(Op::Index(u16::try_from(id).ok()?));
+                m
+            }
+            Expr::Apply(name, args) => {
+                if names.iter().any(|(n, _)| n == name) || depth >= MAX_INLINE_DEPTH {
+                    return None;
+                }
+                let f = Rc::clone(self.funcs.get(name)?);
+                if f.params.len() != args.len() {
+                    return None;
+                }
+                let start = ops.len();
+                let mut m = 0;
+                for a in args {
+                    m |= go!(a);
+                }
+                if m == 0 {
+                    // Constant arguments: worked out (and remembered) once,
+                    // as quick would.
+                    ops.truncate(start);
+                    let scope: Vec<(&str, Option<Scalar>)> = names
+                        .iter()
+                        .filter_map(|(n, b)| match b {
+                            Bind::Value(v) => Some((n.as_str(), *v)),
+                            Bind::Slot(_) => None,
+                        })
+                        .collect();
+                    let v = self.quick(e, &scope, c.free, depth, visiting)?;
+                    ops.push(Op::Const(v));
+                    return Some(0);
+                }
+                self.note_func(name, &f);
+                // Inside the body only its parameters are in scope.
+                let first = u16::try_from(c.prog.slots).ok()?;
+                c.prog.slots += f.params.len();
+                let inner: Vec<(String, Bind)> = f
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (p.clone(), Bind::Slot(first + i as u16)))
+                    .collect();
+                for i in (0..f.params.len()).rev() {
+                    ops.push(Op::Store(first + i as u16));
+                }
+                self.compile_fast(&f.body, &inner, ops, c, depth + 1, visiting)?;
+                m
+            }
+            Expr::Repeat(kind, var, lo, hi, body) => {
+                let m = go!(lo) | go!(hi);
+                let slot = u16::try_from(c.prog.slots).ok()?;
+                c.prog.slots += 1;
+                let mut inner = names.to_vec();
+                inner.push((var.clone(), Bind::Slot(slot)));
+                let mut sub = Vec::new();
+                let mb = self.compile_fast(body, &inner, &mut sub, c, depth, visiting)?;
+                c.prog.subs.push(sub);
+                ops.push(Op::Repeat {
+                    product: *kind == Repeat::Product,
+                    slot,
+                    sub: u16::try_from(c.prog.subs.len() - 1).ok()?,
+                });
+                m | (mb & !bit(slot))
             }
             _ => return None,
         })
@@ -2476,6 +2716,11 @@ impl Env {
                 let base = go!(base);
                 let index = go!(index);
                 self.index(base, index, problems)
+            }
+            Expr::Filter(base, mask) => {
+                let base = go!(base);
+                let mask = go!(mask);
+                self.filter(base, mask, problems)
             }
             Expr::Comprehension(body, generators) => {
                 let mut lists = Vec::new();
@@ -2834,6 +3079,38 @@ impl Env {
             items: out,
             list: index.list,
         }
+    }
+
+    /// The elements of `base` where `mask`, a condition worth 1 where it
+    /// holds, is defined. A single condition keeps all or nothing; lists of
+    /// different lengths stop at the shorter, as in Desmos.
+    fn filter(&self, base: Val, mask: Val, problems: &mut Problems) -> Val {
+        if !base.list {
+            problems.error("Only lists can be filtered, like L[L > 0]");
+            return Val::nan();
+        }
+        let n = if mask.list {
+            base.items.len().min(mask.items.len())
+        } else {
+            base.items.len()
+        };
+        let mut out = Vec::new();
+        for (i, item) in base.items.iter().take(n).enumerate() {
+            let m = &mask.items[if mask.list { i } else { 0 }];
+            let Item::Num(low) = m else {
+                problems.error("A filter needs a condition, like L[L > 0]");
+                return Val::nan();
+            };
+            match low.clone().fold() {
+                Low::Const(v) if v.is_nan() => {}
+                Low::Const(_) => out.push(item.clone()),
+                _ => {
+                    problems.error("Filters can't depend on x or y yet");
+                    return Val::nan();
+                }
+            }
+        }
+        Val::list(out)
     }
 
     /// The elements of variable `name` at constant `index` positions, read

@@ -6,6 +6,7 @@ pub mod ast;
 pub mod builtins;
 pub mod calculus;
 pub mod compile;
+mod fastsum;
 pub mod format;
 pub mod interval;
 pub mod lexer;

@@ -26,6 +26,10 @@ pub enum Expr {
     /// `L[2]`: an element or sublist of a list. When the base turns out not
     /// to be a list this is a product, as `a[1, 2]` is in Desmos.
     Index(Box<Expr>, Box<Expr>),
+    /// `L[L > 0]`: the elements of a list where a condition holds. The
+    /// second part is the condition as `{L > 0: 1}`, so it is 1 where the
+    /// element stays and undefined where it goes.
+    Filter(Box<Expr>, Box<Expr>),
     /// `p.x` and `p.y`.
     Coord(Box<Expr>, Coord),
     /// `[n^2 for n = [1...5]]`: the body and each variable with its list.
@@ -149,7 +153,8 @@ impl Expr {
             | Expr::Div(a, b)
             | Expr::Pow(a, b)
             | Expr::Point(a, b)
-            | Expr::Index(a, b) => {
+            | Expr::Index(a, b)
+            | Expr::Filter(a, b) => {
                 a.visit_names(f);
                 b.visit_names(f);
             }
