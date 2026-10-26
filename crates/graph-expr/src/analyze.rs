@@ -2477,6 +2477,11 @@ impl Env {
                 let index = go!(index);
                 self.index(base, index, problems)
             }
+            Expr::Filter(base, mask) => {
+                let base = go!(base);
+                let mask = go!(mask);
+                self.filter(base, mask, problems)
+            }
             Expr::Comprehension(body, generators) => {
                 let mut lists = Vec::new();
                 for (name, list) in generators {
@@ -2834,6 +2839,38 @@ impl Env {
             items: out,
             list: index.list,
         }
+    }
+
+    /// The elements of `base` where `mask`, a condition worth 1 where it
+    /// holds, is defined. A single condition keeps all or nothing; lists of
+    /// different lengths stop at the shorter, as in Desmos.
+    fn filter(&self, base: Val, mask: Val, problems: &mut Problems) -> Val {
+        if !base.list {
+            problems.error("Only lists can be filtered, like L[L > 0]");
+            return Val::nan();
+        }
+        let n = if mask.list {
+            base.items.len().min(mask.items.len())
+        } else {
+            base.items.len()
+        };
+        let mut out = Vec::new();
+        for (i, item) in base.items.iter().take(n).enumerate() {
+            let m = &mask.items[if mask.list { i } else { 0 }];
+            let Item::Num(low) = m else {
+                problems.error("A filter needs a condition, like L[L > 0]");
+                return Val::nan();
+            };
+            match low.clone().fold() {
+                Low::Const(v) if v.is_nan() => {}
+                Low::Const(_) => out.push(item.clone()),
+                _ => {
+                    problems.error("Filters can't depend on x or y yet");
+                    return Val::nan();
+                }
+            }
+        }
+        Val::list(out)
     }
 
     /// The elements of variable `name` at constant `index` positions, read

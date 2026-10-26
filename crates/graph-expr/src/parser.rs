@@ -274,6 +274,10 @@ impl Parser {
                 e = Expr::Factorial(Box::new(e));
             } else if self.peek() == Some(&Tok::LBracket) && indexable(&e) {
                 self.pos += 1;
+                if let Some(mask) = self.filter() {
+                    e = Expr::Filter(Box::new(e), Box::new(mask));
+                    continue;
+                }
                 let index = match self.list()? {
                     Expr::List(mut items) if items.len() == 1 => items.remove(0),
                     other => other,
@@ -290,6 +294,22 @@ impl Parser {
                 return Err("Only functions can be differentiated with ', like f'(x)".into());
             } else {
                 return Ok(e);
+            }
+        }
+    }
+
+    /// The condition in `L[L > 0]`, as `{L > 0: 1}`, with the closing
+    /// bracket eaten. None (and nothing eaten) when the brackets hold an
+    /// index instead.
+    fn filter(&mut self) -> Option<Expr> {
+        let start = self.pos;
+        match self.comparison() {
+            Ok(c) if !c.relations.is_empty() && self.eat(&Tok::RBracket) => {
+                Some(Expr::Piecewise(vec![(c, Expr::Num(1.0))], None))
+            }
+            _ => {
+                self.pos = start;
+                None
             }
         }
     }
@@ -708,6 +728,7 @@ fn indexable(e: &Expr) -> bool {
             | Expr::Range(..)
             | Expr::Comprehension(..)
             | Expr::Index(..)
+            | Expr::Filter(..)
             | Expr::Apply(..)
     )
 }

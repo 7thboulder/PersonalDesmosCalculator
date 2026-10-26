@@ -1349,6 +1349,7 @@
     ['LISTS', [
       ['\\left[1,2,3\\right],\\ \\left[1...10\\right]', 'Lists and ranges'],
       ['L\\left[2\\right],\\ L\\left[2...4\\right]', 'Element (from 1) and slice'],
+      ['L\\left[L>0\\right]', 'Filter: the elements where a condition holds'],
       ['\\left[n^2\\ \\operatorname{for}\\ n=\\left[1...5\\right]\\right]', 'Comprehension'],
       ['\\operatorname{sort}\\left(L\\right)', 'Sort; sort(L, keys) sorts by keys'],
       ['\\operatorname{join}\\left(A,B\\right)', 'Join lists'],

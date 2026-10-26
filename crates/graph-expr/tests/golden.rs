@@ -793,3 +793,37 @@ fn regressions() {
     );
     assert!((fit.r2.unwrap() - 0.64).abs() < 1e-9);
 }
+
+#[test]
+fn list_filters() {
+    let list = |latex: &[&str]| rows(latex).pop().unwrap().value;
+    let l = "L=\\left[1,-2,3,-4,5\\right]";
+    assert_eq!(
+        list(&[l, "L\\left[L>0\\right]"]),
+        Some(Value::Numbers(vec![1.0, 3.0, 5.0]))
+    );
+    assert_eq!(
+        list(&[l, "L\\left[1<L\\le5\\right]"]),
+        Some(Value::Numbers(vec![3.0, 5.0]))
+    );
+    // The condition can read another list, a slider, or nothing at all.
+    assert_eq!(
+        list(&[l, "a=2", "L\\left[\\left[1,2,3,4,5\\right]>a\\right]"]),
+        Some(Value::Numbers(vec![3.0, -4.0, 5.0]))
+    );
+    assert_eq!(
+        list(&[l, "L\\left[1>2\\right]"]),
+        Some(Value::Numbers(vec![]))
+    );
+    assert!(close(
+        value(&[l, "\\operatorname{total}\\left(L\\left[L<0\\right]\\right)"]),
+        -6.0
+    ));
+    assert!(close(
+        value(&[l, "L\\left[L>0\\right]\\left[2\\right]"]),
+        3.0
+    ));
+    // Plain indices still index.
+    assert!(close(value(&[l, "L\\left[2\\right]"]), -2.0));
+    assert!(rows(&["a=3", "a\\left[a>1\\right]"])[1].error.is_some());
+}
