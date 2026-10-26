@@ -293,6 +293,23 @@ const MAX_INTERVALS: usize = 400;
 /// One Gauss-Kronrod step on [a, b]: the estimate and its error.
 fn kronrod(f: &mut dyn FnMut(f64) -> f64, a: f64, b: f64) -> (f64, f64) {
     let (mid, half) = ((a + b) / 2.0, (b - a) / 2.0);
+    // A function can be undefined at a single point, like x/|x| at 0, and
+    // Desmos still integrates it. A node that lands on such a point is moved
+    // a hair to either side; only a function undefined around the node too
+    // makes the integral undefined.
+    let mut f = |x: f64| {
+        let y = f(x);
+        if !y.is_nan() {
+            return y;
+        }
+        let nudge = half * 1e-9;
+        let right = f(x + nudge);
+        if right.is_nan() {
+            f(x - nudge)
+        } else {
+            right
+        }
+    };
     let centre = f(mid);
     let mut k = centre * WGK[7];
     let mut g = centre * WG[3];
@@ -501,6 +518,19 @@ mod tests {
         ));
         let mut root = |t: f64| 1.0 / t.sqrt();
         assert!((integrate(&mut root, 0.0, 1.0) - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn isolated_undefined_points_are_stepped_over() {
+        let pi = std::f64::consts::PI;
+        let mut sign = |t: f64| -t / t.abs();
+        assert!(integrate(&mut sign, -pi, pi).abs() < 1e-9);
+        assert!(close(integrate(&mut sign, -pi, 2.0 * pi), -pi));
+        let mut odd = |t: f64| -t / t.abs() * t.sin();
+        assert!(close(integrate(&mut odd, -pi, pi), -4.0));
+        // Undefined over a whole stretch stays undefined.
+        let mut root = |t: f64| t.sqrt();
+        assert!(integrate(&mut root, -1.0, 1.0).is_nan());
     }
 
     #[test]
