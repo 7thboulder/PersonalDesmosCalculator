@@ -41,7 +41,10 @@ pub enum Tok {
     Gt,
     Le,
     Ge,
-    /// A command this calculator does not understand yet, such as `\sum`.
+    Sum,
+    Prod,
+    Int,
+    /// A command this calculator does not understand yet.
     Unsupported(String),
 }
 
@@ -247,6 +250,9 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "gt" => Tok::Gt,
         "ldots" | "dots" | "cdots" => Tok::Dots,
         "prime" => Tok::Prime,
+        "sum" => Tok::Sum,
+        "prod" => Tok::Prod,
+        "int" => Tok::Int,
         "mathrm" | "text" | "mathit" => {
             return Err(format!("text (\\{name}) is not supported"));
         }

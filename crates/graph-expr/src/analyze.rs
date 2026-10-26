@@ -7,8 +7,9 @@
 //! becomes one program per element, as Desmos draws one curve per element,
 //! and a point becomes a pair of programs.
 
-use crate::ast::{Condition, Coord, Expr, Relation, Statement};
+use crate::ast::{Condition, Coord, Expr, Relation, Repeat, Statement};
 use crate::builtins::Builtin;
+use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
 use crate::parser::parse;
 use std::collections::{HashMap, HashSet};
@@ -354,6 +355,7 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
         vars: HashMap::new(),
         funcs: HashMap::new(),
         values: HashMap::new(),
+        next_hole: 0,
     };
     for def in defs.iter().flatten().flatten() {
         match def {
@@ -440,6 +442,9 @@ struct Env {
     funcs: HashMap<String, FuncDef>,
     /// Memoised variable values.
     values: HashMap<String, Result<Value, String>>,
+    /// The next unused placeholder for a variable being differentiated or
+    /// integrated over.
+    next_hole: u32,
 }
 
 /// Collected while resolving names.
@@ -1222,6 +1227,131 @@ impl Env {
                 }
                 result
             }
+            Expr::Derivative(var, body) => {
+                // Differentiate with the variable as a placeholder, then
+                // put the variable's own value back in.
+                let hole = self.hole();
+                let mut inner = bindings.clone();
+                inner.insert(var.clone(), Val::num(Low::Hole(hole)));
+                let body = self.lower_with(body, &inner, free, depth, problems, visiting);
+                let at = self.resolve_name(var, bindings, free, problems, visiting);
+                self.broadcast(&[body, at], problems, |items| {
+                    let slope = |l: &Low, a: &Low| derivative(l, &Low::Hole(hole)).fill(hole, a);
+                    match (items[0], items[1]) {
+                        (Item::Num(l), Item::Num(a)) => Ok(Item::Num(slope(l, a))),
+                        (Item::Point(p, q), Item::Num(a)) => {
+                            Ok(Item::Point(slope(p, a), slope(q, a)))
+                        }
+                        _ => Err("Can't differentiate with respect to a point".into()),
+                    }
+                })
+            }
+            Expr::Prime(name, order, args) => {
+                let Some(f) = self
+                    .funcs
+                    .get(name)
+                    .filter(|_| !bindings.contains_key(name))
+                else {
+                    problems.error(format!(
+                        "'{name}' is not a function, so {name}' has no meaning"
+                    ));
+                    return Val::nan();
+                };
+                if f.params.len() != 1 || args.len() != 1 {
+                    problems.error(format!("{name}' needs a function of one variable"));
+                    return Val::nan();
+                }
+                if depth >= MAX_INLINE_DEPTH {
+                    problems.error(format!("'{name}' is defined in terms of itself"));
+                    return Val::nan();
+                }
+                let (param, body) = (f.params[0].clone(), f.body.clone());
+                let hole = self.hole();
+                let inner: HashMap<String, Val> =
+                    [(param, Val::num(Low::Hole(hole)))].into_iter().collect();
+                let body = self.lower_with(&body, &inner, free, depth + 1, problems, visiting);
+                let at = go!(&args[0]);
+                let order = *order;
+                self.broadcast(&[body, at], problems, |items| {
+                    let slope = |l: &Low, a: &Low| {
+                        let mut d = l.clone();
+                        for _ in 0..order {
+                            d = derivative(&d, &Low::Hole(hole));
+                        }
+                        d.fill(hole, a)
+                    };
+                    match (items[0], items[1]) {
+                        (Item::Num(l), Item::Num(a)) => Ok(Item::Num(slope(l, a))),
+                        (Item::Point(p, q), Item::Num(a)) => {
+                            Ok(Item::Point(slope(p, a), slope(q, a)))
+                        }
+                        _ => Err(format!("{name}' takes a number")),
+                    }
+                })
+            }
+            Expr::Repeat(kind, var, lo, hi, body) => {
+                let what = if *kind == Repeat::Sum {
+                    "sum"
+                } else {
+                    "product"
+                };
+                let mut bound = |e: &Expr, problems: &mut Problems| -> Option<f64> {
+                    let v = self.lower_with(e, bindings, free, depth, problems, visiting);
+                    match v.constant() {
+                        Some(Value::Number(n)) if n.is_finite() => Some(n.round()),
+                        _ => None,
+                    }
+                };
+                let (Some(a), Some(b)) = (bound(lo, problems), bound(hi, problems)) else {
+                    problems.error(format!("A {what}'s bounds must be finite numbers"));
+                    return Val::nan();
+                };
+                let (op, empty) = match kind {
+                    Repeat::Sum => (BinOp::Add, 0.0),
+                    Repeat::Product => (BinOp::Mul, 1.0),
+                };
+                if b < a {
+                    return Val::num(Low::Const(empty));
+                }
+                if b - a >= MAX_LIST as f64 {
+                    problems.error(format!("A {what} can have at most 10,000 terms"));
+                    return Val::nan();
+                }
+                let mut total: Option<Val> = None;
+                let mut k = a;
+                while k <= b {
+                    let mut inner = bindings.clone();
+                    inner.insert(var.clone(), Val::num(Low::Const(k)));
+                    let term = self.lower_with(body, &inner, free, depth, problems, visiting);
+                    total = Some(match total {
+                        None => term,
+                        Some(acc) => self.arithmetic(op, acc, term, problems),
+                    });
+                    k += 1.0;
+                }
+                total.unwrap_or_else(|| Val::num(Low::Const(empty)))
+            }
+            Expr::Integral(var, lo, hi, body) => {
+                let lo = go!(lo);
+                let hi = go!(hi);
+                let hole = self.hole();
+                let mut inner = bindings.clone();
+                inner.insert(var.clone(), Val::num(Low::Hole(hole)));
+                let body = self.lower_with(body, &inner, free, depth, problems, visiting);
+                self.broadcast(&[lo, hi, body], problems, |items| {
+                    match (items[0], items[1], items[2]) {
+                        (Item::Num(a), Item::Num(b), Item::Num(f)) => {
+                            Ok(Item::Num(Low::Integral {
+                                hole,
+                                body: Box::new(f.clone()),
+                                lo: Box::new(a.clone()),
+                                hi: Box::new(b.clone()),
+                            }))
+                        }
+                        _ => Err("Integrals of points aren't supported".into()),
+                    }
+                })
+            }
             Expr::Apply(name, args) => {
                 let is_function = self.funcs.contains_key(name) && !bindings.contains_key(name);
                 if is_function {
@@ -1269,6 +1399,11 @@ impl Env {
                 }
             }
         }
+    }
+
+    fn hole(&mut self) -> u32 {
+        self.next_hole += 1;
+        self.next_hole
     }
 
     /// A condition such as `0 < x \le 2` as a value that is 1 where every

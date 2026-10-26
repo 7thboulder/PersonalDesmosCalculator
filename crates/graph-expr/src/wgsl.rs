@@ -43,6 +43,8 @@ pub fn body(program: &Program) -> Option<String> {
             }),
             Op::Arg(Arg::X) => stack.push("x".into()),
             Op::Arg(Arg::Y) => stack.push("y".into()),
+            // Integrals are evaluated on the CPU.
+            Op::Arg(Arg::Local(_)) | Op::Integral { .. } => return None,
             Op::Neg => {
                 let a = stack.pop()?;
                 push(format!("-({a})"), &mut stack, &mut lines);

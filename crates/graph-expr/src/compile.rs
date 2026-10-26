@@ -2,15 +2,22 @@
 //! quickly for many x values.
 
 use crate::builtins::{self, Builtin};
+use crate::calculus::integrate;
 use crate::interval::Interval;
 
-/// Which graph variable a leaf reads. Curves of one variable use only
-/// `Arg::X`, whichever axis they run along; implicit relations use both.
+/// Which variable a leaf reads. Curves of one variable use only `Arg::X`,
+/// whichever axis they run along; implicit relations use both. `Local`
+/// slots hold the variable of an integral being evaluated, one slot per
+/// level of nesting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arg {
     X,
     Y,
+    Local(u8),
 }
+
+/// How deeply integrals may nest.
+pub const MAX_LOCALS: usize = 4;
 
 /// An expression with every name resolved: variables are numbers, functions
 /// are inlined and the graph variables are `Arg`s.
@@ -24,6 +31,17 @@ pub enum Low {
     /// The second value where the first is 1 (true), the third where it is
     /// 0 (false), and undefined where the condition is.
     Select(Box<Low>, Box<Low>, Box<Low>),
+    /// A stand-in for a variable while an expression is differentiated or
+    /// integrated over it. Replaced before compiling, except as the variable
+    /// of an integral.
+    Hole(u32),
+    /// The integral of `body` over `Hole(hole)` from `lo` to `hi`.
+    Integral {
+        hole: u32,
+        body: Box<Low>,
+        lo: Box<Low>,
+        hi: Box<Low>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +76,7 @@ impl BinOp {
         }
     }
 
-    fn apply(self, a: f64, b: f64) -> f64 {
+    pub fn apply(self, a: f64, b: f64) -> f64 {
         match self {
             BinOp::Add => a + b,
             BinOp::Sub => a - b,
@@ -97,18 +115,74 @@ fn select(c: f64, then: f64, otherwise: f64) -> f64 {
 
 impl Low {
     pub fn uses(&self, arg: Arg) -> bool {
-        match self {
-            Low::Const(_) => false,
-            Low::Arg(a) => *a == arg,
-            Low::Neg(a) => a.uses(arg),
-            Low::Bin(_, a, b) => a.uses(arg) || b.uses(arg),
-            Low::Call(_, args) => args.iter().any(|a| a.uses(arg)),
-            Low::Select(c, a, b) => c.uses(arg) || a.uses(arg) || b.uses(arg),
-        }
+        self.any(&|l| matches!(l, Low::Arg(a) if *a == arg))
     }
 
     pub fn uses_arg(&self) -> bool {
         self.uses(Arg::X) || self.uses(Arg::Y)
+    }
+
+    pub fn uses_hole(&self, hole: u32) -> bool {
+        self.any(&|l| matches!(l, Low::Hole(h) if *h == hole))
+    }
+
+    /// Whether any leaf satisfies `test`.
+    fn any(&self, test: &dyn Fn(&Low) -> bool) -> bool {
+        match self {
+            Low::Const(_) | Low::Arg(_) | Low::Hole(_) => test(self),
+            Low::Neg(a) => a.any(test),
+            Low::Bin(_, a, b) => a.any(test) || b.any(test),
+            Low::Call(_, args) => args.iter().any(|a| a.any(test)),
+            Low::Select(c, a, b) => c.any(test) || a.any(test) || b.any(test),
+            Low::Integral { body, lo, hi, .. } => body.any(test) || lo.any(test) || hi.any(test),
+        }
+    }
+
+    /// Whether the expression reads a graph variable or a hole that is not
+    /// in `bound` or bound by an integral inside it.
+    fn reads_outside(&self, bound: &[u32]) -> bool {
+        match self {
+            Low::Const(_) => false,
+            Low::Arg(_) => true,
+            Low::Hole(h) => !bound.contains(h),
+            Low::Neg(a) => a.reads_outside(bound),
+            Low::Bin(_, a, b) => a.reads_outside(bound) || b.reads_outside(bound),
+            Low::Call(_, args) => args.iter().any(|a| a.reads_outside(bound)),
+            Low::Select(c, a, b) => {
+                c.reads_outside(bound) || a.reads_outside(bound) || b.reads_outside(bound)
+            }
+            Low::Integral { hole, body, lo, hi } => {
+                let mut inner = bound.to_vec();
+                inner.push(*hole);
+                lo.reads_outside(bound) || hi.reads_outside(bound) || body.reads_outside(&inner)
+            }
+        }
+    }
+
+    /// A copy with every leaf for which `f` gives a replacement replaced.
+    pub fn map_leaves(&self, f: &dyn Fn(&Low) -> Option<Low>) -> Low {
+        let b = |l: &Low| Box::new(l.map_leaves(f));
+        match self {
+            Low::Const(_) | Low::Arg(_) | Low::Hole(_) => f(self).unwrap_or_else(|| self.clone()),
+            Low::Neg(a) => Low::Neg(b(a)),
+            Low::Bin(op, x, y) => Low::Bin(*op, b(x), b(y)),
+            Low::Call(g, args) => Low::Call(*g, args.iter().map(|a| a.map_leaves(f)).collect()),
+            Low::Select(c, x, y) => Low::Select(b(c), b(x), b(y)),
+            Low::Integral { hole, body, lo, hi } => Low::Integral {
+                hole: *hole,
+                body: b(body),
+                lo: b(lo),
+                hi: b(hi),
+            },
+        }
+    }
+
+    /// Replaces `Hole(hole)` with `with`.
+    pub fn fill(&self, hole: u32, with: &Low) -> Low {
+        self.map_leaves(&|l| match l {
+            Low::Hole(h) if *h == hole => Some(with.clone()),
+            _ => None,
+        })
     }
 
     /// Folds every part that does not depend on the argument into a number.
@@ -143,6 +217,33 @@ impl Low {
                 Low::Const(_) => b.fold(),
                 c => Low::Select(Box::new(c), Box::new(a.fold()), Box::new(b.fold())),
             },
+            Low::Integral { hole, body, lo, hi } => {
+                let (body, lo, hi) = (body.fold(), lo.fold(), hi.fold());
+                // A definite integral of numbers alone is a number.
+                let open = body.reads_outside(&[hole]);
+                if let (Low::Const(a), Low::Const(b), false) = (&lo, &hi, open) {
+                    let inner = body.fill(hole, &Low::Arg(Arg::Local(0))).fold();
+                    // Slot 0 holds this integral's variable, so integrals
+                    // inside it start at slot 1.
+                    if let Ok(p) = Program::compile_at(&inner, 1) {
+                        let mut locals = [f64::NAN; MAX_LOCALS];
+                        return Low::Const(integrate(
+                            &mut |t| {
+                                locals[0] = t;
+                                p.run(f64::NAN, f64::NAN, &mut locals)
+                            },
+                            *a,
+                            *b,
+                        ));
+                    }
+                }
+                Low::Integral {
+                    hole,
+                    body: Box::new(body),
+                    lo: Box::new(lo),
+                    hi: Box::new(hi),
+                }
+            }
             other => other,
         }
     }
@@ -157,6 +258,12 @@ pub enum Op {
     Call(Builtin, u8),
     /// Pops the else value, the then value and the condition.
     Select,
+    /// Pops the upper and lower bounds and integrates sub-program `sub`
+    /// between them, its variable held in local slot `slot`.
+    Integral {
+        sub: u16,
+        slot: u8,
+    },
 }
 
 /// Deepest evaluation stack a program may need.
@@ -166,17 +273,27 @@ const MAX_STACK: usize = 128;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     ops: Vec<Op>,
+    /// The bodies of integrals, evaluated by `Op::Integral`.
+    subs: Vec<Program>,
 }
 
 impl Program {
     pub fn compile(expr: &Low) -> Result<Program, String> {
         let folded = expr.clone().fold();
-        let mut ops = Vec::new();
-        let depth = emit(&folded, &mut ops);
+        Program::compile_at(&folded, 0)
+    }
+
+    /// Compiles with `slot` the first local slot free for integrals.
+    fn compile_at(expr: &Low, slot: u8) -> Result<Program, String> {
+        let mut program = Program {
+            ops: Vec::new(),
+            subs: Vec::new(),
+        };
+        let depth = program.emit(expr, slot)?;
         if depth > MAX_STACK {
             return Err("Expression is too deeply nested".into());
         }
-        Ok(Program { ops })
+        Ok(program)
     }
 
     /// The value when the program does not depend on its argument.
@@ -199,12 +316,19 @@ impl Program {
 
     /// True when the program reads either graph variable.
     pub fn uses_arg(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, Op::Arg(_)))
+        self.reads(&|a| matches!(a, Arg::X | Arg::Y))
     }
 
     /// True when the program reads y, so it needs a two-dimensional plot.
     pub fn uses_y(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, Op::Arg(Arg::Y)))
+        self.reads(&|a| a == Arg::Y)
+    }
+
+    fn reads(&self, test: &dyn Fn(Arg) -> bool) -> bool {
+        self.ops
+            .iter()
+            .any(|op| matches!(op, Op::Arg(a) if test(*a)))
+            || self.subs.iter().any(|s| s.reads(test))
     }
 
     /// The range the program can take over a rectangle of the plane. Never
@@ -219,12 +343,12 @@ impl Program {
                     stack[top] = Interval::point(v);
                     top += 1;
                 }
-                Op::Arg(Arg::X) => {
-                    stack[top] = x;
-                    top += 1;
-                }
-                Op::Arg(Arg::Y) => {
-                    stack[top] = y;
+                Op::Arg(a) => {
+                    stack[top] = match a {
+                        Arg::X => x,
+                        Arg::Y => y,
+                        Arg::Local(_) => Interval::ANY,
+                    };
                     top += 1;
                 }
                 Op::Neg => stack[top - 1] = stack[top - 1].neg(),
@@ -242,6 +366,10 @@ impl Program {
                     top -= 2;
                     stack[top - 1] = Interval::select(stack[top - 1], stack[top], stack[top + 1]);
                 }
+                Op::Integral { .. } => {
+                    top -= 1;
+                    stack[top - 1] = Interval::ANY;
+                }
             }
         }
         stack[0]
@@ -249,6 +377,11 @@ impl Program {
 
     /// Evaluates a program of x and y.
     pub fn eval2(&self, x: f64, y: f64) -> f64 {
+        let mut locals = [f64::NAN; MAX_LOCALS];
+        self.run(x, y, &mut locals)
+    }
+
+    fn run(&self, x: f64, y: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
         let mut stack = [0.0f64; MAX_STACK];
         let mut top = 0usize;
         for op in &self.ops {
@@ -257,12 +390,12 @@ impl Program {
                     stack[top] = v;
                     top += 1;
                 }
-                Op::Arg(Arg::X) => {
-                    stack[top] = x;
-                    top += 1;
-                }
-                Op::Arg(Arg::Y) => {
-                    stack[top] = y;
+                Op::Arg(a) => {
+                    stack[top] = match a {
+                        Arg::X => x,
+                        Arg::Y => y,
+                        Arg::Local(s) => locals[s as usize],
+                    };
                     top += 1;
                 }
                 Op::Neg => stack[top - 1] = -stack[top - 1],
@@ -280,49 +413,87 @@ impl Program {
                     top -= 2;
                     stack[top - 1] = select(stack[top - 1], stack[top], stack[top + 1]);
                 }
+                Op::Integral { sub, slot } => {
+                    top -= 1;
+                    let (lo, hi) = (stack[top - 1], stack[top]);
+                    let body = &self.subs[sub as usize];
+                    let slot = slot as usize;
+                    let saved = locals[slot];
+                    let value = integrate(
+                        &mut |t| {
+                            locals[slot] = t;
+                            body.run(x, y, locals)
+                        },
+                        lo,
+                        hi,
+                    );
+                    locals[slot] = saved;
+                    stack[top - 1] = value;
+                }
             }
         }
         stack[0]
     }
-}
 
-/// Appends ops for `e` and returns the stack depth they need.
-fn emit(e: &Low, ops: &mut Vec<Op>) -> usize {
-    match e {
-        Low::Const(v) => {
-            ops.push(Op::Const(*v));
-            1
-        }
-        Low::Arg(a) => {
-            ops.push(Op::Arg(*a));
-            1
-        }
-        Low::Neg(a) => {
-            let d = emit(a, ops);
-            ops.push(Op::Neg);
-            d
-        }
-        Low::Bin(op, a, b) => {
-            let da = emit(a, ops);
-            let db = emit(b, ops);
-            ops.push(Op::Bin(*op));
-            da.max(db + 1)
-        }
-        Low::Call(f, args) => {
-            let mut depth = 0;
-            for (i, a) in args.iter().enumerate() {
-                depth = depth.max(emit(a, ops) + i);
+    /// Appends ops for `e` and returns the stack depth they need. `slot` is
+    /// the next free local slot for an integral's variable.
+    fn emit(&mut self, e: &Low, slot: u8) -> Result<usize, String> {
+        Ok(match e {
+            Low::Const(v) => {
+                self.ops.push(Op::Const(*v));
+                1
             }
-            ops.push(Op::Call(*f, args.len() as u8));
-            depth.max(1)
-        }
-        Low::Select(c, a, b) => {
-            let dc = emit(c, ops);
-            let da = emit(a, ops);
-            let db = emit(b, ops);
-            ops.push(Op::Select);
-            dc.max(da + 1).max(db + 2)
-        }
+            Low::Arg(a) => {
+                self.ops.push(Op::Arg(*a));
+                1
+            }
+            Low::Hole(_) => {
+                // Every hole is filled before compiling; one left over is a
+                // variable with no value here.
+                self.ops.push(Op::Const(f64::NAN));
+                1
+            }
+            Low::Neg(a) => {
+                let d = self.emit(a, slot)?;
+                self.ops.push(Op::Neg);
+                d
+            }
+            Low::Bin(op, a, b) => {
+                let da = self.emit(a, slot)?;
+                let db = self.emit(b, slot)?;
+                self.ops.push(Op::Bin(*op));
+                da.max(db + 1)
+            }
+            Low::Call(f, args) => {
+                let mut depth = 0;
+                for (i, a) in args.iter().enumerate() {
+                    depth = depth.max(self.emit(a, slot)? + i);
+                }
+                self.ops.push(Op::Call(*f, args.len() as u8));
+                depth.max(1)
+            }
+            Low::Select(c, a, b) => {
+                let dc = self.emit(c, slot)?;
+                let da = self.emit(a, slot)?;
+                let db = self.emit(b, slot)?;
+                self.ops.push(Op::Select);
+                dc.max(da + 1).max(db + 2)
+            }
+            Low::Integral { hole, body, lo, hi } => {
+                if slot as usize >= MAX_LOCALS {
+                    return Err("Integrals can nest at most 4 deep".into());
+                }
+                let dl = self.emit(lo, slot)?;
+                let dh = self.emit(hi, slot)?;
+                let inner = body.fill(*hole, &Low::Arg(Arg::Local(slot)));
+                self.subs.push(Program::compile_at(&inner, slot + 1)?);
+                self.ops.push(Op::Integral {
+                    sub: (self.subs.len() - 1) as u16,
+                    slot,
+                });
+                dl.max(dh + 1)
+            }
+        })
     }
 }
 
