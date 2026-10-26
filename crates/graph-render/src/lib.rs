@@ -1,7 +1,8 @@
 //! Draws graph-core scenes with wgpu. On Windows wgpu picks DirectX 12 (with
 //! Vulkan or software fallbacks), so nothing extra needs installing.
 
-use graph_core::Vertex;
+use graph_core::text::{ATLAS_CHANNELS, ATLAS_SIZE};
+use graph_core::{TextAtlas, Vertex};
 use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
@@ -11,10 +12,13 @@ struct Uniforms {
     _pad: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var atlas_sampler: sampler;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
 };
 
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -24,9 +28,10 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 
 @vertex
-fn vs(@location(0) p: vec2<f32>, @location(1) c: vec4<f32>) -> VOut {
+fn vs(@location(0) p: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) c: vec4<f32>) -> VOut {
     var o: VOut;
     o.pos = vec4<f32>(p.x / u.size.x * 2.0 - 1.0, 1.0 - p.y / u.size.y * 2.0, 0.0, 1.0);
+    o.uv = uv;
     o.color = c;
     if (u.linearize > 0.5) {
         o.color = vec4<f32>(to_linear(c.rgb), c.a);
@@ -36,7 +41,11 @@ fn vs(@location(0) p: vec2<f32>, @location(1) c: vec4<f32>) -> VOut {
 
 @fragment
 fn fs(i: VOut) -> @location(0) vec4<f32> {
-    return i.color;
+    // Red is ink coverage and green the halo around it; shapes sample a
+    // patch where both are 1, so they come out as their plain color.
+    let t = textureSample(atlas, atlas_sampler, i.uv).rg;
+    let rgb = mix(vec3<f32>(1.0), i.color.rgb, t.r);
+    return vec4<f32>(rgb, i.color.a * t.g);
 }
 "#;
 
@@ -114,6 +123,8 @@ pub struct GraphRenderer {
     bind_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     vertex_capacity: u64,
+    atlas: wgpu::Texture,
+    atlas_generation: u64,
     format: wgpu::TextureFormat,
     samples: u32,
     msaa: Option<(wgpu::TextureView, u32, u32)>,
@@ -138,16 +149,34 @@ impl GraphRenderer {
         });
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("graph uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("graph layout"),
@@ -164,7 +193,7 @@ impl GraphRenderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -192,13 +221,44 @@ impl GraphRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("text atlas"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("text atlas"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let atlas_view = atlas.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("graph uniforms"),
+            label: Some("graph bindings"),
             layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
         });
         let vertex_capacity = 1 << 16;
         let vertices = Self::vertex_buffer(device, vertex_capacity);
@@ -208,6 +268,8 @@ impl GraphRenderer {
             bind_group,
             vertices,
             vertex_capacity,
+            atlas,
+            atlas_generation: 0,
             format,
             samples,
             msaa: None,
@@ -228,7 +290,7 @@ impl GraphRenderer {
     }
 
     /// Clears the whole target to white and draws `vertices` (in graph-area
-    /// pixels) into `area`.
+    /// pixels) into `area`, uploading the text atlas first if it changed.
     pub fn draw(
         &mut self,
         gpu: &Gpu,
@@ -236,8 +298,26 @@ impl GraphRenderer {
         target_size: (u32, u32),
         area: Area,
         vertices: &[Vertex],
+        text: &TextAtlas,
     ) {
         let (device, queue) = (&gpu.device, &gpu.queue);
+        if text.generation != self.atlas_generation {
+            self.atlas_generation = text.generation;
+            queue.write_texture(
+                self.atlas.as_image_copy(),
+                &text.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ATLAS_SIZE * ATLAS_CHANNELS as u32),
+                    rows_per_image: Some(ATLAS_SIZE),
+                },
+                wgpu::Extent3d {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         let count = vertices.len() as u64;
         if count > self.vertex_capacity {
             self.vertex_capacity = count.next_power_of_two();
@@ -322,7 +402,13 @@ impl GraphRenderer {
 
 /// Renders a scene without a window and returns tightly packed RGBA8 pixels.
 /// Used by the `--render-png` self-test and by CI.
-pub fn render_offscreen(gpu: &Gpu, width: u32, height: u32, vertices: &[Vertex]) -> Vec<u8> {
+pub fn render_offscreen(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    vertices: &[Vertex],
+    text: &TextAtlas,
+) -> Vec<u8> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = GraphRenderer::new(gpu, format);
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -346,7 +432,7 @@ pub fn render_offscreen(gpu: &Gpu, width: u32, height: u32, vertices: &[Vertex])
         width,
         height,
     };
-    renderer.draw(gpu, &view, (width, height), area, vertices);
+    renderer.draw(gpu, &view, (width, height), area, vertices, text);
 
     let padded_row = (width * 4).div_ceil(256) * 256;
     let readback = gpu
@@ -390,7 +476,7 @@ pub fn render_offscreen(gpu: &Gpu, width: u32, height: u32, vertices: &[Vertex])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::scene::{DEFAULT_CURVE_WIDTH, DESMOS_COLORS};
+    use graph_core::scene::DESMOS_COLORS;
     use graph_core::{build_scene, Curve, Viewport};
 
     #[test]
@@ -404,17 +490,20 @@ mod tests {
         };
         let (w, h) = (400, 240);
         let vp = Viewport::new(w as f64, h as f64);
-        let curve = Curve {
-            f: &f64::sin,
-            color: DESMOS_COLORS[0],
-            width: DEFAULT_CURVE_WIDTH,
-        };
-        let px = render_offscreen(&gpu, w, h, &build_scene(&vp, 1.0, &[curve]));
+        let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
+        let mut text = graph_core::TextAtlas::system();
+        let scene = build_scene(&vp, 1.0, &[curve], &mut text);
+        let px = render_offscreen(&gpu, w, h, &scene, &text);
         let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
         // Corner is white paper.
         assert_eq!(at(3, 3), &[255, 255, 255, 255]);
         // sin(pi/2) = 1 at x = pi/2: column 231, row 120 - 20 = 100.
         let red = at(231, 100);
         assert!(red[0] > 150 && red[1] < 120 && red[2] < 120, "got {red:?}");
+        if text.has_font() {
+            // The "5" under x = 5 (column 300) is drawn in dark ink.
+            let dark = (124..142).any(|y| (292..308).any(|x| at(x, y)[0] < 80));
+            assert!(dark, "no axis number under x = 5");
+        }
     }
 }

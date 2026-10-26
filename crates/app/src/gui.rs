@@ -2,8 +2,8 @@
 //! WebView2 child covers the left side with the MathQuill expression panel.
 //! This is the layout wry's own wgpu example uses on Windows.
 
-use graph_core::scene::{DEFAULT_CURVE_WIDTH, DESMOS_COLORS};
-use graph_core::{build_scene, Curve, Viewport};
+use crate::engine::Engine;
+use graph_core::{build_scene, TextAtlas, Viewport};
 use graph_render::{new_instance, Area, Gpu, GraphRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,9 +73,15 @@ struct Running {
     cursor: Option<PhysicalPosition<f64>>,
     dragging: bool,
     panel_ready: bool,
-    expressions: Vec<String>,
+    engine: Engine,
+    text: TextAtlas,
+    /// Whether rows have arrived from the panel at least once.
+    rows_received: bool,
     frames: u64,
     last_stats: Instant,
+    /// Presentation times while the smoke test plays a slider.
+    play_frames: Vec<Instant>,
+    smoke_test: bool,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -218,9 +224,13 @@ impl Running {
             cursor: None,
             dragging: false,
             panel_ready: false,
-            expressions: Vec::new(),
+            engine: Engine::default(),
+            text: TextAtlas::system(),
+            rows_received: false,
             frames: 0,
             last_stats: Instant::now() - STATS_INTERVAL,
+            play_frames: Vec::new(),
+            smoke_test: options.smoke_test.is_some(),
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -298,21 +308,23 @@ impl Running {
         };
         let start = Instant::now();
         let scale = self.window.scale_factor() as f32;
-        let curve = Curve {
-            f: &f64::sin,
-            color: DESMOS_COLORS[0],
-            width: DEFAULT_CURVE_WIDTH,
-        };
-        let vertices = build_scene(&self.viewport, scale, &[curve]);
+        let (viewport, text) = (&self.viewport, &mut self.text);
+        let vertices = self
+            .engine
+            .with_curves(|curves| build_scene(viewport, scale, curves, text));
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
         let size = (self.config.width, self.config.height);
+        let area = self.graph_area();
         self.renderer
-            .draw(&self.gpu, &view, size, self.graph_area(), &vertices);
+            .draw(&self.gpu, &view, size, area, &vertices, &self.text);
         self.window.pre_present_notify();
         self.gpu.queue.present(frame);
         self.frames += 1;
+        if self.smoke_test && self.rows_received {
+            self.play_frames.push(Instant::now());
+        }
 
         if self.panel_ready && self.last_stats.elapsed() >= STATS_INTERVAL {
             self.last_stats = Instant::now();
@@ -339,18 +351,18 @@ impl Running {
                 );
                 let info = serde_json::to_string(&info).unwrap_or_default();
                 self.run_script(&format!("window.engine.info({info})"));
+                if self.smoke_test {
+                    // Add a slider and play it, so the report shows the frame
+                    // rate while the graph animates.
+                    self.run_script("window.engine.demo()");
+                }
                 self.window.request_redraw();
             }
-            Some("exprs") => {
-                // Phase 0 only records what was typed; Phase 1 parses and graphs it.
-                self.expressions = value["latex"]
-                    .as_array()
-                    .map(|rows| {
-                        rows.iter()
-                            .filter_map(|r| r.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+            Some("rows") => {
+                let results = self.engine.update(&value["rows"]);
+                self.rows_received = true;
+                self.run_script(&format!("window.engine.analysis({results})"));
+                self.window.request_redraw();
             }
             _ => {}
         }
@@ -377,16 +389,27 @@ fn panel_bounds(window: &Window) -> Rect {
 fn finish_smoke_test(state: Option<&Running>, path: &std::path::Path) -> Result<(), String> {
     let (ok, report) = match state {
         None => (false, "window did not start".to_owned()),
-        Some(s) => (
-            s.panel_ready && s.frames > 0 && !s.expressions.is_empty(),
-            format!(
-                "adapter: {}\nframes rendered: {}\npanel ready: {}\nexpressions from panel: {:?}\n",
-                s.gpu.describe(),
-                s.frames,
-                s.panel_ready,
-                s.expressions
-            ),
-        ),
+        Some(s) => {
+            // Frame rate over the second half of the run, while the demo
+            // slider plays.
+            let tail = &s.play_frames[s.play_frames.len() / 2..];
+            let fps = match (tail.first(), tail.last()) {
+                (Some(a), Some(b)) if b > a => (tail.len() - 1) as f64 / (*b - *a).as_secs_f64(),
+                _ => 0.0,
+            };
+            (
+                s.panel_ready && s.frames > 0 && !s.engine.curves.is_empty(),
+                format!(
+                    "adapter: {}\nframes rendered: {}\npanel ready: {}\nrows from panel: {:?}\n\
+                     curves drawn: {}\nframes per second while a slider plays: {fps:.1}\n",
+                    s.gpu.describe(),
+                    s.frames,
+                    s.panel_ready,
+                    s.engine.latex,
+                    s.engine.curves.len(),
+                ),
+            )
+        }
     };
     let report = format!(
         "{}\n{report}",

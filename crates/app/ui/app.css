@@ -118,4 +118,196 @@ button.icon:disabled { color: #bbb; cursor: default; }
   color: #777;
   line-height: 1.5;
 }
-#note { margin-top: 4px; color: #999; }
+
+
+/* ---- Row contents added in Phase 1 ---- */
+.row .body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.row .body .math { flex: none; min-height: 44px; }
+
+.row .swatch {
+  border: 3px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  display: none;
+}
+.row.graphed .swatch { display: block; }
+.row.slider .swatch { display: none; }
+
+.row .play {
+  display: none;
+  position: absolute;
+  top: 18px;
+  left: 12px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  background: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+.row.slider .play { display: block; }
+.row .play .tri {
+  position: absolute;
+  left: 8px;
+  top: 5px;
+  border-style: solid;
+  border-width: 6px 0 6px 10px;
+  border-color: transparent transparent transparent currentColor;
+}
+.row .play .bars { display: none; }
+.row.playing .play .tri { display: none; }
+.row.playing .play .bars {
+  display: block;
+  position: absolute;
+  left: 6px;
+  top: 5px;
+  width: 3px;
+  height: 12px;
+  background: currentColor;
+  box-shadow: 7px 0 0 currentColor;
+}
+
+.row .warn {
+  display: none;
+  position: absolute;
+  top: 18px;
+  left: 14px;
+  font-size: 22px;
+  line-height: 1;
+  color: #e8803a;
+  cursor: help;
+  outline: none;
+}
+.row.not-yet .warn { color: #9a9a9a; }
+.row.has-error .warn { display: block; }
+.row.has-error .swatch, .row.has-error .play { display: none; }
+.row .warn:hover::after, .row .warn:focus::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 30px;
+  top: -4px;
+  z-index: 10;
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #333;
+  color: #fff;
+  font-size: 13px;
+  font-family: "Segoe UI", Arial, sans-serif;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.row .value {
+  display: none;
+  align-self: flex-end;
+  margin: -6px 36px 8px 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #f2f2f2;
+  color: #555;
+  font-size: 16px;
+}
+.row.has-value .value { display: block; }
+
+.row .slider-box {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 36px 10px 12px;
+  font-size: 12px;
+  color: #777;
+}
+.row.slider .slider-box { display: flex; }
+.row.limits-open .slider-box { display: none; }
+.row .slider-box input[type=range] { flex: 1; min-width: 0; accent-color: #2f72dc; }
+.row .lim { cursor: pointer; padding: 2px; border-radius: 3px; }
+.row .lim:hover { background: #eee; color: #333; }
+
+.row .limits {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 36px 10px 12px;
+  font-size: 13px;
+  color: #555;
+}
+.row.slider.limits-open .limits { display: flex; }
+.row .limits input {
+  font: inherit;
+  width: 4em;
+  padding: 2px 4px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.row .missing {
+  display: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 36px 10px 12px;
+  font-size: 13px;
+  color: #777;
+}
+.row.has-missing .missing { display: flex; }
+.row .add-slider {
+  font: inherit;
+  font-size: 14px;
+  min-width: 28px;
+  padding: 1px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+.row .add-slider:hover { background: #f0f0f0; }
+
+/* ---- Style menu (hold a color circle) ---- */
+#style-menu {
+  display: none;
+  position: fixed;
+  z-index: 20;
+  width: 190px;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  color: #555;
+}
+#style-menu.open { display: block; }
+#style-menu .colors { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+#style-menu .color {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+#style-menu .color.chosen { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #2f72dc; }
+#style-menu .styles { display: flex; gap: 4px; margin-bottom: 8px; }
+#style-menu .styles button {
+  flex: 1;
+  height: 26px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+#style-menu .styles button.chosen { border-color: #2f72dc; background: #eef3fc; }
+#style-menu .styles svg { width: 100%; height: 100%; }
+#style-menu label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+#style-menu label input { width: 100px; }

@@ -1,0 +1,8 @@
+[package]
+name = "graph-expr"
+description = "Reads MathQuill LaTeX with Desmos's rules, works out what each row means, and compiles it for fast evaluation."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

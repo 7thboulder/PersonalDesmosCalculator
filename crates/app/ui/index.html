@@ -19,9 +19,17 @@
   <div id="status">
     <div id="engine">Starting graph engine&hellip;</div>
     <div id="frame"></div>
-    <div id="note">Prototype: the graph always shows y = sin(x). Typing reaches the
-      engine, and graphing what you type arrives in Phase 1.</div>
   </div>
+</div>
+<div id="style-menu">
+  <div class="colors"></div>
+  <div class="styles">
+    <button data-style="solid" title="Solid"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button>
+    <button data-style="dashed" title="Dashed"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-dasharray="8 5"/></svg></button>
+    <button data-style="dotted" title="Dotted"><svg viewBox="0 0 40 10"><line x1="3" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="0.1 6"/></svg></button>
+  </div>
+  <label>Thickness <input class="width" type="range" min="0.5" max="10" step="0.5"></label>
+  <label>Opacity <input class="opacity" type="range" min="0" max="1" step="0.05"></label>
 </div>
 <script>{{JQUERY}}</script>
 <script>{{MATHQUILL_JS}}</script>
