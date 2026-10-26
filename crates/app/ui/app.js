@@ -18,7 +18,7 @@
     supSubsRequireOperand: true,
     charsThatBreakOutOfSupSub: '+-=<>',
     autoSubscriptNumerals: true,
-    autoCommands: 'pi theta tau phi alpha beta gamma delta sqrt sum prod nthroot',
+    autoCommands: 'pi theta tau phi alpha beta gamma delta sqrt sum prod int nthroot',
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan sinh cosh tanh ' +
       'ln log exp min max floor ceil round sign mod mean median total length gcd lcm'
   };
