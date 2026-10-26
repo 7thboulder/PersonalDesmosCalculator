@@ -16,6 +16,9 @@ use graph_render::{Shading, Test};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+// The renderer reserves room for exactly the numbers the WGSL reads.
+const _: () = assert!(wgsl::MAX_CONSTANTS == graph_render::MAX_CONSTANTS);
+
 /// Combines two hashes into one.
 fn mix(a: u64, b: u64) -> u64 {
     (a ^ b.wrapping_mul(0x9e37_79b9_7f4a_7c15)).rotate_left(23)
@@ -106,7 +109,7 @@ pub struct GraphRegion {
     pub width: f32,
     pub style: LineStyle,
     /// The relation as WGSL, when the GPU can evaluate it.
-    pub shader: Option<String>,
+    pub shader: Option<wgsl::Shader>,
     /// As [`GraphCurve::key`].
     pub key: u64,
 }
@@ -414,7 +417,8 @@ impl Engine {
                     return None; // Nothing here for the GPU to do.
                 }
                 Some(Shading {
-                    body: r.shader.clone()?,
+                    body: r.shader.as_ref()?.body.clone(),
+                    constants: r.shader.as_ref()?.constants.clone(),
                     test,
                     color: r.color,
                     fill_opacity: SHADE_OPACITY,

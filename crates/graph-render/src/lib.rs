@@ -6,7 +6,7 @@ use graph_core::{Scene, TextAtlas, Vertex};
 use wgpu::util::DeviceExt;
 
 mod shade;
-pub use shade::{Shading, ShadingRenderer, Test};
+pub use shade::{Shading, ShadingRenderer, Test, MAX_CONSTANTS};
 
 const SHADER: &str = r#"
 struct Uniforms {
@@ -582,7 +582,8 @@ mod tests {
         let scene = build_scene(&vp, 1.0, &Plot::default(), &mut text);
         // y > 0, in blue at Desmos's shading opacity.
         let shading = Shading {
-            body: "    return y;\n".into(),
+            body: "    return y - u.k[0][1];\n".into(),
+            constants: vec![7.0, 0.0],
             test: Some(Test::Greater),
             color: [0.176, 0.439, 0.702, 1.0],
             fill_opacity: 0.4,

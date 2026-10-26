@@ -41,8 +41,12 @@ impl Test {
 /// One relation for the GPU to draw this frame.
 #[derive(Clone, Debug)]
 pub struct Shading {
-    /// WGSL body of `fn f(x: f32, y: f32) -> f32`, including `return`.
+    /// WGSL body of `fn relation(x: f32, y: f32) -> f32`, including
+    /// `return`. Its numbers are read from `u.k[i / 4][i % 4]`.
     pub body: String,
+    /// The numbers the body reads, at most [`MAX_CONSTANTS`]. Only the body
+    /// picks the compiled pipeline, so changing these is cheap.
+    pub constants: Vec<f32>,
     /// Which side to fill, or `None` for an equation, which has no inside.
     pub test: Option<Test>,
     /// Straight (not premultiplied) colour.
@@ -69,11 +73,16 @@ struct Uniforms {
     fill_opacity: f32,
     line_px: f32,
     _pad: [f32; 2],
+    /// The relation's numbers, four to a vec4 as WGSL lays out arrays.
+    k: [[f32; 4]; MAX_CONSTANTS / 4],
 }
+
+/// How many numbers a relation can pass in, as graph-expr's WGSL expects.
+pub const MAX_CONSTANTS: usize = 256;
 
 /// Uniform buffers are written at 256-byte aligned offsets, which is the
 /// strictest alignment wgpu's downlevel defaults require.
-const UNIFORM_STRIDE: u64 = 256;
+const UNIFORM_STRIDE: u64 = (std::mem::size_of::<Uniforms>() as u64).next_multiple_of(256);
 /// How many regions one frame can shade before the buffer is grown.
 const INITIAL_REGIONS: u64 = 8;
 
@@ -167,18 +176,23 @@ impl ShadingRenderer {
             self.bind_group = bind_group;
         }
         for (i, s) in shadings.iter().enumerate() {
-            if !self.pipelines.contains_key(&s.body) {
-                let pipeline = self.compile(gpu, format, samples, &s.body);
+            let body = &s.body;
+            if !self.pipelines.contains_key(body) {
+                let pipeline = self.compile(gpu, format, samples, body);
                 self.pipelines.insert(
-                    s.body.clone(),
+                    body.clone(),
                     Pipeline {
                         pipeline,
                         last_used: self.frame,
                     },
                 );
             }
-            if let Some(p) = self.pipelines.get_mut(&s.body) {
+            if let Some(p) = self.pipelines.get_mut(body) {
                 p.last_used = self.frame;
+            }
+            let mut k = [[0.0; 4]; MAX_CONSTANTS / 4];
+            for (i, &v) in s.constants.iter().take(MAX_CONSTANTS).enumerate() {
+                k[i / 4][i % 4] = v;
             }
             let uniforms = Uniforms {
                 color: s.color,
@@ -192,6 +206,7 @@ impl ShadingRenderer {
                 },
                 line_px: s.line_px,
                 _pad: [0.0; 2],
+                k,
             };
             gpu.queue.write_buffer(
                 &self.uniforms,
@@ -280,6 +295,7 @@ struct Uniforms {{
     fill_opacity: f32,
     line_px: f32,
     pad: vec2<f32>,
+    k: array<vec4<f32>, {constants}>,
 }};
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -337,5 +353,6 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
         prelude = graph_core::shader::PRELUDE,
         body = body,
         linearize = if srgb { "true" } else { "false" },
+        constants = MAX_CONSTANTS / 4,
     )
 }
