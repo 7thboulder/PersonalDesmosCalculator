@@ -251,6 +251,24 @@ impl Interaction {
         }
     }
 
+    /// Whether the mouse at `at` is over something a press would grab: a
+    /// draggable point, a point of interest or a curve. The window shows a
+    /// pointer there, as Desmos does.
+    pub fn over_something(&mut self, engine: &Engine, vp: &Viewport, at: [f64; 2]) -> bool {
+        if self.mode != Mode::Idle {
+            return !matches!(self.mode, Mode::Pan);
+        }
+        let reach = DRAG_GRAB_PX * self.scale;
+        let draggable = engine.points.iter().any(|p| {
+            p.drag.is_some()
+                && p.points.len() == 1
+                && dist(vp.to_screen(p.points[0][0], p.points[0][1]), at) <= reach
+        });
+        draggable
+            || self.near_poi(engine, vp, at, GRAB_PX).is_some()
+            || self.near_curve(engine, vp, at).is_some()
+    }
+
     pub fn release(&mut self) {
         self.mode = Mode::Idle;
     }

@@ -14,7 +14,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 use wry::{Rect, WebView, WebViewBuilder};
 
 /// Width of the expression panel in logical pixels, close to Desmos's default.
@@ -284,6 +284,14 @@ impl Running {
             return;
         };
         let effect = self.interact.moved(&self.engine, &self.viewport, [x, y]);
+        let pointer = self
+            .interact
+            .over_something(&self.engine, &self.viewport, [x, y]);
+        self.window.set_cursor(if pointer {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Default
+        });
         if effect == Effect::Pan {
             if let (true, Some(previous)) = (self.dragging, previous) {
                 self.viewport

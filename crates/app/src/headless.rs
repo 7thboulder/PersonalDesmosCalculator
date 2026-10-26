@@ -71,11 +71,6 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         interact.moved(&engine, &vp, vp.to_screen(x, y));
     }
     let marks = interact.marks(&engine, &vp);
-    eprintln!(
-        "DEBUG {select:?} {} {:?}",
-        marks.len(),
-        engine.curves.iter().map(|c| c.row).collect::<Vec<_>>()
-    );
     let scene = engine.with_plot_marks(&marks, |plot| build_scene(&vp, 1.0, plot, &mut text));
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
