@@ -33,9 +33,15 @@ jobs:
 
       - name: Offscreen render check
         # Runners have no GPU, so this exercises wgpu's software fallback (WARP).
+        # graphcalc.exe is a GUI-subsystem app, so PowerShell does not wait for
+        # it or set $LASTEXITCODE; Start-Process -Wait gives the real exit code.
+        shell: pwsh
         run: |
-          ./target/release/graphcalc.exe --render-png render.png 1200x800
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath ./target/release/graphcalc.exe `
+            -ArgumentList '--render-png','render.png','1200x800' `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput render.txt
+          Get-Content render.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Window smoke test
         # Opens the real window with the editor panel, screenshots the desktop
