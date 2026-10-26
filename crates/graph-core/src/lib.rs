@@ -18,8 +18,8 @@ pub use poi::{
 };
 pub use sample::{sample_parametric, Axis};
 pub use scene::{
-    build_scene, Curve, Implicit, Mark, MarkKind, Parametric, Plot, PointStyle, Points, Polygon,
-    Scene,
+    build_scene, build_scene_cached, Curve, Implicit, LineCache, Mark, MarkKind, Parametric, Plot,
+    PointStyle, Points, Polygon, Scene,
 };
 pub use tess::{LineStyle, Vertex};
 pub use text::TextAtlas;

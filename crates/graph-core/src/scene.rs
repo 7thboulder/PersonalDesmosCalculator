@@ -6,6 +6,7 @@ use crate::tess::{
 };
 use crate::text::TextAtlas;
 use crate::Viewport;
+use std::collections::HashMap;
 
 /// Desmos's default curve colors, in the order new expressions receive them.
 pub const DESMOS_COLORS: [[f32; 4]; 6] = [
@@ -50,6 +51,9 @@ pub struct Curve<'a> {
     /// Thickness in logical pixels.
     pub width: f32,
     pub style: LineStyle,
+    /// Changes whenever `f` does, so a [`LineCache`] can keep its samples.
+    /// None means sample it afresh every frame.
+    pub key: Option<u64>,
 }
 
 impl<'a> Curve<'a> {
@@ -61,6 +65,7 @@ impl<'a> Curve<'a> {
             color,
             width: DEFAULT_CURVE_WIDTH,
             style: LineStyle::Solid,
+            key: None,
         }
     }
 }
@@ -73,6 +78,8 @@ pub struct Implicit<'a> {
     /// Thickness in logical pixels.
     pub width: f32,
     pub style: LineStyle,
+    /// As [`Curve::key`].
+    pub key: Option<u64>,
 }
 
 /// A parametric curve (x(t), y(t)) for t across `domain`; polar curves are
@@ -85,6 +92,8 @@ pub struct Parametric<'a> {
     /// Thickness in logical pixels.
     pub width: f32,
     pub style: LineStyle,
+    /// As [`Curve::key`].
+    pub key: Option<u64>,
 }
 
 /// How a point is marked, matching Desmos's point styles.
@@ -169,6 +178,166 @@ pub struct Scene {
 /// curves, then points on top. `scale` is the display's DPI scale (1.0 at
 /// 100%, 1.5 at 150%).
 pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas) -> Scene {
+    build_scene_cached(vp, scale, plot, text, &mut LineCache::default())
+}
+
+/// The sampled lines of keyed curves from earlier frames. A curve whose key
+/// and scale are unchanged is not sampled again: panning moves its lines,
+/// and a slider that moves one curve leaves the others alone. When panning
+/// leaves the area sampled, the curve is sampled over three times the view
+/// each way, so the next stretch of panning is free too.
+#[derive(Default)]
+pub struct LineCache {
+    curves: HashMap<u64, Sampled>,
+    parametrics: HashMap<u64, Sampled>,
+    implicits: HashMap<u64, Sampled>,
+}
+
+/// Lines in the screen coordinates of the view they were sampled in.
+struct Sampled {
+    vp: Viewport,
+    lines: Vec<Vec<[f32; 2]>>,
+}
+
+/// What to do for one curve this frame.
+enum Plan {
+    Reuse(Vec<Vec<[f32; 2]>>),
+    Sample(Viewport),
+}
+
+/// Extra screen space kept when clipping reused lines, so thick lines and
+/// round caps at the edge still draw.
+const CLIP_MARGIN_PX: f32 = 32.0;
+
+fn plan(cached: Option<&Sampled>, vp: &Viewport, widen: bool) -> Plan {
+    let Some(c) = cached.filter(|c| c.vp.units_per_px == vp.units_per_px) else {
+        return Plan::Sample(*vp);
+    };
+    let ((x0, x1), (y0, y1)) = (vp.x_range(), vp.y_range());
+    let ((cx0, cx1), (cy0, cy1)) = (c.vp.x_range(), c.vp.y_range());
+    if cx0 <= x0 && x1 <= cx1 && cy0 <= y0 && y1 <= cy1 {
+        return Plan::Reuse(moved(&c.lines, &c.vp, vp));
+    }
+    if !widen {
+        return Plan::Sample(*vp);
+    }
+    // Panning: sample a wider area so the next frames can reuse it.
+    let mut wide = *vp;
+    wide.width_px *= 3.0;
+    wide.height_px *= 3.0;
+    Plan::Sample(wide)
+}
+
+/// `lines` sampled in view `from`, moved into view `to` (same scale) and
+/// cut down to what can be seen there.
+fn moved(lines: &[Vec<[f32; 2]>], from: &Viewport, to: &Viewport) -> Vec<Vec<[f32; 2]>> {
+    if from == to {
+        return lines.to_vec();
+    }
+    let at = to.to_screen(from.center[0], from.center[1]);
+    let dx = (at[0] - from.width_px / 2.0) as f32;
+    let dy = (at[1] - from.height_px / 2.0) as f32;
+    let (w, h, m) = (to.width_px as f32, to.height_px as f32, CLIP_MARGIN_PX);
+    let seen = |p: [f32; 2], q: [f32; 2]| {
+        p[0].max(q[0]) >= -m
+            && p[0].min(q[0]) <= w + m
+            && p[1].max(q[1]) >= -m
+            && p[1].min(q[1]) <= h + m
+    };
+    let mut out = Vec::new();
+    for line in lines {
+        let mut piece: Vec<[f32; 2]> = Vec::new();
+        for pair in line.windows(2) {
+            let p = [pair[0][0] + dx, pair[0][1] + dy];
+            let q = [pair[1][0] + dx, pair[1][1] + dy];
+            if seen(p, q) {
+                if piece.is_empty() {
+                    piece.push(p);
+                }
+                piece.push(q);
+            } else if !piece.is_empty() {
+                out.push(std::mem::take(&mut piece));
+            }
+        }
+        if let [p] = line[..] {
+            let p = [p[0] + dx, p[1] + dy];
+            if seen(p, p) {
+                piece.push(p);
+            }
+        }
+        if !piece.is_empty() {
+            out.push(piece);
+        }
+    }
+    out
+}
+
+/// Samples (or reuses) one kind of curve: `key` and `sample` for each.
+fn sample_all<T: Sync>(
+    items: &[T],
+    cache: &mut HashMap<u64, Sampled>,
+    vp: &Viewport,
+    widen: bool,
+    key: impl Fn(&T) -> Option<u64>,
+    sample: impl Fn(&T, &Viewport) -> Vec<Vec<[f32; 2]>> + Sync,
+) -> Vec<Vec<Vec<[f32; 2]>>> {
+    let plans: Vec<Plan> = items
+        .iter()
+        .map(|item| match key(item) {
+            Some(k) => plan(cache.get(&k), vp, widen),
+            None => Plan::Sample(*vp),
+        })
+        .collect();
+    let sample = &sample;
+    let results: Vec<Option<Vec<Vec<[f32; 2]>>>> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = items
+            .iter()
+            .zip(&plans)
+            .map(|(item, plan)| match plan {
+                Plan::Sample(v) => Some(scope.spawn(move || sample(item, v))),
+                Plan::Reuse(_) => None,
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|j| j.map(|j| j.join().unwrap_or_default()))
+            .collect()
+    });
+    let mut used = HashMap::new();
+    let mut out = Vec::with_capacity(items.len());
+    for ((item, plan), result) in items.iter().zip(plans).zip(results) {
+        let k = key(item);
+        match (plan, result) {
+            (Plan::Reuse(lines), _) => {
+                if let Some(k) = k {
+                    if let Some(c) = cache.remove(&k) {
+                        used.insert(k, c);
+                    }
+                }
+                out.push(lines);
+            }
+            (Plan::Sample(v), Some(lines)) => {
+                let shown = moved(&lines, &v, vp);
+                if let Some(k) = k {
+                    used.insert(k, Sampled { vp: v, lines });
+                }
+                out.push(shown);
+            }
+            (Plan::Sample(_), None) => out.push(Vec::new()),
+        }
+    }
+    // Only what this frame drew is kept.
+    *cache = used;
+    out
+}
+
+/// As [`build_scene`], reusing lines from `cache` where it can.
+pub fn build_scene_cached(
+    vp: &Viewport,
+    scale: f32,
+    plot: &Plot,
+    text: &mut TextAtlas,
+    cache: &mut LineCache,
+) -> Scene {
     let Plot {
         curves,
         parametrics,
@@ -223,31 +392,32 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
     labels(vp, scale, spacing.major, text, &mut out);
 
     // Sampling and tracing are the expensive parts, so every curve runs on
-    // its own thread.
-    let (sampled, swept, traced) = std::thread::scope(|scope| {
-        let curve_jobs: Vec<_> = curves
-            .iter()
-            .map(|c| scope.spawn(move || sample_curve(c.f, vp, c.axis)))
-            .collect();
-        let parametric_jobs: Vec<_> = parametrics
-            .iter()
-            .map(|p| scope.spawn(move || sample_parametric(p.x, p.y, p.domain, vp)))
-            .collect();
-        let implicit_jobs: Vec<_> = implicits
-            .iter()
-            .map(|i| scope.spawn(move || trace_implicit(i.field, vp)))
-            .collect();
-        let finish = |jobs: Vec<std::thread::ScopedJoinHandle<Vec<Vec<[f32; 2]>>>>| {
-            jobs.into_iter()
-                .map(|j| j.join().unwrap_or_default())
-                .collect::<Vec<_>>()
-        };
-        (
-            finish(curve_jobs),
-            finish(parametric_jobs),
-            finish(implicit_jobs),
-        )
-    });
+    // its own thread, unless its lines from an earlier frame still serve.
+    let sampled = sample_all(
+        curves,
+        &mut cache.curves,
+        vp,
+        true,
+        |c| c.key,
+        |c, v| sample_curve(c.f, v, c.axis),
+    );
+    let swept = sample_all(
+        parametrics,
+        &mut cache.parametrics,
+        vp,
+        true,
+        |p| p.key,
+        |p, v| sample_parametric(p.x, p.y, p.domain, v),
+    );
+    // Tracing three times the view each way costs too much to do ahead.
+    let traced = sample_all(
+        implicits,
+        &mut cache.implicits,
+        vp,
+        false,
+        |i| i.key,
+        |i, v| trace_implicit(i.field, v),
+    );
     for polygon in polygons {
         draw_polygon(vp, scale, polygon, &mut out);
     }
@@ -605,6 +775,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn panned_lines_come_from_the_cache_and_stay_on_the_curve() {
+        let sin = |x: f64| x.sin();
+        let mut curve = Curve::new(&sin, DESMOS_COLORS[0]);
+        curve.key = Some(7);
+        let mut cache = HashMap::new();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut draw = |vp: &Viewport| {
+            sample_all(
+                &[&curve],
+                &mut cache,
+                vp,
+                true,
+                |c| c.key,
+                |c, v| {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    sample_curve(c.f, v, c.axis)
+                },
+            )
+            .remove(0)
+        };
+        let mut vp = Viewport::new(800.0, 600.0);
+        draw(&vp);
+        let mut lines = Vec::new();
+        for _ in 0..5 {
+            vp.pan_px(37.0, -11.0);
+            lines = draw(&vp);
+        }
+        // The first pan samples three times the view; the rest reuse it.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        let (w, h) = (vp.width_px as f32, vp.height_px as f32);
+        let mut seen = 0;
+        for p in lines.iter().flatten() {
+            assert!(p[0] > -100.0 && p[0] < w + 100.0 && p[1] > -100.0 && p[1] < h + 100.0);
+            let [x, y] = vp.to_world(p[0] as f64, p[1] as f64);
+            assert!(
+                (y - x.sin()).abs() < vp.units_per_px,
+                "{p:?} is off the curve"
+            );
+            seen += 1;
+        }
+        assert!(seen > 20);
+        // Zooming samples again.
+        vp.zoom_at(400.0, 300.0, 1.1);
+        draw(&vp);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+    }
+
+    #[test]
     fn scene_has_paper_grid_axes_and_curve() {
         let vp = Viewport::new(1000.0, 600.0);
         let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
@@ -628,6 +846,7 @@ mod tests {
             color: DESMOS_COLORS[1],
             width: DEFAULT_CURVE_WIDTH,
             style: LineStyle::Solid,
+            key: None,
         };
         let plot = Plot {
             implicits: &[implicit],
@@ -649,6 +868,7 @@ mod tests {
             color: DESMOS_COLORS[2],
             width: DEFAULT_CURVE_WIDTH,
             style: LineStyle::Solid,
+            key: None,
         };
         let points = Points {
             points: &[[1.0, 2.0], [f64::NAN, 0.0], [1e9, 0.0]],

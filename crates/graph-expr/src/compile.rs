@@ -315,6 +315,16 @@ impl Program {
         self.eval2(x, f64::NAN)
     }
 
+    /// A hash that changes whenever the program does, so drawn lines can
+    /// be kept while it stays the same. Only stable within one run.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Debug writes every float exactly, and says which op is which.
+        format!("{self:?}").hash(&mut h);
+        h.finish()
+    }
+
     /// The program's instructions, for backends that compile them further.
     pub fn ops(&self) -> &[Op] {
         &self.ops

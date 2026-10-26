@@ -1,7 +1,7 @@
 use crate::engine::Engine;
 use crate::interact::Interaction;
 use graph_core::scene::DESMOS_COLORS;
-use graph_core::{build_scene, TextAtlas, Viewport};
+use graph_core::{build_scene, build_scene_cached, LineCache, TextAtlas, Viewport};
 use graph_render::{new_instance, render_offscreen, Area, Gpu, GraphRenderer, ShadingRenderer};
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -613,13 +613,16 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
 
         let mut engine = Engine::default();
         engine.update(&serde_json::Value::Array(rows.clone()));
+        // As in the app, lines carry over from frame to frame.
+        let mut lines = LineCache::default();
         let mut frame =
             |engine: &mut Engine, vp: &Viewport, update: Option<&[serde_json::Value]>| {
                 let start = Instant::now();
                 if let Some(rows) = update {
                     engine.update(&serde_json::Value::Array(rows.to_vec()));
                 }
-                let scene = engine.with_plot(|plot| build_scene(vp, 1.0, plot, &mut text));
+                let scene = engine
+                    .with_plot(|plot| build_scene_cached(vp, 1.0, plot, &mut text, &mut lines));
                 let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
                 let cpu = start.elapsed();
                 renderer.draw_scene(
