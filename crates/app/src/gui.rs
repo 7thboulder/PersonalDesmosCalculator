@@ -592,10 +592,11 @@ impl Running {
     fn open_path(&mut self, path: PathBuf) {
         let opened = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| files::from_file(&text));
+            .and_then(|text| files::open_any(&text));
         match opened {
-            Ok((rows, view)) => {
-                self.doc.loading(Some(path));
+            Ok((rows, view, imported)) => {
+                // An imported Desmos graph saves to a new graph file.
+                self.doc.loading((!imported).then_some(path));
                 if let Some(view) = view {
                     view.apply(&mut self.viewport);
                 }
@@ -742,8 +743,14 @@ mod dialogs {
     /// Runs the open or save dialog, starting from `initial` when given.
     fn file_dialog(window: &Window, save: bool, initial: Option<&Path>) -> Option<PathBuf> {
         // Filters are pairs of NUL-terminated strings, ended by an extra NUL.
+        // Opening also takes Desmos graph states saved as JSON or text.
+        let desmos = if save {
+            ""
+        } else {
+            "Desmos graph states (*.json, *.txt)\0*.json;*.txt\0"
+        };
         let filter: Vec<u16> =
-            format!("Graphs (*.{EXTENSION})\0*.{EXTENSION}\0All files (*.*)\0*.*\0\0")
+            format!("Graphs (*.{EXTENSION})\0*.{EXTENSION}\0{desmos}All files (*.*)\0*.*\0\0")
                 .encode_utf16()
                 .collect();
         let ext = wide(EXTENSION);

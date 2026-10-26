@@ -1,7 +1,9 @@
 //! Golden tests: expressions exactly as MathQuill writes them, with the
 //! result Desmos gives. This is the Phase 1 gate for matching Desmos syntax.
 
-use graph_expr::{analyze, Axis, Compare, RowAnalysis, RowInput, RowKind, Value};
+use graph_expr::{
+    analyze, analyze_cached, Axis, Cache, Compare, RowAnalysis, RowInput, RowKind, Value,
+};
 
 fn rows(latex: &[&str]) -> Vec<RowAnalysis> {
     let input: Vec<RowInput> = latex
@@ -565,4 +567,182 @@ fn x_and_y_can_name_functions() {
     assert!(close(all[3].number().unwrap(), 4.0 * 0.5f64.sin()));
     // Bare x is still the graph variable.
     assert!(close(curve_at(&["x\\left(t\\right)=t", "y=x^2"], 3.0), 9.0));
+}
+
+#[test]
+fn polygons() {
+    let square = "\\operatorname{polygon}\\left(\\left(0,0\\right),\\left(1,0\\right),\\left(1,1\\right),\\left(0,1\\right)\\right)";
+    let r = one(square);
+    assert_eq!(r.error, None);
+    assert_eq!(
+        r.polygons,
+        vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]]
+    );
+    assert!(r.graphed() && r.value.is_none());
+    // From a list of points, from lists of coordinates, and one per element.
+    let all = rows(&[
+        "L=\\left[\\left(0,0\\right),\\left(2,0\\right),\\left(0,a\\right)\\right]",
+        "a=3",
+        "\\operatorname{polygon}\\left(L\\right)",
+        "\\operatorname{polygon}\\left(\\left[0,2,0\\right],\\left[0,0,3\\right]\\right)",
+        "\\operatorname{polygon}\\left(\\left(0,0\\right),\\left(1,0\\right),\\left(\\left[1,2\\right],1\\right)\\right)",
+        "P=\\operatorname{polygon}\\left(L\\right)",
+        "\\operatorname{length}\\left(\\left[P,P\\right]\\right)",
+    ]);
+    let triangle = vec![vec![[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]]];
+    assert_eq!(all[2].polygons, triangle);
+    assert_eq!(all[3].polygons, triangle);
+    assert_eq!(all[4].polygons.len(), 2);
+    assert_eq!(all[4].polygons[1][2], [2.0, 1.0]);
+    assert_eq!(all[5].polygons, triangle, "a polygon variable is drawn");
+    assert_eq!(all[6].number(), Some(2.0));
+    let bad = one("\\operatorname{polygon}\\left(\\left(x,0\\right),\\left(1,0\\right),\\left(1,1\\right)\\right)");
+    assert!(bad.error.is_some() && bad.polygons.is_empty());
+}
+
+#[test]
+fn list_functions() {
+    let numbers = |latex: &str| match one(latex).value {
+        Some(Value::Numbers(n)) => n,
+        other => panic!("{latex}: {other:?}"),
+    };
+    assert_eq!(
+        numbers("\\operatorname{join}\\left(\\left[1,2\\right],3,\\left[4\\right]\\right)"),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
+    assert_eq!(
+        numbers("\\operatorname{sort}\\left(\\left[3,1,2\\right]\\right)"),
+        vec![1.0, 2.0, 3.0]
+    );
+    assert_eq!(
+        numbers("\\operatorname{sort}\\left(\\left[10,20,30\\right],\\left[2,3,1\\right]\\right)"),
+        vec![30.0, 10.0, 20.0]
+    );
+    assert_eq!(
+        numbers("\\operatorname{unique}\\left(\\left[1,2,1,3,2\\right]\\right)"),
+        vec![1.0, 2.0, 3.0]
+    );
+    assert!(close(
+        value(&["\\operatorname{distance}\\left(\\left(0,0\\right),\\left(3,4\\right)\\right)"]),
+        5.0
+    ));
+    let mid = one("\\operatorname{midpoint}\\left(\\left(0,0\\right),\\left(2,4\\right)\\right)");
+    assert_eq!(mid.points, vec![[1.0, 2.0]]);
+}
+
+#[test]
+fn actions() {
+    let all = rows(&[
+        "a=1",
+        "b=5",
+        "a\\to a+1",
+        "a\\to b,b\\to a",
+        "A=\\left(a\\to0,b\\to a\\right)",
+        "A",
+        "\\left\\{a>3:a\\to0,a\\to a+1\\right\\}",
+        "L=\\left[1,2\\right]",
+        "L\\to\\operatorname{join}\\left(L,\\left[a\\right]\\right)",
+        "c\\to1",
+        "a+A",
+    ]);
+    assert_eq!(all[2].kind, RowKind::Action);
+    assert_eq!(all[2].updates, vec![("a".to_owned(), Value::Number(2.0))]);
+    // Both sides use the old values, so this swaps a and b.
+    assert_eq!(
+        all[3].updates,
+        vec![
+            ("a".to_owned(), Value::Number(5.0)),
+            ("b".to_owned(), Value::Number(1.0))
+        ]
+    );
+    assert_eq!(all[4].kind, RowKind::Action, "a named action");
+    assert_eq!(all[5].updates, all[4].updates, "running an action by name");
+    assert_eq!(all[6].updates, vec![("a".to_owned(), Value::Number(2.0))]);
+    assert_eq!(
+        all[8].updates,
+        vec![("L".to_owned(), Value::Numbers(vec![1.0, 2.0, 1.0]))]
+    );
+    assert_eq!(all[9].missing, vec!["c".to_owned()]);
+    assert!(all[10].error.as_deref().unwrap().contains("action"));
+}
+
+/// Results kept from one analysis to the next must never differ from
+/// working everything out afresh, whatever changed in between.
+#[test]
+fn cached_analyses_match_fresh_ones() {
+    let input = |latex: &[&str]| -> Vec<RowInput> {
+        latex
+            .iter()
+            .enumerate()
+            .map(|(i, l)| RowInput {
+                id: i as u64,
+                latex: l.to_string(),
+                ..Default::default()
+            })
+            .collect()
+    };
+    let steps: &[&[&str]] = &[
+        &[
+            "a=1",
+            "L=[1,2,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]a^k",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+            "y=f(2)x",
+        ],
+        // A variable a function reads changes.
+        &[
+            "a=2",
+            "L=[1,2,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]a^k",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+            "y=f(2)x",
+        ],
+        // A list it reads changes.
+        &[
+            "a=2",
+            "L=[1,5,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]a^k",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+            "y=f(2)x",
+        ],
+        // The function itself changes.
+        &[
+            "a=2",
+            "L=[1,5,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]+a",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+            "y=f(2)x",
+        ],
+        // A name it read stops being defined, then i becomes a variable.
+        &[
+            "L=[1,5,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]+a",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+        ],
+        &[
+            "a=2",
+            "i=3",
+            "L=[1,5,3]",
+            "f(n)=\\sum_{k=1}^{n}L[k]+a",
+            "b=f(3)",
+            "g(t)=\\sum_{n=1}^{3}f(n)e^{i\\cdot t}",
+            "z=g(2)",
+        ],
+    ];
+    let mut cache = Cache::default();
+    for (n, step) in steps.iter().enumerate() {
+        let rows = input(step);
+        let cached = analyze_cached(&rows, &mut cache);
+        assert_eq!(cached, analyze(&rows), "step {n}");
+    }
 }

@@ -29,7 +29,7 @@
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
-      'gcd lcm nCr nPr for'
+      'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg'
   };
 
   // Desmos subscripts hold only letters and digits, so typing anything else
@@ -39,6 +39,18 @@
     if (e.key.length !== 1 || /[A-Za-z0-9_]/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
     var root = e.target.closest && e.target.closest('.mq-editable-field');
     var cursor = root && root.querySelector('.mq-cursor');
+    // Typing -> makes the action arrow, as in Desmos.
+    var before = cursor && cursor.previousElementSibling;
+    if (e.key === '>' && before && /^[-\u2212]$/.test(before.textContent.trim())) {
+      var mf = MQ(root);
+      if (mf) {
+        e.preventDefault();
+        e.stopPropagation();
+        mf.keystroke('Backspace');
+        mf.cmd('\\to');
+        return;
+      }
+    }
     if (!cursor || cursor.nextElementSibling) return;
     var block = cursor.parentElement;
     if (!block.classList.contains('mq-sub')) return;
@@ -57,7 +69,7 @@
     return {
       color: t.color, hidden: t.hidden, style: t.style, width: t.width,
       opacity: t.opacity, pointStyle: t.pointStyle, pointSize: t.pointSize,
-      dots: t.dots, connect: t.connect
+      dots: t.dots, connect: t.connect, fillOpacity: t.fillOpacity
     };
   }
 
@@ -66,9 +78,7 @@
 
   function sendRows() {
     if (loading) return;
-    send({
-      type: 'rows',
-      rows: rows.map(function (r) {
+    var sent = rows.map(function (r) {
         if (r.kind === 'table') {
           return {
             id: r.id, latex: '',
@@ -83,8 +93,17 @@
         return Object.assign(styleOf(r), {
           id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider
         });
-      })
-    });
+      });
+    // The ticker goes first, as a hidden row the engine analyzes like any
+    // other; `ticker` marks it for saving and loading.
+    if (ticker) {
+      sent.unshift({
+        id: ticker.id, latex: ticker.field.latex(), hidden: true,
+        ticker: { step: ticker.step.latex(), playing: ticker.playing }
+      });
+    }
+    if (ticker) ticker.waiting = true;
+    send({ type: 'rows', rows: sent });
   }
 
   function indexOf(row) { return rows.indexOf(row); }
@@ -277,6 +296,11 @@
       paintTarget(menuRow);
       sendRows();
     });
+    menu.querySelector('.fill-opacity').addEventListener('input', function (e) {
+      if (!menuRow) return;
+      menuRow.fillOpacity = Number(e.target.value);
+      sendRows();
+    });
     ['dots', 'connect'].forEach(function (key) {
       menu.querySelector('.' + key).addEventListener('change', function (e) {
         if (!menuRow) return;
@@ -313,6 +337,8 @@
     menu.querySelector('.point-size').value = String(menuRow.pointSize);
     menu.querySelector('.width').value = String(menuRow.width);
     menu.querySelector('.opacity').value = String(menuRow.opacity);
+    menu.classList.toggle('has-fill', !!r.polygons);
+    menu.querySelector('.fill-opacity').value = String(menuRow.fillOpacity);
   }
 
   function openMenu(target) {
@@ -370,6 +396,7 @@
       pointStyle: 'filled',
       pointSize: DEFAULT_POINT_SIZE,
       opacity: 1,
+      fillOpacity: 0.4,
       dots: true,
       connect: false
     };
@@ -408,6 +435,8 @@
     } else if (row.playing) {
       togglePlay(row);
     }
+
+    el.classList.toggle('action', r.kind === 'action' && !warn);
 
     var showValue = r.value != null && !hasSlider && !warn;
     el.classList.toggle('has-value', showValue);
@@ -462,6 +491,7 @@
       '<div class="body">' +
       '<div class="math"><span class="field"></span></div>' +
       '<div class="value"><span class="value-math"></span></div>' +
+      '<div class="run-box"><button class="run" title="Run this action">&#x25B6; Run</button></div>' +
       '<div class="slider-box"><span class="lim min" title="Edit range"></span>' +
       '<input type="range" min="-10" max="10" step="any">' +
       '<span class="lim max" title="Edit range"></span></div>' +
@@ -545,6 +575,10 @@
       if (e.target === e.currentTarget) { e.preventDefault(); row.field.focus(); }
     });
     el.querySelector('.remove').addEventListener('click', function () { removeRow(row); });
+    el.querySelector('.run').addEventListener('mousedown', function (e) { e.preventDefault(); });
+    el.querySelector('.run').addEventListener('click', function () {
+      if (row.result) runUpdates(row.result.updates);
+    });
 
     bindSwatch(row);
 
@@ -822,6 +856,106 @@
     });
   }
 
+  // ---- Actions and the ticker -----------------------------------------------
+
+  // Runs an action: each variable it sets has its row rewritten with the
+  // new value, keeping the left side as typed, as Desmos does.
+  function runUpdates(updates) {
+    if (!updates || !updates.length) return;
+    // Every row changes before the rows go out once, so no analysis (and no
+    // ticker run) ever sees some of an action's updates without the rest.
+    loading = true;
+    updates.forEach(function (u) {
+      var row = rows.filter(function (r) { return r.id === u.row; })[0];
+      if (!row || row.kind === 'table') return;
+      var latex = row.field.latex();
+      var eq = latex.indexOf('=');
+      if (eq < 0) return;
+      row.settingSlider = true;
+      row.field.latex(latex.slice(0, eq) + '=' + u.latex);
+      row.settingSlider = false;
+      row.playPos = null;
+    });
+    loading = false;
+    sendRows();
+  }
+
+  // The ticker runs an action over and over, at most once per `step`
+  // milliseconds, as Desmos's does. It waits for each run's results before
+  // the next, so every run sees the values the last one set.
+  var ticker = null;
+
+  function addTicker(latex, step) {
+    if (ticker) return ticker;
+    var el = document.createElement('div');
+    el.id = 'ticker';
+    el.innerHTML =
+      '<button class="tick-play" title="Run the ticker"><span class="tri"></span><span class="bars"></span></button>' +
+      '<div class="tick-body"><div class="tick-line"><span class="tick-label">Run</span>' +
+      '<span class="tick-field"></span></div>' +
+      '<div class="tick-line"><span class="tick-label">every</span><span class="tick-step"></span>' +
+      '<span class="tick-label">ms</span></div>' +
+      '<div class="tick-error"></div></div>' +
+      '<button class="remove" title="Delete ticker">&#x2715;</button>';
+    list.parentNode.insertBefore(el, list);
+    ticker = {
+      id: nextId++, el: el, playing: false, waiting: false, last: 0, result: null,
+      field: MQ.MathField(el.querySelector('.tick-field'), Object.assign({}, MATH_OPTIONS, {
+        handlers: { edit: function () { sendRows(); } }
+      })),
+      step: MQ.MathField(el.querySelector('.tick-step'), Object.assign({}, MATH_OPTIONS, {
+        handlers: { edit: function () { sendRows(); } }
+      }))
+    };
+    ticker.field.latex(latex);
+    ticker.step.latex(step);
+    el.querySelector('.tick-play').addEventListener('click', function () { toggleTicker(); });
+    el.querySelector('.remove').addEventListener('click', function () { removeTicker(); sendRows(); });
+    return ticker;
+  }
+
+  function removeTicker() {
+    if (!ticker) return;
+    ticker.el.parentNode.removeChild(ticker.el);
+    ticker = null;
+  }
+
+  function toggleTicker() {
+    if (!ticker) return;
+    ticker.playing = !ticker.playing;
+    ticker.el.classList.toggle('playing', ticker.playing);
+    if (ticker.playing) {
+      ticker.last = 0;
+      requestAnimationFrame(tickerFrame);
+    }
+  }
+
+  function tickerStep() {
+    var v = Number(ticker.step.latex().replace(/\\left|\\right|[{}]/g, ''));
+    return isFinite(v) && v > 0 ? v : 0;
+  }
+
+  function tickerFrame(now) {
+    if (!ticker || !ticker.playing) return;
+    if (!ticker.waiting && now - ticker.last >= tickerStep()) {
+      var r = ticker.result;
+      if (r && r.kind === 'action' && !r.error) {
+        ticker.last = now;
+        runUpdates(r.updates);
+      }
+    }
+    requestAnimationFrame(tickerFrame);
+  }
+
+  function showTickerResult(r) {
+    ticker.waiting = false;
+    ticker.result = r || null;
+    var error = r && r.error ? r.error :
+      r && r.kind !== 'action' && r.kind !== 'empty' ? 'The ticker runs an action, like a \u2192 a+1' : '';
+    ticker.el.classList.toggle('has-error', !!error);
+    ticker.el.querySelector('.tick-error').textContent = error;
+  }
+
   // The + button offers an expression or a table, as Desmos's does.
   var addMenu = document.getElementById('add-menu');
   document.getElementById('add').addEventListener('mousedown', function (e) {
@@ -834,7 +968,10 @@
     if (!b) return;
     addMenu.classList.remove('open');
     var at = activeIndex() + 1 || rows.length;
-    if (b.dataset.add === 'table') {
+    if (b.dataset.add === 'ticker') {
+      addTicker('', '0').field.focus();
+      sendRows();
+    } else if (b.dataset.add === 'table') {
       var t = addTable(at);
       tableFocus(t, 0, 0);
       sendRows();
@@ -877,7 +1014,8 @@
   }, true);
 
   function applyStyle(target, saved) {
-    ['color', 'hidden', 'style', 'width', 'opacity', 'pointStyle', 'pointSize', 'dots', 'connect']
+    ['color', 'hidden', 'style', 'width', 'opacity', 'fillOpacity', 'pointStyle', 'pointSize',
+      'dots', 'connect']
       .forEach(function (k) { if (saved[k] !== undefined && saved[k] !== null) target[k] = saved[k]; });
   }
 
@@ -892,7 +1030,11 @@
     rows = [];
     nextColor = 0;
     selectedId = null;
-    (saved || []).forEach(function (s, i) {
+    removeTicker();
+    (saved || []).filter(function (s) { return s.ticker; }).slice(0, 1).forEach(function (s) {
+      addTicker(s.latex || '', s.ticker.step || '0');
+    });
+    (saved || []).filter(function (s) { return !s.ticker; }).forEach(function (s, i) {
       if (s.table) {
         var t = addTable(i, s.table.map(function (c) { return { header: c.header, cells: c.cells }; }));
         t.columns.forEach(function (c, ci) {
@@ -930,6 +1072,7 @@
     analysis: function (results) {
       var byId = {};
       results.forEach(function (r) { byId[r.id] = r; });
+      if (ticker) showTickerResult(byId[ticker.id]);
       rows.forEach(function (row) {
         var r = byId[row.id];
         if (!r) return;

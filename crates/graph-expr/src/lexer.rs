@@ -44,6 +44,8 @@ pub enum Tok {
     Sum,
     Prod,
     Int,
+    /// `\to`, which makes an action.
+    Arrow,
     /// A command this calculator does not understand yet.
     Unsupported(String),
 }
@@ -253,11 +255,16 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "sum" => Tok::Sum,
         "prod" => Tok::Prod,
         "int" => Tok::Int,
+        "to" | "rightarrow" => Tok::Arrow,
         "mathrm" | "text" | "mathit" => {
             return Err(format!("text (\\{name}) is not supported"));
         }
         n if GREEK.contains(&n) => Tok::Letter(n.to_string()),
-        n if crate::builtins::is_operator_name(n) => Tok::OpName(n.to_string()),
+        n if crate::builtins::is_operator_name(n)
+            || crate::ast::ShapeFn::from_name(n).is_some() =>
+        {
+            Tok::OpName(n.to_string())
+        }
         other => Tok::Unsupported(other.to_string()),
     };
     toks.push(tok);

@@ -198,9 +198,164 @@ pub fn fill_rect(x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4], out: &mut 
     }
 }
 
+/// Fills a closed polygon by the nonzero winding rule, as a canvas fills a
+/// path, so self-intersecting and nested outlines fill the way Desmos's
+/// polygons do. The polygon is cut into horizontal bands at every vertex,
+/// and each band into trapezoids between the edges that cross it.
+pub fn fill_polygon(points: &[[f32; 2]], color: [f32; 4], out: &mut Vec<Vertex>) {
+    let points: Vec<[f32; 2]> = points
+        .iter()
+        .copied()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .collect();
+    if points.len() < 3 {
+        return;
+    }
+    // Each edge runs downwards from (x0, y0) to (x1, y1), with the winding
+    // it adds when crossed.
+    let edges: Vec<([f32; 2], [f32; 2], i32)> = (0..points.len())
+        .filter_map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % points.len()]);
+            if a[1] == b[1] {
+                None
+            } else if a[1] < b[1] {
+                Some((a, b, 1))
+            } else {
+                Some((b, a, -1))
+            }
+        })
+        .collect();
+    let mut ys: Vec<f32> = points.iter().map(|p| p[1]).collect();
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+    for band in ys.windows(2) {
+        fill_band(&edges, band[0], band[1], 0, color, out);
+    }
+}
+
+/// Bands thinner than this, in pixels, are not split further.
+const THINNEST_BAND: f32 = 0.05;
+
+fn fill_band(
+    edges: &[([f32; 2], [f32; 2], i32)],
+    top: f32,
+    bottom: f32,
+    depth: u32,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
+    let at = |e: &([f32; 2], [f32; 2], i32), y: f32| {
+        let (a, b) = (e.0, e.1);
+        a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])
+    };
+    let mid = (top + bottom) / 2.0;
+    // (x at top, x at bottom, x in the middle, winding)
+    let mut crossing: Vec<(f32, f32, f32, i32)> = edges
+        .iter()
+        .filter(|e| e.0[1] <= top && e.1[1] >= bottom)
+        .map(|e| (at(e, top), at(e, bottom), at(e, mid), e.2))
+        .collect();
+    if crossing.len() < 2 {
+        return;
+    }
+    crossing.sort_by(|a, b| a.2.total_cmp(&b.2));
+    // Edges that cross inside the band would make the trapezoids twist, so
+    // such a band is split until no two edges swap places within it.
+    let crossed = crossing
+        .windows(2)
+        .any(|w| w[0].0 > w[1].0 + 1e-3 || w[0].1 > w[1].1 + 1e-3);
+    if crossed && bottom - top > THINNEST_BAND && depth < 24 {
+        fill_band(edges, top, mid, depth + 1, color, out);
+        fill_band(edges, mid, bottom, depth + 1, color, out);
+        return;
+    }
+    let mut winding = 0;
+    let mut left = None;
+    for &(x_top, x_bottom, _, w) in &crossing {
+        let was_inside = winding != 0;
+        winding += w;
+        match (was_inside, winding != 0) {
+            (false, true) => left = Some((x_top, x_bottom)),
+            (true, false) => {
+                if let Some((l_top, l_bottom)) = left.take() {
+                    let quad = [
+                        [l_top, top],
+                        [x_top, top],
+                        [l_bottom, bottom],
+                        [x_bottom, bottom],
+                    ];
+                    for i in [0, 1, 2, 2, 1, 3] {
+                        out.push(Vertex::solid(quad[i], color));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The area covered by a list of triangles.
+    fn area(v: &[Vertex]) -> f32 {
+        v.chunks(3)
+            .map(|t| {
+                let [a, b, c] = [t[0].pos, t[1].pos, t[2].pos];
+                ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0
+            })
+            .sum()
+    }
+
+    #[test]
+    fn polygons_fill_by_nonzero_winding() {
+        let mut v = Vec::new();
+        fill_polygon(
+            &[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            [0.0; 4],
+            &mut v,
+        );
+        assert!((area(&v) - 100.0).abs() < 1e-3);
+        v.clear();
+        // A concave L shape.
+        fill_polygon(
+            &[
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 4.0],
+                [4.0, 4.0],
+                [4.0, 10.0],
+                [0.0, 10.0],
+            ],
+            [0.0; 4],
+            &mut v,
+        );
+        assert!((area(&v) - 64.0).abs() < 1e-3);
+        v.clear();
+        // A bow tie: two triangles of area 25 meeting at the centre.
+        fill_polygon(
+            &[[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]],
+            [0.0; 4],
+            &mut v,
+        );
+        assert!((area(&v) - 50.0).abs() < 0.5, "{}", area(&v));
+        v.clear();
+        // A pentagram: nonzero winding fills the middle too.
+        let star: Vec<[f32; 2]> = (0..5)
+            .map(|i| {
+                let a = std::f32::consts::FRAC_PI_2 + i as f32 * 4.0 * std::f32::consts::PI / 5.0;
+                [100.0 * a.cos(), 100.0 * a.sin()]
+            })
+            .collect();
+        fill_polygon(&star, [0.0; 4], &mut v);
+        let pentagon_and_points = 11226.0;
+        assert!(
+            (area(&v) - pentagon_and_points).abs() < 60.0,
+            "{}",
+            area(&v)
+        );
+    }
 
     #[test]
     fn straight_line_is_two_triangles_per_segment() {

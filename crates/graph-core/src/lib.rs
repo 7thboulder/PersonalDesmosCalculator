@@ -15,7 +15,8 @@ pub use implicit::{trace_implicit, Field};
 pub use poi::{curve_pois, intersections, point_text, Poi, PoiKind};
 pub use sample::{sample_parametric, Axis};
 pub use scene::{
-    build_scene, Curve, Implicit, Mark, MarkKind, Parametric, Plot, PointStyle, Points, Scene,
+    build_scene, Curve, Implicit, Mark, MarkKind, Parametric, Plot, PointStyle, Points, Polygon,
+    Scene,
 };
 pub use tess::{LineStyle, Vertex};
 pub use text::TextAtlas;

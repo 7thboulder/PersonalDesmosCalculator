@@ -53,6 +53,102 @@ pub fn result_latex(v: &crate::Value) -> String {
         Value::Point(a, b) => point([*a, *b]),
         Value::Numbers(ns) => list(ns.iter().map(|n| value_latex(*n)).collect()),
         Value::Points(ps) => list(ps.iter().map(|p| point(*p)).collect()),
+        Value::Polygon(p) => polygon(p, &point),
+        Value::Polygons(ps) => list(ps.iter().map(|p| polygon(p, &point)).collect()),
+        Value::Complex(a, b) => complex(*a, *b, &value_latex),
+        Value::Complexes(zs) => list(
+            zs.iter()
+                .map(|z| complex(z[0], z[1], &value_latex))
+                .collect(),
+        ),
+    }
+}
+
+/// `3+2i`, `-i`, `0.5-1.25i`, with each part written by `number`.
+fn complex(re: f64, im: f64, number: &dyn Fn(f64) -> String) -> String {
+    if im == 0.0 || re.is_nan() || im.is_nan() {
+        return number(if im.is_nan() { f64::NAN } else { re });
+    }
+    let magnitude = match number(im.abs()).as_str() {
+        "1" => String::new(),
+        m => m.to_owned(),
+    };
+    let sign = if im < 0.0 { "-" } else { "+" };
+    if re == 0.0 {
+        let lead = if im < 0.0 { "-" } else { "" };
+        return format!("{lead}{magnitude}i");
+    }
+    format!("{}{sign}{magnitude}i", number(re))
+}
+
+fn polygon(vertices: &[[f64; 2]], point: &dyn Fn([f64; 2]) -> String) -> String {
+    let shown: Vec<String> = vertices
+        .iter()
+        .take(SHOWN_ELEMENTS)
+        .map(|p| point(*p))
+        .collect();
+    let more = if vertices.len() > SHOWN_ELEMENTS {
+        ",..."
+    } else {
+        ""
+    };
+    format!(
+        "\\operatorname{{polygon}}\\left({}{more}\\right)",
+        shown.join(",")
+    )
+}
+
+/// A number written so that reading it back gives exactly the same value,
+/// for an action to write into a row.
+pub fn exact_number(v: f64) -> String {
+    if v.is_nan() {
+        return "\\frac{0}{0}".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "\\infty" } else { "-\\infty" }.into();
+    }
+    if v == 0.0 {
+        return "0".into();
+    }
+    // Rust prints the shortest digits that read back exactly, without an
+    // exponent; very large and very small numbers get one in LaTeX form.
+    let plain = format!("{v}");
+    if plain.len() <= 24 {
+        return plain;
+    }
+    let sci = format!("{v:e}");
+    let (mantissa, exponent) = sci.split_once('e').expect("exponent form");
+    format!("{mantissa}\\times10^{{{exponent}}}")
+}
+
+/// A value written out in full, so an action can store it in a row.
+pub fn exact_latex(v: &crate::Value) -> String {
+    use crate::Value;
+    let point = |p: [f64; 2]| {
+        format!(
+            "\\left({},{}\\right)",
+            exact_number(p[0]),
+            exact_number(p[1])
+        )
+    };
+    let list = |items: Vec<String>| format!("\\left[{}\\right]", items.join(","));
+    let polygon = |p: &Vec<[f64; 2]>| {
+        let vertices: Vec<String> = p.iter().map(|q| point(*q)).collect();
+        format!("\\operatorname{{polygon}}\\left({}\\right)", list(vertices))
+    };
+    match v {
+        Value::Number(n) => exact_number(*n),
+        Value::Point(a, b) => point([*a, *b]),
+        Value::Numbers(ns) => list(ns.iter().map(|n| exact_number(*n)).collect()),
+        Value::Points(ps) => list(ps.iter().map(|p| point(*p)).collect()),
+        Value::Polygon(p) => polygon(p),
+        Value::Polygons(ps) => list(ps.iter().map(polygon).collect()),
+        Value::Complex(a, b) => complex(*a, *b, &exact_number),
+        Value::Complexes(zs) => list(
+            zs.iter()
+                .map(|z| complex(z[0], z[1], &exact_number))
+                .collect(),
+        ),
     }
 }
 
