@@ -526,3 +526,22 @@ fn tables() {
     let t = table(&["x_1^2", "y_1"], &[&["1", "2"]]);
     assert!(with(&[], t)[0].columns[0].error.is_some());
 }
+
+#[test]
+fn x_and_y_can_name_functions() {
+    // Desmos lets x(t) and y(t) be defined for a parametric (x(t), y(t)).
+    let all = rows(&[
+        "x\\left(t\\right)=4\\sin t",
+        "y\\left(t\\right)=3\\cos t",
+        "\\left(x\\left(t\\right),y\\left(t\\right)\\right)",
+        "x\\left(0.5\\right)",
+    ]);
+    assert_eq!(all[0].kind, RowKind::Function("x".into()));
+    assert!(all[0].missing.is_empty() && all[0].error.is_none());
+    let p = &all[2].parametrics[0];
+    assert!(close(p.x.eval(0.3), 4.0 * 0.3f64.sin()));
+    assert!(close(p.y.eval(0.3), 3.0 * 0.3f64.cos()));
+    assert!(close(all[3].number().unwrap(), 4.0 * 0.5f64.sin()));
+    // Bare x is still the graph variable.
+    assert!(close(curve_at(&["x\\left(t\\right)=t", "y=x^2"], 3.0), 9.0));
+}

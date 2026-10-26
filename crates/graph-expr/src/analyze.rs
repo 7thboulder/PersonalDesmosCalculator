@@ -470,7 +470,8 @@ fn definition(statement: &Statement) -> Option<Result<Def, String>> {
         Expr::Var(name) if CONSTANTS.iter().any(|(c, _)| c == name) => Some(Err(format!(
             "'{name}' is a built-in constant and can't be redefined"
         ))),
-        Expr::Apply(name, args) if definable(name) => {
+        // x and y can name functions too, as in `x(t) = 4 sin t`.
+        Expr::Apply(name, args) if definable(name) || name == "x" || name == "y" => {
             let mut params = Vec::new();
             for arg in args {
                 match arg {
