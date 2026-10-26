@@ -1,4 +1,5 @@
 use crate::engine::Engine;
+use crate::interact::Interaction;
 use graph_core::scene::DESMOS_COLORS;
 use graph_core::{build_scene, TextAtlas, Viewport};
 use graph_render::{new_instance, render_offscreen, Area, Gpu, GraphRenderer, ShadingRenderer};
@@ -26,9 +27,28 @@ fn rows(latex: &[String]) -> serde_json::Value {
 
 /// Graphs the given expressions (y = sin x by default) offscreen and saves a
 /// PNG. Proves the GPU path works on a machine without opening a window.
+///
+/// `--select=N` among the rows selects row N (from 0), so its points of
+/// interest show, and `--hover=X,Y` puts the mouse at that world point.
 pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Result<(), String> {
     let gpu = Gpu::new(&new_instance(), None)?;
     let vp = Viewport::new(width as f64, height as f64);
+    let flag = |name: &str| {
+        latex
+            .iter()
+            .find_map(|l| l.strip_prefix(name).map(str::to_owned))
+    };
+    let select = flag("--select=").and_then(|n| n.parse::<u64>().ok());
+    let hover = flag("--hover=").and_then(|xy| {
+        let (x, y) = xy.split_once(',')?;
+        Some([x.parse::<f64>().ok()?, y.parse::<f64>().ok()?])
+    });
+    let latex: Vec<String> = latex
+        .iter()
+        .filter(|l| !l.starts_with("--"))
+        .cloned()
+        .collect();
+    let latex = &latex[..];
     let default = ["y=\\sin\\left(x\\right)".to_owned()];
     let latex = if latex.is_empty() {
         &default[..]
@@ -45,7 +65,13 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     let mut text = TextAtlas::system();
 
     let start = Instant::now();
-    let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+    engine.selected = select;
+    let mut interact = Interaction::default();
+    if let Some([x, y]) = hover {
+        interact.moved(&engine, &vp, vp.to_screen(x, y));
+    }
+    let marks = interact.marks(&engine, &vp);
+    let scene = engine.with_plot_marks(&marks, |plot| build_scene(&vp, 1.0, plot, &mut text));
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
     let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings);

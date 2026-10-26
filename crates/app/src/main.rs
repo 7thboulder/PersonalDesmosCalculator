@@ -5,6 +5,7 @@ mod engine;
 #[cfg(windows)]
 mod gui;
 mod headless;
+mod interact;
 mod ui;
 
 const USAGE: &str = "\
@@ -12,7 +13,7 @@ graphcalc (Phase 1 preview)
 
 USAGE:
     graphcalc                          open the calculator window
-    graphcalc --render-png FILE [WxH] [LATEX...]
+    graphcalc --render-png FILE [WxH] [LATEX...] [--select=N] [--hover=X,Y]
                                        graph the LaTeX rows (default y=sin x)
                                        offscreen to a PNG and exit
     graphcalc --bench [WxH] [FRAMES]   time a simulated slider drag (analyze,

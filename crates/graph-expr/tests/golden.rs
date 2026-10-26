@@ -528,6 +528,27 @@ fn tables() {
 }
 
 #[test]
+fn draggable_points() {
+    let all = rows(&[
+        "a=1",
+        "b=2",
+        "\\left(a,b\\right)",
+        "P=\\left(a,3\\right)",
+        "\\left(a+1,b\\right)",
+        "\\left(2,3\\right)",
+        "c=a+1",
+        "\\left(c,b\\right)",
+    ]);
+    let s = |n: &str| Some(n.to_string());
+    assert_eq!(all[2].drag, Some([s("a"), s("b")]));
+    assert_eq!(all[3].drag, Some([s("a"), None]));
+    // Only bare slider variables drag their coordinate.
+    assert_eq!(all[4].drag, Some([None, s("b")]));
+    assert_eq!(all[5].drag, None);
+    assert_eq!(all[7].drag, Some([None, s("b")]));
+}
+
+#[test]
 fn x_and_y_can_name_functions() {
     // Desmos lets x(t) and y(t) be defined for a parametric (x(t), y(t)).
     let all = rows(&[

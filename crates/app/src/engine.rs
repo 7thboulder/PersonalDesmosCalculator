@@ -4,19 +4,24 @@
 //! window code so it is tested on every platform.
 
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
-use graph_core::{Axis, Curve, Field, Implicit, LineStyle, Parametric, Plot, PointStyle, Points};
+use graph_core::{
+    Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points,
+};
 use graph_expr::format::{result_latex, value_latex};
 use graph_expr::{
     analyze, wgsl, ColumnInput, Compare, Interval, Program, RowAnalysis, RowInput, RowKind,
 };
 use graph_render::{Shading, Test};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 /// How much of the colour Desmos lays down inside an inequality.
 const SHADE_OPACITY: f32 = 0.4;
 
 /// One curve ready to draw.
 pub struct GraphCurve {
+    /// The panel row it came from.
+    pub row: u64,
     pub program: Program,
     pub axis: Axis,
     pub color: [f32; 4],
@@ -36,6 +41,7 @@ pub struct GraphParametric {
 
 /// A row's points ready to draw.
 pub struct GraphPoints {
+    pub row: u64,
     pub points: Vec<[f64; 2]>,
     pub color: [f32; 4],
     pub size: f32,
@@ -43,12 +49,15 @@ pub struct GraphPoints {
     pub dots: bool,
     /// Joins the points in order: width and pattern.
     pub line: Option<(f32, LineStyle)>,
+    /// The slider variables dragging the point moves, for `(a, b)`.
+    pub drag: Option<[Option<String>; 2]>,
 }
 
 impl GraphPoints {
     /// Points styled by a row or table column's settings.
-    fn styled(points: Vec<[f64; 2]>, style: &Value) -> GraphPoints {
+    fn styled(row: u64, points: Vec<[f64; 2]>, style: &Value) -> GraphPoints {
         GraphPoints {
+            row,
             points,
             color: style_color(style),
             size: point_size(style),
@@ -58,6 +67,7 @@ impl GraphPoints {
                 .as_bool()
                 .unwrap_or(false)
                 .then(|| (style_width(style), style_line(style))),
+            drag: None,
         }
     }
 }
@@ -107,6 +117,12 @@ pub struct Engine {
     pub points: Vec<GraphPoints>,
     /// The LaTeX of every row, in order, as last received.
     pub latex: Vec<String>,
+    /// The row selected in the panel, whose curves show points of interest.
+    pub selected: Option<u64>,
+    /// The row defining each slider variable.
+    pub sliders: HashMap<String, u64>,
+    /// Bumped on every update, so cached work knows the rows changed.
+    pub generation: u64,
 }
 
 impl Engine {
@@ -142,6 +158,14 @@ impl Engine {
         let results = analyze(&inputs);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
+        self.generation += 1;
+        self.sliders = results
+            .iter()
+            .filter_map(|r| match (&r.kind, r.slider) {
+                (RowKind::Variable(name), Some(_)) => Some((name.clone(), r.id)),
+                _ => None,
+            })
+            .collect();
         self.curves.clear();
         self.parametrics.clear();
         self.regions.clear();
@@ -153,6 +177,7 @@ impl Engine {
             let (color, width, style) = (style_color(row), style_width(row), style_line(row));
             for curve in &result.curves {
                 self.curves.push(GraphCurve {
+                    row: result.id,
                     program: curve.program.clone(),
                     axis: match curve.axis {
                         graph_expr::Axis::X => Axis::X,
@@ -184,15 +209,16 @@ impl Engine {
                 });
             }
             if !result.points.is_empty() {
-                self.points
-                    .push(GraphPoints::styled(result.points.clone(), row));
+                let mut points = GraphPoints::styled(result.id, result.points.clone(), row);
+                points.drag = result.drag.clone();
+                self.points.push(points);
             }
             // Each table column has its own colour and style.
             let columns = row["table"].as_array().map_or(&[][..], Vec::as_slice);
             for (style, column) in columns.iter().zip(&result.columns) {
                 if !column.points.is_empty() && !style["hidden"].as_bool().unwrap_or(false) {
                     self.points
-                        .push(GraphPoints::styled(column.points.clone(), style));
+                        .push(GraphPoints::styled(result.id, column.points.clone(), style));
                 }
             }
         }
@@ -201,6 +227,11 @@ impl Engine {
 
     /// Calls `draw` with everything to plot, in the form graph-core takes.
     pub fn with_plot<R>(&self, draw: impl FnOnce(&Plot) -> R) -> R {
+        self.with_plot_marks(&[], draw)
+    }
+
+    /// As `with_plot`, with marks (points of interest, a trace point) on top.
+    pub fn with_plot_marks<R>(&self, marks: &[Mark], draw: impl FnOnce(&Plot) -> R) -> R {
         let fns: Vec<_> = self
             .curves
             .iter()
@@ -270,6 +301,7 @@ impl Engine {
             parametrics: &parametrics,
             implicits: &implicits,
             points: &points,
+            marks,
         })
     }
 

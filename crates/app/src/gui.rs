@@ -3,6 +3,7 @@
 //! This is the layout wry's own wgpu example uses on Windows.
 
 use crate::engine::Engine;
+use crate::interact::{Effect, Interaction};
 use graph_core::{build_scene, TextAtlas, Viewport};
 use graph_render::{new_instance, Area, Gpu, GraphRenderer, ShadingRenderer};
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 use wry::{Rect, WebView, WebViewBuilder};
 
 /// Width of the expression panel in logical pixels, close to Desmos's default.
@@ -75,6 +76,7 @@ struct Running {
     dragging: bool,
     panel_ready: bool,
     engine: Engine,
+    interact: Interaction,
     text: TextAtlas,
     /// Whether rows have arrived from the panel at least once.
     rows_received: bool,
@@ -114,21 +116,16 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
             WindowEvent::RedrawRequested => state.render(),
             WindowEvent::CursorMoved { position, .. } => state.cursor_moved(position),
-            WindowEvent::CursorLeft { .. } => state.cursor = None,
+            WindowEvent::CursorLeft { .. } => {
+                state.cursor = None;
+                let effect = state.interact.left();
+                state.apply(effect);
+            }
             WindowEvent::MouseInput {
                 state: pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                state.dragging =
-                    pressed == ElementState::Pressed && state.cursor_in_graph().is_some();
-                if state.dragging {
-                    // Take keyboard focus back from the panel, as clicking the graph does in Desmos.
-                    if let Some(webview) = &state.webview {
-                        let _ = webview.focus_parent();
-                    }
-                }
-            }
+            } => state.mouse_button(pressed == ElementState::Pressed),
             WindowEvent::MouseWheel { delta, .. } => {
                 let factor = match delta {
                     MouseScrollDelta::LineDelta(_, y) => WHEEL_ZOOM.powf(y as f64),
@@ -228,6 +225,7 @@ impl Running {
             dragging: false,
             panel_ready: false,
             engine: Engine::default(),
+            interact: Interaction::default(),
             text: TextAtlas::system(),
             rows_received: false,
             frames: 0,
@@ -280,12 +278,77 @@ impl Running {
     }
 
     fn cursor_moved(&mut self, position: PhysicalPosition<f64>) {
-        if let (true, Some(previous)) = (self.dragging, self.cursor) {
-            self.viewport
-                .pan_px(position.x - previous.x, position.y - previous.y);
-            self.window.request_redraw();
-        }
+        let previous = self.cursor;
         self.cursor = Some(position);
+        let Some((x, y)) = self.cursor_in_graph() else {
+            return;
+        };
+        let effect = self.interact.moved(&self.engine, &self.viewport, [x, y]);
+        let pointer = self
+            .interact
+            .over_something(&self.engine, &self.viewport, [x, y]);
+        self.window.set_cursor(if pointer {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Default
+        });
+        if effect == Effect::Pan {
+            if let (true, Some(previous)) = (self.dragging, previous) {
+                self.viewport
+                    .pan_px(position.x - previous.x, position.y - previous.y);
+                self.window.request_redraw();
+            }
+            return;
+        }
+        self.apply(effect);
+    }
+
+    fn mouse_button(&mut self, pressed: bool) {
+        if !pressed {
+            self.dragging = false;
+            self.interact.release();
+            return;
+        }
+        let Some((x, y)) = self.cursor_in_graph() else {
+            return;
+        };
+        // Take keyboard focus back from the panel, as clicking the graph
+        // does in Desmos.
+        if let Some(webview) = &self.webview {
+            let _ = webview.focus_parent();
+        }
+        self.interact.scale = self.window.scale_factor();
+        let effect = self.interact.press(&self.engine, &self.viewport, [x, y]);
+        self.dragging = true;
+        self.apply(effect);
+    }
+
+    /// Carries out what a mouse event asked for.
+    fn apply(&mut self, effect: Effect) {
+        match effect {
+            Effect::None | Effect::Pan => return,
+            Effect::Redraw => {}
+            Effect::Select(row) => {
+                if self.engine.selected != Some(row) {
+                    self.engine.selected = Some(row);
+                    self.interact.selection_changed();
+                }
+                self.run_script(&format!("window.engine.select({row})"));
+            }
+            Effect::Deselect => {
+                self.engine.selected = None;
+                self.interact.selection_changed();
+                self.run_script("window.engine.select(null)");
+            }
+            Effect::SetSliders(values) => {
+                let pairs: Vec<String> = values
+                    .iter()
+                    .map(|(row, v)| format!("[{row},{v}]"))
+                    .collect();
+                self.run_script(&format!("window.engine.setSliders([{}])", pairs.join(",")));
+            }
+        }
+        self.window.request_redraw();
     }
 
     fn zoom(&mut self, factor: f64) {
@@ -311,10 +374,12 @@ impl Running {
         };
         let start = Instant::now();
         let scale = self.window.scale_factor() as f32;
+        self.interact.scale = scale as f64;
+        let marks = self.interact.marks(&self.engine, &self.viewport);
         let (viewport, text) = (&self.viewport, &mut self.text);
         let scene = self
             .engine
-            .with_plot(|plot| build_scene(viewport, scale, plot, text));
+            .with_plot_marks(&marks, |plot| build_scene(viewport, scale, plot, text));
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
@@ -374,6 +439,14 @@ impl Running {
                     self.run_script("window.engine.demo()");
                 }
                 self.window.request_redraw();
+            }
+            Some("select") => {
+                let row = value["id"].as_u64();
+                if self.engine.selected != row {
+                    self.engine.selected = row;
+                    self.interact.selection_changed();
+                    self.window.request_redraw();
+                }
             }
             Some("rows") => {
                 let results = self.engine.update(&value["rows"]);
