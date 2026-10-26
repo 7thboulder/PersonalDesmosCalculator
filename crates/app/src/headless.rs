@@ -788,9 +788,11 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../bench/desmos-bench.js"
         ))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        // A Windows checkout may turn line endings into CRLF.
+        .replace("\r\n", "\n");
         assert!(
-            script == super::desmos_script(),
+            script == super::desmos_script().replace("\r\n", "\n"),
             "bench/desmos-bench.js is out of date: run `graphcalc --desmos-script bench/desmos-bench.js`"
         );
     }
