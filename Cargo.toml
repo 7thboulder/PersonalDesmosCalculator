@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/graph-core", "crates/graph-render", "crates/app"]
+members = ["crates/graph-core", "crates/graph-expr", "crates/graph-render", "crates/app"]
 
 [workspace.package]
 edition = "2021"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 graph-core = { path = "crates/graph-core" }
+graph-expr = { path = "crates/graph-expr" }
 graph-render = { path = "crates/graph-render" }
 bytemuck = { version = "1", features = ["derive"] }
 wgpu = "30"
