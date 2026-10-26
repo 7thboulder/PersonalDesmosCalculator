@@ -4,7 +4,7 @@
 
 use crate::engine::Engine;
 use graph_core::{build_scene, TextAtlas, Viewport};
-use graph_render::{new_instance, Area, Gpu, GraphRenderer};
+use graph_render::{new_instance, Area, Gpu, GraphRenderer, ShadingRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +68,7 @@ struct Running {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     renderer: GraphRenderer,
+    shader: ShadingRenderer,
     webview: Option<WebView>,
     viewport: Viewport,
     cursor: Option<PhysicalPosition<f64>>,
@@ -191,6 +192,7 @@ impl Running {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&gpu.device, &config);
         let renderer = GraphRenderer::new(&gpu, config.format);
+        let shader = ShadingRenderer::new(&gpu);
 
         let webview = WebViewBuilder::new()
             .with_bounds(panel_bounds(&window))
@@ -219,6 +221,7 @@ impl Running {
             config,
             gpu,
             renderer,
+            shader,
             webview,
             viewport: Viewport::new(1.0, 1.0),
             cursor: None,
@@ -309,16 +312,30 @@ impl Running {
         let start = Instant::now();
         let scale = self.window.scale_factor() as f32;
         let (viewport, text) = (&self.viewport, &mut self.text);
-        let vertices = self
+        let scene = self
             .engine
-            .with_curves(|curves| build_scene(viewport, scale, curves, text));
+            .with_plot(|curves, implicits| build_scene(viewport, scale, curves, implicits, text));
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
         let size = (self.config.width, self.config.height);
         let area = self.graph_area();
-        self.renderer
-            .draw(&self.gpu, &view, size, area, &vertices, &self.text);
+        // The shader works in target pixels, so the graph area's offset is
+        // folded into the world position of the target's own first pixel.
+        let origin = self.viewport.to_world(-(area.x as f64), 0.0);
+        let shadings = self
+            .engine
+            .shadings(origin, self.viewport.units_per_px, scale);
+        self.renderer.draw_scene(
+            &self.gpu,
+            &view,
+            size,
+            area,
+            &scene,
+            &self.text,
+            &shadings,
+            &mut self.shader,
+        );
         self.window.pre_present_notify();
         self.gpu.queue.present(frame);
         self.frames += 1;
@@ -332,7 +349,7 @@ impl Running {
                 "window.engine.stats({:.3}, {:.3}, {})",
                 scene_time.as_secs_f64() * 1000.0,
                 start.elapsed().as_secs_f64() * 1000.0,
-                vertices.len()
+                scene.vertices.len()
             ));
         }
     }

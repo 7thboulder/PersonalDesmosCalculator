@@ -38,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           $p = Start-Process -FilePath ./target/release/graphcalc.exe `
-            -ArgumentList '--render-png','render.png','1200x800','a=2','"y=a\sin\left(x\right)"','x=y^2','"y=\frac{1}{x}"' `
+            -ArgumentList '--render-png','render.png','1200x800','a=2','"y=a\sin\left(x\right)"','x=y^2','"y=\frac{1}{x}"','x^2+y^2=25','y>x^2' `
             -Wait -PassThru -NoNewWindow -RedirectStandardOutput render.txt
           Get-Content render.txt
           if ($p.ExitCode -ne 0) { exit 1 }
@@ -52,6 +52,17 @@ jobs:
             -ArgumentList '--bench','1600x1000','600' `
             -Wait -PassThru -NoNewWindow -RedirectStandardOutput bench.txt
           Get-Content bench.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Implicit benchmark
+        # Eleven implicit and shaded relations, alone and all at once, then a
+        # slider every one of them depends on. Judged the same way as above.
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath ./target/release/graphcalc.exe `
+            -ArgumentList '--bench-implicit','1600x1000','120' `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput bench-implicit.txt
+          Get-Content bench-implicit.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Window smoke test
@@ -93,4 +104,5 @@ jobs:
             window.png
             smoke.txt
             bench.txt
+            bench-implicit.txt
           if-no-files-found: ignore

@@ -3,7 +3,7 @@
 //! and which names still need defining (offered as sliders).
 
 use crate::ast::{Expr, Relation, Statement};
-use crate::compile::{BinOp, Low, Program};
+use crate::compile::{Arg, BinOp, Low, Program};
 use crate::parser::parse;
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +26,49 @@ pub enum Axis {
 pub struct Curve {
     pub axis: Axis,
     pub program: Program,
+}
+
+/// How a relation compares its two sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compare {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Compare {
+    /// Whether `v`, the left side minus the right, satisfies the relation.
+    pub fn holds(self, v: f64) -> bool {
+        match self {
+            Compare::Eq => v == 0.0,
+            Compare::Lt => v < 0.0,
+            Compare::Le => v <= 0.0,
+            Compare::Gt => v > 0.0,
+            Compare::Ge => v >= 0.0,
+        }
+    }
+
+    /// True for `<` and `>`, which Desmos draws with a dashed boundary.
+    pub fn is_strict(self) -> bool {
+        matches!(self, Compare::Lt | Compare::Gt)
+    }
+
+    /// True for everything but `=`, which shades a region.
+    pub fn shades(self) -> bool {
+        self != Compare::Eq
+    }
+}
+
+/// A relation between x and y that is not a function of either: an implicit
+/// equation such as `x^2 + y^2 = 25`, or an inequality to shade. `program`
+/// is the left side minus the right, so the relation holds where
+/// `compare.holds(program)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub program: Program,
+    pub compare: Compare,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +95,8 @@ pub struct RowAnalysis {
     /// The row is `name = number`, so the panel shows a slider for it.
     pub slider: Option<f64>,
     pub curve: Option<Curve>,
+    /// An implicit equation or inequality to plot over the plane.
+    pub region: Option<Region>,
 }
 
 impl RowAnalysis {
@@ -64,6 +109,7 @@ impl RowAnalysis {
             missing: Vec::new(),
             slider: None,
             curve: None,
+            region: None,
         }
     }
 
@@ -84,6 +130,13 @@ const CONSTANTS: &[(&str, f64)] = &[
 ];
 const GRAPH_VARIABLES: &[&str] = &["x", "y", "r", "theta"];
 const MAX_INLINE_DEPTH: usize = 64;
+
+/// No graph variable is in scope (a plain value or a variable's definition).
+const NO_FREE: &[(&str, Arg)] = &[];
+/// Inside a function body, only its parameters are in scope.
+const PARAM_ONLY: &[(&str, Arg)] = &[];
+/// Both graph variables, for implicit relations.
+const BOTH: &[(&str, Arg)] = &[("x", Arg::X), ("y", Arg::Y)];
 
 struct FuncDef {
     params: Vec<String>,
@@ -287,7 +340,7 @@ impl Env {
                 (
                     p.clone(),
                     if graph_param {
-                        Low::Arg
+                        Low::Arg(Arg::X)
                     } else {
                         Low::Const(1.0)
                     },
@@ -295,7 +348,7 @@ impl Env {
             })
             .collect();
         // x is free inside a function only when it is the parameter.
-        let low = self.lower(&f.body, &bindings, None, 0, &mut problems);
+        let low = self.lower(&f.body, &bindings, PARAM_ONLY, 0, &mut problems);
         row.missing = slider_names(&problems.missing);
         row.error = problems.first_message();
         if row.error.is_none() && graph_param {
@@ -331,11 +384,22 @@ impl Env {
                     self.curve_row(id, lhs, Axis::Y)
                 } else if is_var(lhs, "r") || is_var(lhs, "theta") {
                     not_yet("Polar graphs arrive in a later version")
+                } else if lhs_x || lhs_y || rhs_x || rhs_y {
+                    self.region_row(id, lhs, rhs, Compare::Eq)
                 } else {
-                    not_yet("Implicit equations arrive in the next version")
+                    not_yet("This is not something to graph")
                 }
             }
-            Statement::Relation(..) => not_yet("Inequalities arrive in the next version"),
+            Statement::Relation(lhs, rel, rhs) => {
+                let compare = match rel {
+                    Relation::Lt => Compare::Lt,
+                    Relation::Le => Compare::Le,
+                    Relation::Gt => Compare::Gt,
+                    Relation::Ge => Compare::Ge,
+                    Relation::Eq => Compare::Eq,
+                };
+                self.region_row(id, lhs, rhs, compare)
+            }
             Statement::Expr(e) => {
                 if e.mentions("y") && !e.mentions("x") {
                     RowAnalysis::error(id, "Try writing this as x = …")
@@ -349,13 +413,13 @@ impl Env {
     }
 
     fn curve_row(&mut self, id: u64, expr: &Expr, axis: Axis) -> RowAnalysis {
-        let free = match axis {
-            Axis::X => "x",
-            Axis::Y => "y",
+        let free: &[(&str, Arg)] = match axis {
+            Axis::X => &[("x", Arg::X)],
+            Axis::Y => &[("y", Arg::X)],
         };
         let mut row = RowAnalysis::new(id, RowKind::Curve);
         let mut problems = Problems::default();
-        let low = self.lower(expr, &HashMap::new(), Some(free), 0, &mut problems);
+        let low = self.lower(expr, &HashMap::new(), free, 0, &mut problems);
         row.missing = slider_names(&problems.missing);
         row.error = problems.first_message();
         if row.error.is_none() {
@@ -367,11 +431,39 @@ impl Env {
         row
     }
 
+    /// An implicit equation or an inequality: both sides are lowered over x
+    /// and y, and what is plotted is the left minus the right.
+    fn region_row(&mut self, id: u64, lhs: &Expr, rhs: &Expr, compare: Compare) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        let mut problems = Problems::default();
+        let left = self.lower(lhs, &HashMap::new(), BOTH, 0, &mut problems);
+        let right = self.lower(rhs, &HashMap::new(), BOTH, 0, &mut problems);
+        let difference = Low::Bin(BinOp::Sub, Box::new(left), Box::new(right));
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_some() {
+            return row;
+        }
+        match Program::compile(&difference) {
+            Ok(program) => {
+                if !program.uses_arg() {
+                    // Something like 1 = 2 or 3 < 4: true or false everywhere.
+                    row.kind = RowKind::Value;
+                    row.value = program.constant();
+                    return row;
+                }
+                row.region = Some(Region { program, compare });
+            }
+            Err(e) => row.error = Some(e),
+        }
+        row
+    }
+
     fn value_row(&mut self, id: u64, expr: &Expr) -> RowAnalysis {
         let mut row = RowAnalysis::new(id, RowKind::Value);
         let mut problems = Problems::default();
         let low = self
-            .lower(expr, &HashMap::new(), None, 0, &mut problems)
+            .lower(expr, &HashMap::new(), NO_FREE, 0, &mut problems)
             .fold();
         row.missing = slider_names(&problems.missing);
         row.error = problems.first_message();
@@ -389,7 +481,7 @@ impl Env {
             .iter()
             .map(|p| (p.clone(), Low::Const(1.0)))
             .collect();
-        self.lower(expr, &bindings, None, 0, &mut problems);
+        self.lower(expr, &bindings, NO_FREE, 0, &mut problems);
         slider_names(&problems.missing)
     }
 
@@ -408,7 +500,7 @@ impl Env {
             .expect("caller checked the variable exists");
         let mut problems = Problems::default();
         let low = self
-            .lower_with(&expr, &HashMap::new(), None, 0, &mut problems, visiting)
+            .lower_with(&expr, &HashMap::new(), NO_FREE, 0, &mut problems, visiting)
             .fold();
         visiting.remove(name);
         let result = match (problems.first_message(), low) {
@@ -424,7 +516,7 @@ impl Env {
         &mut self,
         e: &Expr,
         bindings: &HashMap<String, Low>,
-        free: Option<&str>,
+        free: &[(&str, Arg)],
         depth: usize,
         problems: &mut Problems,
     ) -> Low {
@@ -437,7 +529,7 @@ impl Env {
         &mut self,
         e: &Expr,
         bindings: &HashMap<String, Low>,
-        free: Option<&str>,
+        free: &[(&str, Arg)],
         depth: usize,
         problems: &mut Problems,
         visiting: &mut HashSet<String>,
@@ -507,15 +599,15 @@ impl Env {
         &mut self,
         name: &str,
         bindings: &HashMap<String, Low>,
-        free: Option<&str>,
+        free: &[(&str, Arg)],
         problems: &mut Problems,
         visiting: &mut HashSet<String>,
     ) -> Low {
         if let Some(low) = bindings.get(name) {
             return low.clone();
         }
-        if free == Some(name) {
-            return Low::Arg;
+        if let Some((_, arg)) = free.iter().find(|(n, _)| *n == name) {
+            return Low::Arg(*arg);
         }
         if let Some((_, v)) = CONSTANTS.iter().find(|(c, _)| *c == name) {
             return Low::Const(*v);

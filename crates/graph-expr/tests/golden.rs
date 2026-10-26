@@ -1,7 +1,7 @@
 //! Golden tests: expressions exactly as MathQuill writes them, with the
 //! result Desmos gives. This is the Phase 1 gate for matching Desmos syntax.
 
-use graph_expr::{analyze, Axis, RowAnalysis, RowInput, RowKind};
+use graph_expr::{analyze, Axis, Compare, RowAnalysis, RowInput, RowKind};
 
 fn rows(latex: &[&str]) -> Vec<RowAnalysis> {
     let input: Vec<RowInput> = latex
@@ -205,9 +205,43 @@ fn errors_match_desmos_intent() {
 }
 
 #[test]
+fn implicit_equations_and_inequalities() {
+    // x^2 + y^2 = 25: the difference is zero exactly on the circle.
+    let r = one("x^2+y^2=25");
+    let region = r.region.as_ref().expect("a region");
+    assert_eq!(region.compare, Compare::Eq);
+    assert!(close(region.program.eval2(3.0, 4.0), 0.0));
+    assert!(close(region.program.eval2(0.0, 0.0), -25.0));
+
+    // Inequalities keep the sense they were written with.
+    let inside = one("x^2+y^2<9").region.unwrap();
+    assert_eq!(inside.compare, Compare::Lt);
+    assert!(inside.compare.holds(inside.program.eval2(0.0, 0.0)));
+    assert!(!inside.compare.holds(inside.program.eval2(5.0, 0.0)));
+    assert!(inside.compare.is_strict());
+
+    // y > x^2 is an inequality, not a curve, and shades above the parabola.
+    let above = one("y>x^2");
+    assert!(above.curve.is_none());
+    let above = above.region.unwrap();
+    assert!(above.compare.holds(above.program.eval2(0.0, 1.0)));
+    assert!(!above.compare.holds(above.program.eval2(0.0, -1.0)));
+    assert!(above.compare.shades());
+
+    // Sliders work inside an implicit equation, and both sides may be rich.
+    let all = rows(&["a=2", "\\sin\\left(xy\\right)=\\cos\\left(ax\\right)"]);
+    let r = all[1].region.as_ref().unwrap();
+    let f = |x: f64, y: f64| (x * y).sin() - (2.0 * x).cos();
+    assert!(close(r.program.eval2(1.3, 0.7), f(1.3, 0.7)));
+
+    // An undefined name still offers a slider instead of plotting.
+    let r = one("x^2+y^2=k");
+    assert_eq!(r.missing, vec!["k".to_string()]);
+    assert!(r.region.is_none());
+}
+
+#[test]
 fn not_yet_supported_is_labelled() {
-    assert_eq!(one("x^2+y^2=1").kind, RowKind::NotYet);
-    assert_eq!(one("y>x").kind, RowKind::NotYet);
     assert_eq!(one("r=\\theta").kind, RowKind::NotYet);
     assert_eq!(one("\\left[1,2,3\\right]").kind, RowKind::Error);
 }
