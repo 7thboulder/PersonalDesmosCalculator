@@ -5,7 +5,7 @@ its math and drawing with the machine's own CPU and GPU instead of a browser.
 Private, personal-use project. The full plan lives in the
 [plan doc](https://claude.ai/artifact/DZCzUyaNRYjCzz5fdBDS7n).
 
-**Status: Phase 2 preview.** The window opens with a Desmos-style expression
+**Status: Phase 3 in progress.** The window opens with a Desmos-style expression
 list on the left (the same MathQuill editor Desmos uses) and a GPU-drawn graph
 on the right. What you type is graphed as you type it:
 
@@ -13,7 +13,17 @@ on the right. What you type is graphed as you type it:
 - Implicit equations such as `x^2 + y^2 = 25` or `sin(xy) = cos(x)`, however
   densely they fold.
 - Inequalities such as `y > x^2` or `x^2 - y^2 < 4`, with Desmos's shading on
-  the side that satisfies them.
+  the side that satisfies them, and chains such as `-1 < y < x`.
+- Points `(1, 2)`, point variables `p = (1, 2)` with `p.x` and `p.y`, and
+  lists of points.
+- Parametric curves `(cos t, sin t)` and polar curves `r = 2 sin(3θ)`, with an
+  editable domain under the row (Desmos's defaults are 0 ≤ t ≤ 1 and
+  0 ≤ θ ≤ 12π). `r` and `θ` also work inside relations, as in `r < 2`.
+- Lists: `[1, 2, 3]`, ranges `[1...10]` and `[1, 3, ..., 11]`, indexing
+  `L[2]`, comprehensions `[n^2 for n = [1...5]]`, and `total`, `mean`,
+  `length`, `min`, `max` and friends. A list in a curve draws one curve per
+  element, as `y = [1, 2, 3]x` does in Desmos.
+- Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
@@ -24,8 +34,9 @@ on the right. What you type is graphed as you type it:
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: polar, points, lists, derivatives, sums and integrals. Those rows say
-they arrive later. Shading is computed by the GPU in single precision, so a
+Not yet: derivatives, sums, products and integrals; tables; points of interest,
+trace and draggable points; saving and opening graphs. Those are the rest of
+Phase 3. Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a
 double-precision fallback at that zoom is still to come.
 
@@ -47,6 +58,8 @@ Things to check:
   and a dashed or dotted implicit curve from the style menu.
 - Typing behaves like Desmos (`/` makes a fraction, `^` an exponent, `sqrt` a
   root, Enter a new row) and the results match what Desmos shows.
+- Type `(cos t, sin t)`, change its domain to `2π`, and try a point list's
+  point styles from the color circle's menu.
 - Dragging the graph pans it and the scroll wheel zooms around the cursor.
 - The panel's footer names your graphics card and shows the frame time.
 

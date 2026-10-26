@@ -11,8 +11,8 @@ pub mod text;
 pub mod viewport;
 
 pub use implicit::{trace_implicit, Field};
-pub use sample::Axis;
-pub use scene::{build_scene, Curve, Implicit, Scene};
+pub use sample::{sample_parametric, Axis};
+pub use scene::{build_scene, Curve, Implicit, Parametric, Plot, PointStyle, Points, Scene};
 pub use tess::{LineStyle, Vertex};
 pub use text::TextAtlas;
 pub use viewport::Viewport;

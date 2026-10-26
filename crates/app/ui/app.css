@@ -311,3 +311,26 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #style-menu .styles svg { width: 100%; height: 100%; }
 #style-menu label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 #style-menu label input { width: 100px; }
+
+#style-menu .line-options, #style-menu .point-options { display: none; }
+#style-menu.has-lines .line-options, #style-menu.has-points .point-options { display: block; }
+#style-menu.has-lines.has-points .point-options { margin-top: 8px; }
+
+/* Domain of a parametric or polar row: 0 ≤ t ≤ 1, editable like Desmos. */
+.row .domain {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px 12px;
+  color: #666;
+  font-size: 15px;
+}
+.row.has-domain .domain { display: flex; }
+.row .domain .bound {
+  min-width: 28px;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  padding: 0 2px;
+}
+.row .domain .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
+.row .domain.bad .bound { border-bottom-color: #e0832e; }

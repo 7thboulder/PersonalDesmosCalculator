@@ -224,6 +224,46 @@ impl Interval {
         Interval::ANY
     }
 
+    /// A comparison of two ranges: 1 where it surely holds, 0 where it
+    /// surely fails, and both otherwise.
+    pub fn compare(self, o: Interval, holds: impl Fn(f64, f64) -> bool) -> Interval {
+        if self.is_empty() || o.is_empty() {
+            return Interval::EMPTY;
+        }
+        // Checking the corners decides every comparison when the ranges do
+        // not overlap; when they do, the answer can go either way.
+        let corners = [
+            holds(self.lo, o.lo),
+            holds(self.lo, o.hi),
+            holds(self.hi, o.lo),
+            holds(self.hi, o.hi),
+        ];
+        let overlap = self.lo <= o.hi && o.lo <= self.hi;
+        if !overlap && corners.iter().all(|&c| c) {
+            Interval::point(1.0)
+        } else if !overlap && corners.iter().all(|&c| !c) {
+            Interval::point(0.0)
+        } else {
+            Interval::new(0.0, 1.0)
+        }
+    }
+
+    /// A piecewise branch over ranges: the branch that surely applies, or
+    /// both when the condition can go either way. Where the condition is
+    /// undefined so is the result, which never hides a curve.
+    pub fn select(c: Interval, then: Interval, otherwise: Interval) -> Interval {
+        if c.is_empty() {
+            return Interval::EMPTY;
+        }
+        if !c.contains(0.0) {
+            then
+        } else if c.lo == 0.0 && c.hi == 0.0 {
+            otherwise
+        } else {
+            then.hull(otherwise)
+        }
+    }
+
     /// The range of a builtin over interval arguments.
     pub fn call(f: Builtin, args: &[Interval]) -> Interval {
         use Builtin::*;
@@ -268,6 +308,7 @@ impl Interval {
                 let his: Vec<f64> = args.iter().map(|i| i.hi).collect();
                 Interval::new(f.eval(&los), f.eval(&his))
             }
+            Length => Interval::point(args.len() as f64),
             // Everything else (tan, mod, gcd, factorial, …) is left wide: it
             // only costs subdivision, never correctness.
             _ => Interval::ANY,

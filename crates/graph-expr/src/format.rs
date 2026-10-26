@@ -33,6 +33,29 @@ pub fn value_latex(v: f64) -> String {
     trim(format!("{v:.digits$}"))
 }
 
+/// Most list elements shown under a row before the rest are elided.
+const SHOWN_ELEMENTS: usize = 12;
+
+/// Any computed result as LaTeX: a number, a point, or a list of either.
+pub fn result_latex(v: &crate::Value) -> String {
+    use crate::Value;
+    let point = |p: [f64; 2]| format!("\\left({},{}\\right)", value_latex(p[0]), value_latex(p[1]));
+    let list = |items: Vec<String>| {
+        let n = items.len();
+        let mut shown: Vec<String> = items.into_iter().take(SHOWN_ELEMENTS).collect();
+        if n > SHOWN_ELEMENTS {
+            shown.push("...".into());
+        }
+        format!("\\left[{}\\right]", shown.join(","))
+    };
+    match v {
+        Value::Number(n) => value_latex(*n),
+        Value::Point(a, b) => point([*a, *b]),
+        Value::Numbers(ns) => list(ns.iter().map(|n| value_latex(*n)).collect()),
+        Value::Points(ps) => list(ps.iter().map(|p| point(*p)).collect()),
+    }
+}
+
 /// Drops trailing zeros and a trailing decimal point.
 fn trim(s: String) -> String {
     if !s.contains('.') {
@@ -61,5 +84,20 @@ mod tests {
         assert_eq!(value_latex(6.02e23), "6.02\\times10^{23}");
         assert_eq!(value_latex(1.5e-9), "1.5\\times10^{-9}");
         assert_eq!(value_latex(f64::NAN), "\\operatorname{undefined}");
+    }
+
+    #[test]
+    fn lists_and_points() {
+        use crate::Value;
+        assert_eq!(
+            result_latex(&Value::Point(1.0, -2.5)),
+            "\\left(1,-2.5\\right)"
+        );
+        assert_eq!(
+            result_latex(&Value::Numbers(vec![1.0, 4.0, 9.0])),
+            "\\left[1,4,9\\right]"
+        );
+        let long = result_latex(&Value::Numbers((1..=20).map(f64::from).collect()));
+        assert!(long.ends_with(",12,...\\right]"), "{long}");
     }
 }

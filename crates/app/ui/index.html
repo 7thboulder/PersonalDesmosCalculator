@@ -23,12 +23,22 @@
 </div>
 <div id="style-menu">
   <div class="colors"></div>
+  <div class="line-options">
   <div class="styles">
     <button data-style="solid" title="Solid"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button>
     <button data-style="dashed" title="Dashed"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-dasharray="8 5"/></svg></button>
     <button data-style="dotted" title="Dotted"><svg viewBox="0 0 40 10"><line x1="3" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="0.1 6"/></svg></button>
   </div>
   <label>Thickness <input class="width" type="range" min="0.5" max="10" step="0.5"></label>
+  </div>
+  <div class="point-options">
+  <div class="styles">
+    <button data-point="filled" title="Point"><svg viewBox="0 0 40 10"><circle cx="20" cy="5" r="4" fill="currentColor"/></svg></button>
+    <button data-point="open" title="Open point"><svg viewBox="0 0 40 10"><circle cx="20" cy="5" r="3.2" fill="#fff" stroke="currentColor" stroke-width="1.6"/></svg></button>
+    <button data-point="cross" title="Cross"><svg viewBox="0 0 40 10"><path d="M16.5 1.5l7 7M23.5 1.5l-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  </div>
+  <label>Point size <input class="point-size" type="range" min="2" max="20" step="1"></label>
+  </div>
   <label>Opacity <input class="opacity" type="range" min="0" max="1" step="0.05"></label>
 </div>
 <script>{{JQUERY}}</script>

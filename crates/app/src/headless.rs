@@ -45,8 +45,7 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     let mut text = TextAtlas::system();
 
     let start = Instant::now();
-    let scene =
-        engine.with_plot(|curves, implicits| build_scene(&vp, 1.0, curves, implicits, &mut text));
+    let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
     let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings);
@@ -272,7 +271,7 @@ impl Frame {
         let text = &mut self.text;
         let scene = self
             .engine
-            .with_plot(|curves, implicits| build_scene(&vp, 1.0, curves, implicits, text));
+            .with_plot(|plot| build_scene(&vp, 1.0, plot, text));
         let shadings = self
             .engine
             .shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
@@ -343,8 +342,7 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
         latex[0] = format!("a={a:.2}");
         let start = Instant::now();
         engine.update(&rows(&latex));
-        let scene = engine
-            .with_plot(|curves, implicits| build_scene(&vp, 1.0, curves, implicits, &mut text));
+        let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
         let built = start.elapsed();
         let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
         renderer.draw_scene(

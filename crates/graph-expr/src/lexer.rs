@@ -34,6 +34,8 @@ pub enum Tok {
     Bang,
     Prime,
     Dots,
+    /// `.` before a letter, as in `p.x`.
+    Dot,
     Eq,
     Lt,
     Gt,
@@ -93,6 +95,15 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
         match c {
             ' ' | '\t' | '\n' | '~' => i += 1,
             '0'..='9' | '.' => {
+                if c == '.'
+                    && chars
+                        .get(i + 1)
+                        .is_some_and(|n| n.is_ascii_alphabetic() || *n == '\\')
+                {
+                    toks.push(Tok::Dot);
+                    i += 1;
+                    continue;
+                }
                 if c == '.' && chars.get(i + 1) == Some(&'.') {
                     while chars.get(i) == Some(&'.') {
                         i += 1;

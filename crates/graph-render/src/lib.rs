@@ -569,7 +569,7 @@ pub fn render_offscreen(
 mod tests {
     use super::*;
     use graph_core::scene::DESMOS_COLORS;
-    use graph_core::{build_scene, Curve, Viewport};
+    use graph_core::{build_scene, Curve, Plot, Viewport};
 
     #[test]
     fn shaded_inequality_fills_its_side() {
@@ -579,7 +579,7 @@ mod tests {
         let (w, h) = (200, 200);
         let vp = Viewport::new(w as f64, h as f64);
         let mut text = graph_core::TextAtlas::empty();
-        let scene = build_scene(&vp, 1.0, &[], &[], &mut text);
+        let scene = build_scene(&vp, 1.0, &Plot::default(), &mut text);
         // y > 0, in blue at Desmos's shading opacity.
         let shading = Shading {
             body: "    return y;\n".into(),
@@ -615,7 +615,11 @@ mod tests {
         let vp = Viewport::new(w as f64, h as f64);
         let curve = Curve::new(&f64::sin, DESMOS_COLORS[0]);
         let mut text = graph_core::TextAtlas::system();
-        let scene = build_scene(&vp, 1.0, &[curve], &[], &mut text);
+        let plot = Plot {
+            curves: &[curve],
+            ..Plot::default()
+        };
+        let scene = build_scene(&vp, 1.0, &plot, &mut text);
         let px = render_offscreen(&gpu, w, h, &scene, &text, &[]);
         let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
         // Corner is white paper.
