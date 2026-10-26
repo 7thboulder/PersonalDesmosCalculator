@@ -5,8 +5,10 @@
 
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
 use graph_core::{Axis, Curve, Field, Implicit, LineStyle, Parametric, Plot, PointStyle, Points};
-use graph_expr::format::result_latex;
-use graph_expr::{analyze, wgsl, Compare, Interval, Program, RowAnalysis, RowInput, RowKind};
+use graph_expr::format::{result_latex, value_latex};
+use graph_expr::{
+    analyze, wgsl, ColumnInput, Compare, Interval, Program, RowAnalysis, RowInput, RowKind,
+};
 use graph_render::{Shading, Test};
 use serde_json::{json, Value};
 
@@ -38,6 +40,26 @@ pub struct GraphPoints {
     pub color: [f32; 4],
     pub size: f32,
     pub style: PointStyle,
+    pub dots: bool,
+    /// Joins the points in order: width and pattern.
+    pub line: Option<(f32, LineStyle)>,
+}
+
+impl GraphPoints {
+    /// Points styled by a row or table column's settings.
+    fn styled(points: Vec<[f64; 2]>, style: &Value) -> GraphPoints {
+        GraphPoints {
+            points,
+            color: style_color(style),
+            size: point_size(style),
+            style: point_style(style),
+            dots: style["dots"].as_bool().unwrap_or(true),
+            line: style["connect"]
+                .as_bool()
+                .unwrap_or(false)
+                .then(|| (style_width(style), style_line(style))),
+        }
+    }
 }
 
 /// One implicit equation or inequality ready to draw: its boundary is
@@ -101,6 +123,20 @@ impl Engine {
                     (Some(lo), Some(hi)) => Some([lo.to_owned(), hi.to_owned()]),
                     _ => None,
                 },
+                table: r["table"].as_array().map(|columns| {
+                    columns
+                        .iter()
+                        .map(|c| ColumnInput {
+                            header: c["header"].as_str().unwrap_or("").to_owned(),
+                            cells: c["cells"]
+                                .as_array()
+                                .map_or(&[][..], Vec::as_slice)
+                                .iter()
+                                .map(|cell| cell.as_str().unwrap_or("").to_owned())
+                                .collect(),
+                        })
+                        .collect()
+                }),
             })
             .collect();
         let results = analyze(&inputs);
@@ -148,12 +184,16 @@ impl Engine {
                 });
             }
             if !result.points.is_empty() {
-                self.points.push(GraphPoints {
-                    points: result.points.clone(),
-                    color,
-                    size: point_size(row),
-                    style: point_style(row),
-                });
+                self.points
+                    .push(GraphPoints::styled(result.points.clone(), row));
+            }
+            // Each table column has its own colour and style.
+            let columns = row["table"].as_array().map_or(&[][..], Vec::as_slice);
+            for (style, column) in columns.iter().zip(&result.columns) {
+                if !column.points.is_empty() && !style["hidden"].as_bool().unwrap_or(false) {
+                    self.points
+                        .push(GraphPoints::styled(column.points.clone(), style));
+                }
             }
         }
         Value::Array(results.iter().map(row_json).collect())
@@ -221,6 +261,8 @@ impl Engine {
                 color: p.color,
                 size: p.size,
                 style: p.style,
+                dots: p.dots,
+                line: p.line,
             })
             .collect();
         draw(&Plot {
@@ -315,6 +357,7 @@ fn row_json(r: &RowAnalysis) -> Value {
         RowKind::Variable(n) => ("variable", Some(n)),
         RowKind::Function(n) => ("function", Some(n)),
         RowKind::Curve => ("curve", None),
+        RowKind::Table => ("table", None),
         RowKind::Value => ("value", None),
         RowKind::NotYet => ("notyet", None),
         RowKind::Error => ("error", None),
@@ -330,6 +373,16 @@ fn row_json(r: &RowAnalysis) -> Value {
         "graphed": r.graphed(),
         "points": !r.points.is_empty(),
         "lines": !(r.curves.is_empty() && r.parametrics.is_empty() && r.regions.is_empty()),
+        "columns": r.columns.iter().map(|c| json!({
+            "error": c.error,
+            "missing": c.missing,
+            "computed": c.computed.as_ref().map(|vs| vs
+                .iter()
+                .map(|v| if v.is_finite() { value_latex(*v) } else { String::new() })
+                .collect::<Vec<_>>()),
+            "cellErrors": c.cell_errors,
+            "points": !c.points.is_empty(),
+        })).collect::<Vec<_>>(),
         "parameter": r.parameter.as_ref().map(|p| json!({
             "name": p.name,
             "latex": name_latex(p.name),
@@ -382,6 +435,27 @@ pub fn parse_color(hex: &str, opacity: f64) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_columns_draw_with_their_own_styles() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "", "table": [
+                {"header": "x_1", "cells": ["1", "2", "3", ""]},
+                {"header": "y_1", "cells": ["4", "", "6", ""], "color": "#388c46", "connect": true},
+                {"header": "x_1^2", "cells": [], "dots": false, "connect": true, "style": "dashed"},
+                {"header": "y_2", "cells": ["1", "1", "1"], "hidden": true},
+            ]},
+        ]));
+        assert_eq!(reply[0]["kind"], "table");
+        assert_eq!(reply[0]["columns"][2]["computed"], json!(["1", "4", "9"]));
+        assert_eq!(engine.points.len(), 2, "the hidden column is not drawn");
+        let (y1, sq) = (&engine.points[0], &engine.points[1]);
+        assert_eq!(y1.points, vec![[1.0, 4.0], [3.0, 6.0]]);
+        assert!(y1.dots && y1.line == Some((DEFAULT_CURVE_WIDTH, LineStyle::Solid)));
+        assert_eq!(y1.color[1], 0x8c as f32 / 255.0);
+        assert!(!sq.dots && sq.line.map(|l| l.1) == Some(LineStyle::Dashed));
+    }
 
     #[test]
     fn rows_become_curves_and_panel_results() {

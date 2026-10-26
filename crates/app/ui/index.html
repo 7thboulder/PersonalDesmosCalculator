@@ -21,6 +21,10 @@
     <div id="frame"></div>
   </div>
 </div>
+<div id="add-menu">
+  <button data-add="expression"><span class="glyph">/x</span> expression</button>
+  <button data-add="table"><span class="glyph">&#x229E;</span> table</button>
+</div>
 <div id="style-menu">
   <div class="colors"></div>
   <div class="line-options">
@@ -38,6 +42,10 @@
     <button data-point="cross" title="Cross"><svg viewBox="0 0 40 10"><path d="M16.5 1.5l7 7M23.5 1.5l-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   </div>
   <label>Point size <input class="point-size" type="range" min="2" max="20" step="1"></label>
+  </div>
+  <div class="toggles">
+    <label class="toggle"><input type="checkbox" class="dots"> Points</label>
+    <label class="toggle"><input type="checkbox" class="connect"> Lines</label>
   </div>
   <label>Opacity <input class="opacity" type="range" min="0" max="1" step="0.05"></label>
 </div>

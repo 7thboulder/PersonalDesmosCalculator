@@ -101,6 +101,11 @@ pub struct Points<'a> {
     /// Diameter in logical pixels.
     pub size: f32,
     pub style: PointStyle,
+    /// Whether the points themselves are drawn.
+    pub dots: bool,
+    /// A line joining the points in order, as a table's "lines" option
+    /// draws: its width and pattern.
+    pub line: Option<(f32, LineStyle)>,
 }
 
 /// Everything to plot in one frame.
@@ -226,6 +231,32 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
 }
 
 fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
+    if let Some((width, style)) = set.line {
+        // Far-off points are clamped so f32 vertices stay accurate.
+        const CLAMP: f64 = 1.0e5;
+        let mut run: Vec<[f32; 2]> = Vec::new();
+        for p in set
+            .points
+            .iter()
+            .chain(std::iter::once(&[f64::NAN, f64::NAN]))
+        {
+            let [sx, sy] = vp.to_screen(p[0], p[1]);
+            if sx.is_finite() && sy.is_finite() {
+                run.push([
+                    sx.clamp(-CLAMP, CLAMP) as f32,
+                    sy.clamp(-CLAMP, CLAMP) as f32,
+                ]);
+            } else {
+                if run.len() >= 2 {
+                    stroke_styled(&run, width * scale, style, set.color, out);
+                }
+                run.clear();
+            }
+        }
+    }
+    if !set.dots {
+        return;
+    }
     let r = set.size * scale / 2.0;
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
     for p in set.points {
@@ -466,6 +497,8 @@ mod tests {
             color: DESMOS_COLORS[3],
             size: DEFAULT_POINT_SIZE,
             style: PointStyle::Filled,
+            dots: true,
+            line: None,
         };
         let plot = Plot {
             parametrics: &[parametric],
@@ -483,6 +516,39 @@ mod tests {
         assert!(dots
             .iter()
             .all(|v| (v.pos[0] as f64 - centre[0]).abs() < 6.0));
+    }
+
+    #[test]
+    fn points_can_be_joined_without_dots() {
+        let vp = Viewport::new(600.0, 600.0);
+        let points = Points {
+            points: &[[-2.0, -2.0], [0.0, 1.0], [2.0, -2.0]],
+            color: DESMOS_COLORS[4],
+            size: DEFAULT_POINT_SIZE,
+            style: PointStyle::Filled,
+            dots: false,
+            line: Some((DEFAULT_CURVE_WIDTH, LineStyle::Solid)),
+        };
+        let plot = Plot {
+            points: &[points],
+            ..Plot::default()
+        };
+        let verts = build_scene(&vp, 1.0, &plot, &mut TextAtlas::empty()).vertices;
+        let line: Vec<_> = verts
+            .iter()
+            .filter(|v| v.color == DESMOS_COLORS[4])
+            .collect();
+        // The line reaches every point, and with no dots nothing sticks
+        // out further than the line's half-width plus a joint.
+        for p in [[-2.0, -2.0], [0.0, 1.0], [2.0, -2.0]] {
+            let c = vp.to_screen(p[0], p[1]);
+            let near = |v: &&Vertex| {
+                (v.pos[0] as f64 - c[0]).abs() < 3.0 && (v.pos[1] as f64 - c[1]).abs() < 3.0
+            };
+            assert!(line.iter().any(near), "line reaches {p:?}");
+        }
+        let left = vp.to_screen(-2.0, -2.0)[0];
+        assert!(line.iter().all(|v| v.pos[0] as f64 > left - 3.0));
     }
 
     #[test]

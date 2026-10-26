@@ -38,16 +38,31 @@
     }
   }
 
+  // The style settings rows and table columns share.
+  function styleOf(t) {
+    return {
+      color: t.color, hidden: t.hidden, style: t.style, width: t.width,
+      opacity: t.opacity, pointStyle: t.pointStyle, pointSize: t.pointSize,
+      dots: t.dots, connect: t.connect
+    };
+  }
+
   function sendRows() {
     send({
       type: 'rows',
       rows: rows.map(function (r) {
-        return {
-          id: r.id, latex: r.field.latex(), color: r.color, hidden: r.hidden,
-          style: r.style, width: r.width, opacity: r.opacity,
-          pointStyle: r.pointStyle, pointSize: r.pointSize,
-          domain: r.domain
-        };
+        if (r.kind === 'table') {
+          return {
+            id: r.id, latex: '',
+            table: r.columns.map(function (c) {
+              return Object.assign(styleOf(c), {
+                header: c.field.latex(),
+                cells: c.cells.map(function (f) { return f.latex(); })
+              });
+            })
+          };
+        }
+        return Object.assign(styleOf(r), { id: r.id, latex: r.field.latex(), domain: r.domain });
       })
     });
   }
@@ -62,9 +77,15 @@
     rows.forEach(function (r) { r.el.classList.toggle('active', r === row); });
   }
 
-  function focusRow(i, atEnd) {
+  // `fromBelow` says focus is arriving from the row underneath, so a table
+  // takes it in its last row instead of its header.
+  function focusRow(i, atEnd, fromBelow) {
     var row = rows[Math.max(0, Math.min(rows.length - 1, i))];
     if (!row) return;
+    if (row.kind === 'table') {
+      tableFocus(row, 0, fromBelow ? row.nrows - 1 : -1);
+      return;
+    }
     row.field.focus();
     if (atEnd === false) row.field.moveToLeftEnd(); else row.field.moveToRightEnd();
   }
@@ -205,7 +226,7 @@
       if (t.dataset.color) menuRow.color = t.dataset.color;
       if (t.dataset.style) menuRow.style = t.dataset.style;
       if (t.dataset.point) menuRow.pointStyle = t.dataset.point;
-      paintRow(menuRow);
+      paintTarget(menuRow);
       refreshMenu();
       sendRows();
     });
@@ -222,8 +243,16 @@
     menu.querySelector('.opacity').addEventListener('input', function (e) {
       if (!menuRow) return;
       menuRow.opacity = Number(e.target.value);
-      paintRow(menuRow);
+      paintTarget(menuRow);
       sendRows();
+    });
+    ['dots', 'connect'].forEach(function (key) {
+      menu.querySelector('.' + key).addEventListener('change', function (e) {
+        if (!menuRow) return;
+        menuRow[key] = e.target.checked;
+        refreshMenu();
+        sendRows();
+      });
     });
     document.addEventListener('mousedown', closeMenu);
   }
@@ -242,18 +271,22 @@
       b.style.color = menuRow.color;
     });
     // Point rows get point options, curves line options, as in Desmos.
+    // Points can also be joined by lines, so they get both.
     var r = menuRow.result || {};
-    var points = !!r.points;
+    var points = menuRow.isColumn || !!r.points;
     menu.classList.toggle('has-points', points);
-    menu.classList.toggle('has-lines', !!r.lines || !points);
+    menu.classList.toggle('has-lines', !!r.lines || !points || menuRow.connect);
+    menu.classList.toggle('no-dots', points && !menuRow.dots);
+    menu.querySelector('.dots').checked = menuRow.dots;
+    menu.querySelector('.connect').checked = menuRow.connect;
     menu.querySelector('.point-size').value = String(menuRow.pointSize);
     menu.querySelector('.width').value = String(menuRow.width);
     menu.querySelector('.opacity').value = String(menuRow.opacity);
   }
 
-  function openMenu(row) {
-    menuRow = row;
-    var box = row.swatch.getBoundingClientRect();
+  function openMenu(target) {
+    menuRow = target;
+    var box = target.swatch.getBoundingClientRect();
     menu.style.top = Math.min(box.top, window.innerHeight - 230) + 'px';
     menu.style.left = (box.right + 8) + 'px';
     menu.classList.add('open');
@@ -266,6 +299,50 @@
   }
 
   // ---- Rows ----------------------------------------------------------------
+
+  function paintTarget(t) {
+    if (t.isColumn) paintColumn(t); else paintRow(t);
+  }
+
+  // Click a color circle to hide or show; hold it (or right-click) for the
+  // style menu, as in Desmos.
+  function bindSwatch(target) {
+    var swatch = target.swatch;
+    var pressTimer = null, longPressed = false;
+    swatch.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      longPressed = false;
+      pressTimer = setTimeout(function () { longPressed = true; openMenu(target); }, LONG_PRESS_MS);
+    });
+    swatch.addEventListener('mouseup', function () { clearTimeout(pressTimer); });
+    swatch.addEventListener('mouseleave', function () { clearTimeout(pressTimer); });
+    swatch.addEventListener('click', function () {
+      if (longPressed) return;
+      target.hidden = !target.hidden;
+      paintTarget(target);
+      sendRows();
+    });
+    swatch.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      openMenu(target);
+    });
+  }
+
+  function newStyle() {
+    return {
+      color: COLORS[nextColor++ % COLORS.length],
+      hidden: false,
+      style: 'solid',
+      width: DEFAULT_WIDTH,
+      pointStyle: 'filled',
+      pointSize: DEFAULT_POINT_SIZE,
+      opacity: 1,
+      dots: true,
+      connect: false
+    };
+  }
 
   function paintRow(row) {
     row.swatch.style.borderColor = row.color;
@@ -379,18 +456,11 @@
       limStep: el.querySelector('.lstep'),
       missingButtons: el.querySelector('.missing .buttons'),
       valueMath: null,
-      color: COLORS[nextColor++ % COLORS.length],
-      hidden: false,
-      style: 'solid',
-      width: DEFAULT_WIDTH,
-      pointStyle: 'filled',
-      pointSize: DEFAULT_POINT_SIZE,
       domain: null,
       domainShown: false,
       settingDomain: false,
       domainMin: null,
       domainMax: null,
-      opacity: 1,
       slider: { min: -10, max: 10, step: null },
       playing: false,
       settingSlider: false,
@@ -400,16 +470,14 @@
       resultKey: '',
       field: null
     };
+    Object.assign(row, newStyle());
 
     var options = Object.assign({}, MATH_OPTIONS, {
       handlers: {
         edit: function () { if (!row.settingSlider) row.playPos = null; sendRows(); },
         enter: function () { addRow('', indexOf(row) + 1).field.focus(); },
-        upOutOf: function () { focusRow(indexOf(row) - 1); },
-        downOutOf: function () {
-          var i = indexOf(row);
-          if (i === rows.length - 1) addRow('', i + 1).field.focus(); else focusRow(i + 1);
-        },
+        upOutOf: function () { focusRow(indexOf(row) - 1, true, true); },
+        downOutOf: function () { leaveDown(row); },
         deleteOutOf: function (dir) {
           if (dir === MQ.L && row.field.latex() === '' && rows.length > 1) removeRow(row);
         }
@@ -447,27 +515,7 @@
     });
     el.querySelector('.remove').addEventListener('click', function () { removeRow(row); });
 
-    // Click the color circle to hide or show; hold it (or right-click) for
-    // the style menu, as in Desmos.
-    var pressTimer = null, longPressed = false;
-    row.swatch.addEventListener('mousedown', function (e) {
-      if (e.button !== 0) return;
-      e.stopPropagation();
-      longPressed = false;
-      pressTimer = setTimeout(function () { longPressed = true; openMenu(row); }, LONG_PRESS_MS);
-    });
-    row.swatch.addEventListener('mouseup', function () { clearTimeout(pressTimer); });
-    row.swatch.addEventListener('mouseleave', function () { clearTimeout(pressTimer); });
-    row.swatch.addEventListener('click', function () {
-      if (longPressed) return;
-      row.hidden = !row.hidden;
-      paintRow(row);
-      sendRows();
-    });
-    row.swatch.addEventListener('contextmenu', function (e) {
-      e.preventDefault();
-      openMenu(row);
-    });
+    bindSwatch(row);
 
     row.play.addEventListener('click', function () { togglePlay(row); });
     row.range.addEventListener('input', function () {
@@ -500,9 +548,270 @@
     return row;
   }
 
-  document.getElementById('add').addEventListener('click', function () {
-    addRow('', rows.length).field.focus();
+  // ---- Tables --------------------------------------------------------------
+
+  function activeIndex() {
+    for (var i = 0; i < rows.length; i++) if (rows[i].el.classList.contains('active')) return i;
+    return -1;
+  }
+
+  // Moving down out of the last line of a row: into the next row, or a new
+  // expression when it was the last.
+  function leaveDown(row) {
+    var i = indexOf(row);
+    if (i === rows.length - 1) addRow('', i + 1).field.focus(); else focusRow(i + 1, false);
+  }
+
+  // The lowest n with no x_n or y_n header in any table yet.
+  function nextTableIndex() {
+    var used = {};
+    rows.forEach(function (r) {
+      if (r.kind !== 'table') return;
+      r.columns.forEach(function (c) {
+        var m = /^[a-z]_\{?(\d+)\}?$/.exec(c.field.latex());
+        if (m) used[m[1]] = true;
+      });
+    });
+    var n = 1;
+    while (used[n]) n++;
+    return n;
+  }
+
+  // Next unused name for a new column: y_n, y_{n+1}, ...
+  function nextColumnName(t) {
+    var taken = {};
+    rows.forEach(function (r) {
+      if (r.kind === 'table') r.columns.forEach(function (c) { taken[c.field.latex()] = true; });
+    });
+    var n = t.index;
+    while (taken['y_' + (n > 9 ? '{' + n + '}' : n)]) n++;
+    return 'y_' + (n > 9 ? '{' + n + '}' : n);
+  }
+
+  function paintColumn(c) {
+    c.swatch.style.borderColor = c.color;
+    c.swatch.style.background = c.hidden ? '#fff' : c.color;
+    c.swatch.style.opacity = String(0.35 + 0.65 * c.opacity);
+  }
+
+  // Focuses column `ci` at table row `ri` (-1 for the header).
+  function tableFocus(t, ci, ri, atStart) {
+    var c = t.columns[Math.max(0, Math.min(t.columns.length - 1, ci))];
+    if (!c) return;
+    var f = ri < 0 ? c.field : c.cells[Math.min(ri, t.nrows - 1)];
+    f.focus();
+    if (atStart) f.moveToLeftEnd(); else f.moveToRightEnd();
+  }
+
+  function cellOptions(t, c, ri) {
+    // ri is a getter so the handlers follow the cell when rows move.
+    return Object.assign({}, MATH_OPTIONS, {
+      handlers: {
+        edit: function () {
+          if (t.filling) return;
+          growTable(t);
+          sendRows();
+        },
+        enter: function () {
+          var r = ri();
+          if (r === t.nrows - 1) addTableRow(t);
+          tableFocus(t, t.columns.indexOf(c), r + 1);
+        },
+        upOutOf: function () {
+          var r = ri();
+          if (r < 0) focusRow(indexOf(t) - 1, true, true);
+          else tableFocus(t, t.columns.indexOf(c), r - 1);
+        },
+        downOutOf: function () {
+          var r = ri();
+          if (r >= t.nrows - 1) leaveDown(t);
+          else tableFocus(t, t.columns.indexOf(c), r + 1);
+        },
+        moveOutOf: function (dir) {
+          var ci = t.columns.indexOf(c);
+          if (dir === MQ.L) {
+            if (ci > 0) tableFocus(t, ci - 1, ri());
+            return;
+          }
+          // Moving right from the last column adds one, as in Desmos.
+          if (ci === t.columns.length - 1) {
+            if (c.field.latex() === '') return;
+            addColumn(t, nextColumnName(t));
+            sendRows();
+          }
+          tableFocus(t, ci + 1, ri(), true);
+        },
+        deleteOutOf: function (dir) {
+          var ci = t.columns.indexOf(c);
+          if (dir !== MQ.L) return;
+          var f = ri() < 0 ? c.field : c.cells[ri()];
+          if (f.latex() !== '') return;
+          // Backspace in an empty header removes an empty column; in an
+          // empty cell it steps left.
+          var empty = c.cells.every(function (x) { return x.latex() === ''; });
+          if (ri() < 0 && empty && t.columns.length > 1) {
+            removeColumn(t, c);
+            tableFocus(t, ci - 1, -1);
+            sendRows();
+          } else if (ci > 0) {
+            tableFocus(t, ci - 1, ri());
+          } else if (ri() > 0) {
+            tableFocus(t, t.columns.length - 1, ri() - 1);
+          }
+        }
+      }
+    });
+  }
+
+  function addCell(t, c) {
+    var ri = c.cells.length;
+    var box = document.createElement('div');
+    box.className = 'cell';
+    box.innerHTML = '<span class="cell-field"></span><span class="cell-value"></span>';
+    c.el.appendChild(box);
+    var field = MQ.MathField(box.querySelector('.cell-field'), cellOptions(t, c, function () {
+      return c.cells.indexOf(field);
+    }));
+    c.cells.push(field);
+    c.values.push(MQ.StaticMath(box.querySelector('.cell-value')));
+    box.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('.mq-editable-field')) { e.preventDefault(); field.focus(); }
+    });
+  }
+
+  function addColumn(t, header, cells) {
+    var c = Object.assign(newStyle(), {
+      isColumn: true, table: t, cells: [], values: [], computed: false
+    });
+    c.el = document.createElement('div');
+    c.el.className = 'col';
+    c.el.innerHTML = '<div class="head"><button class="swatch col-swatch"></button>' +
+      '<span class="head-field"></span><span class="warn col-warn" tabindex="-1">⚠</span></div>';
+    t.grid.appendChild(c.el);
+    c.swatch = c.el.querySelector('.swatch');
+    c.warn = c.el.querySelector('.col-warn');
+    c.field = MQ.MathField(c.el.querySelector('.head-field'), cellOptions(t, c, function () { return -1; }));
+    t.columns.push(c);
+    for (var r = 0; r < t.nrows; r++) addCell(t, c);
+    t.filling = true;
+    c.field.latex(header || '');
+    (cells || []).forEach(function (v, r) { if (c.cells[r]) c.cells[r].latex(v); });
+    t.filling = false;
+    bindSwatch(c);
+    paintColumn(c);
+    return c;
+  }
+
+  function removeColumn(t, c) {
+    var i = t.columns.indexOf(c);
+    if (i < 0) return;
+    c.el.parentNode.removeChild(c.el);
+    t.columns.splice(i, 1);
+  }
+
+  function addTableRow(t) {
+    t.nrows++;
+    t.columns.forEach(function (c) { addCell(t, c); });
+  }
+
+  // Keeps one blank row at the bottom to type into.
+  function growTable(t) {
+    var last = t.nrows - 1;
+    var used = t.columns.some(function (c) { return c.cells[last] && c.cells[last].latex() !== ''; });
+    if (used) addTableRow(t);
+  }
+
+  function addTable(at, columns) {
+    var el = document.createElement('div');
+    el.className = 'row table-row';
+    el.innerHTML =
+      '<div class="tab"><span class="index"></span></div>' +
+      '<div class="body"><div class="grid"></div>' +
+      '<div class="missing">add slider: <span class="buttons"></span></div></div>' +
+      '<button class="remove" title="Delete">&#x2715;</button>';
+    var t = {
+      kind: 'table',
+      id: nextId++,
+      el: el,
+      indexEl: el.querySelector('.index'),
+      grid: el.querySelector('.grid'),
+      missingButtons: el.querySelector('.missing .buttons'),
+      columns: [],
+      nrows: 0,
+      filling: false,
+      result: null,
+      resultKey: ''
+    };
+    var target = rows[at];
+    if (target) list.insertBefore(el, target.el); else list.appendChild(el);
+    rows.splice(at, 0, t);
+    t.index = nextTableIndex();
+    var sub = t.index > 9 ? '{' + t.index + '}' : String(t.index);
+    columns = columns || [{ header: 'x_' + sub }, { header: 'y_' + sub }];
+    t.nrows = Math.max(1, columns.reduce(function (n, c) { return Math.max(n, (c.cells || []).length); }, 0));
+    columns.forEach(function (c) { addColumn(t, c.header, c.cells); });
+    growTable(t);
+    // The first column holds the inputs and is not drawn.
+    t.columns[0].swatch.style.visibility = 'hidden';
+    el.addEventListener('focusin', function () { setActive(t); });
+    el.querySelector('.remove').addEventListener('click', function () { removeRow(t); });
+    renumber();
+    return t;
+  }
+
+  function showTableResult(t, r) {
+    var key = JSON.stringify(r);
+    if (key === t.resultKey) return;
+    t.resultKey = key;
+    t.result = r;
+    (r.columns || []).forEach(function (cr, i) {
+      var c = t.columns[i];
+      if (!c) return;
+      c.result = cr;
+      c.el.classList.toggle('bad', !!cr.error);
+      c.warn.dataset.tip = cr.error || '';
+      c.swatch.classList.toggle('shown', i > 0 && !!cr.points && !cr.error);
+      var computed = cr.computed != null;
+      c.computed = computed;
+      c.el.classList.toggle('computed', computed);
+      var bad = {};
+      (cr.cellErrors || []).forEach(function (e) { bad[e[0]] = e[1]; });
+      c.cells.forEach(function (f, ri) {
+        var box = f.el().parentNode;
+        box.classList.toggle('bad', bad[ri] != null);
+        box.title = bad[ri] || '';
+        if (computed) c.values[ri].latex(cr.computed[ri] || '');
+      });
+    });
+    var missing = r.missing || [];
+    t.el.classList.toggle('has-missing', missing.length > 0);
+    t.missingButtons.innerHTML = '';
+    missing.forEach(function (m) {
+      t.missingButtons.appendChild(sliderButton(t, m.latex, [m]));
+    });
+  }
+
+  // The + button offers an expression or a table, as Desmos's does.
+  var addMenu = document.getElementById('add-menu');
+  document.getElementById('add').addEventListener('mousedown', function (e) {
+    e.stopPropagation();
+    addMenu.classList.toggle('open');
   });
+  addMenu.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+  addMenu.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    addMenu.classList.remove('open');
+    var at = activeIndex() + 1 || rows.length;
+    if (b.dataset.add === 'table') {
+      var t = addTable(at);
+      tableFocus(t, 0, 0);
+      sendRows();
+    } else {
+      addRow('', at).field.focus();
+    }
+  });
+  document.addEventListener('mousedown', function () { addMenu.classList.remove('open'); });
   list.addEventListener('mousedown', function (e) {
     // Clicking the empty space under the rows adds a row, like Desmos.
     if (e.target === list) { e.preventDefault(); addRow('', rows.length).field.focus(); }
@@ -522,7 +831,11 @@
     analysis: function (results) {
       var byId = {};
       results.forEach(function (r) { byId[r.id] = r; });
-      rows.forEach(function (row) { if (byId[row.id]) showResult(row, byId[row.id]); });
+      rows.forEach(function (row) {
+        var r = byId[row.id];
+        if (!r) return;
+        if (row.kind === 'table') showTableResult(row, r); else showResult(row, r);
+      });
     },
     // Used by the smoke test: adds a slider and plays it.
     demo: function () {

@@ -334,3 +334,117 @@ button.icon:disabled { color: #bbb; cursor: default; }
 }
 .row .domain .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
 .row .domain.bad .bound { border-bottom-color: #e0832e; }
+
+/* ---- Points and lines toggles ---- */
+#style-menu .toggles { display: none; gap: 12px; margin: 6px 0 2px; }
+#style-menu.has-points .toggles { display: flex; }
+#style-menu label.toggle { justify-content: flex-start; gap: 4px; margin: 0; }
+#style-menu label.toggle input { width: auto; margin: 0; }
+#style-menu.no-dots .point-options { display: none; }
+
+/* ---- Add menu (the + button) ---- */
+#add-menu {
+  display: none;
+  position: fixed;
+  z-index: 20;
+  top: 40px;
+  left: 6px;
+  padding: 4px 0;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+}
+#add-menu.open { display: block; }
+#add-menu button {
+  display: block;
+  width: 150px;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+}
+#add-menu button:hover { background: #eef3fc; }
+#add-menu .glyph { display: inline-block; width: 24px; color: #666; font-style: italic; }
+
+/* ---- Tables ---- */
+.table-row .body { padding: 10px 36px 10px 12px; }
+.table-row .grid {
+  display: flex;
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #ccc;
+  font-size: 16px;
+}
+.table-row .col { min-width: 72px; border-right: 1px solid #ddd; }
+.table-row .col:last-child { border-right: 0; }
+.table-row .head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 42px;
+  padding: 2px 6px;
+  background: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+}
+.table-row .col-swatch {
+  position: static;
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  visibility: hidden;
+}
+.table-row .col-swatch.shown { visibility: visible; }
+.table-row .head-field, .table-row .cell-field {
+  flex: 1;
+  min-width: 40px;
+  border: 0;
+  box-shadow: none !important;
+}
+.table-row .col-warn {
+  position: static;
+  display: none;
+  color: #e0832e;
+  font-size: 14px;
+  cursor: default;
+}
+.table-row .col.bad .col-warn { display: inline; }
+.table-row .col.bad .col-swatch { display: none; }
+.table-row .col-warn:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: 220px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #333;
+  color: #fff;
+  font-size: 12px;
+  white-space: normal;
+}
+.table-row .cell {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 0 6px;
+  border-bottom: 1px solid #eee;
+  cursor: text;
+}
+.table-row .cell.bad { background: #fdf1e6; }
+.table-row .cell-value { display: none; color: #888; }
+.table-row .col.computed .cell-field { display: none; }
+.table-row .col.computed .cell-value { display: inline-block; }
+.table-row .col.computed .cell { cursor: default; }
+.table-row .mq-editable-field.mq-focused { background: #eef3fc; }
