@@ -30,6 +30,7 @@ USAGE:
     graphcalc --bench-suite [FRAMES]   time the Desmos comparison graphs in bench/
                                        (open, slider drag, pan, zoom) and print a
                                        table to set beside bench/desmos-bench.js
+                                       (GRAPHCALC_SIZE=260x540 sets the graph size)
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency

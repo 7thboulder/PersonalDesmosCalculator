@@ -540,7 +540,13 @@ pub const SUITE: &[(&str, &str)] = &[
 /// zooming. A frame is the app's own work (analysis and scene building)
 /// plus drawing on the GPU and waiting for it.
 pub fn bench_suite(frames: u32) -> Result<(), String> {
-    let (width, height) = (1600u32, 1000u32);
+    // GRAPHCALC_SIZE=260x540 matches the graph size Desmos printed.
+    let size = std::env::var("GRAPHCALC_SIZE").unwrap_or_default();
+    let (width, height) = size
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
+        .filter(|&(w, h): &(u32, u32)| w > 0 && h > 0)
+        .unwrap_or((1600, 1000));
     let gpu = Gpu::new(&new_instance(), None)?;
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
     let mut renderer = GraphRenderer::new(&gpu, format);
