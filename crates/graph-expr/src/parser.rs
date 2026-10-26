@@ -97,6 +97,10 @@ impl Parser {
     fn statement(&mut self) -> Result<Statement, String> {
         let mut condition = self.comparison()?;
         match condition.relations.len() {
+            0 if self.eat(&Tok::Tilde) => {
+                let lhs = condition.operands.remove(0);
+                Ok(Statement::Regression(lhs, self.expr()?))
+            }
             0 => Ok(Statement::Expr(condition.operands.remove(0))),
             1 => {
                 let rhs = condition.operands.pop().expect("two operands");

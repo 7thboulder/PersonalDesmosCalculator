@@ -126,6 +126,9 @@ pub enum Statement {
     /// A chained inequality such as `-1 < y < x`, shaded where every
     /// comparison holds.
     Chain(Condition),
+    /// `y_1 \sim m x_1 + b`: fit the undefined names on the right so the
+    /// two sides agree as closely as they can.
+    Regression(Expr, Expr),
 }
 
 impl Expr {

@@ -54,6 +54,10 @@ on the right. What you type is graphed as you type it:
 - Actions: `a \to a + 1` (type `->`) gets a **Run** button, `l = a \to 1`
   names one, and `l_1, l_2` runs several at once. The + menu's **ticker**
   runs an action over and over, every so many milliseconds.
+- Regressions: `y_1 \sim m x_1 + b` (type `~`) fits every name that is not
+  defined elsewhere, shows the values and R², draws the fitted curve, and
+  stores the residuals as `e_1` (then `e_2`, ...). The fitted names can be
+  used in other rows. Any model works, such as `y_1 \sim a e^{k x_1}`.
 - Opening a Desmos graph: save what `Calc.getState()` gives in Desmos's
   browser console as a `.json` or `.txt` file and open it with Ctrl+O.
   Expressions, tables, sliders, styles, the ticker and the view come across;

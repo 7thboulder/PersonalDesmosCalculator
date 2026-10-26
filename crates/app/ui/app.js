@@ -568,9 +568,9 @@
 
     el.classList.toggle('action', r.kind === 'action' && !warn);
 
-    var showValue = r.value != null && !hasSlider && !warn;
+    var showValue = (r.value != null || r.fit != null) && !hasSlider && !warn;
     el.classList.toggle('has-value', showValue);
-    if (showValue) row.valueMath.latex('=' + r.value);
+    if (showValue) row.valueMath.latex(r.fit != null ? r.fit : '=' + r.value);
 
     var p = r.parameter;
     el.classList.toggle('has-domain', !!p);
