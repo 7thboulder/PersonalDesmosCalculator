@@ -179,6 +179,122 @@ pub fn intersections(f: &dyn Fn(f64) -> f64, g: &dyn Fn(f64) -> f64, vp: &Viewpo
     dedupe(out, vp)
 }
 
+/// Samples across a parametric domain when looking for its points of
+/// interest or the point nearest the mouse.
+pub const PARAMETRIC_SAMPLES: usize = 4000;
+
+/// Where `h` crosses zero for t across `lo..hi`, sampled `n` times.
+fn roots(h: &dyn Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    crossings(h, &samples(h, lo, hi, n))
+}
+
+/// Whether `p` is on screen.
+fn visible(p: [f64; 2], vp: &Viewport) -> bool {
+    let ((x0, x1), (y0, y1)) = (vp.x_range(), vp.y_range());
+    (x0..=x1).contains(&p[0]) && (y0..=y1).contains(&p[1])
+}
+
+/// The domain a parametric search covers, when it is a real range.
+fn finite_domain((t0, t1): (f64, f64)) -> Option<(f64, f64)> {
+    (t0.is_finite() && t1.is_finite() && t1 > t0).then_some((t0, t1))
+}
+
+/// Points of interest on the parametric curve (x(t), y(t)) for t across
+/// `domain`: where it crosses each axis.
+pub fn parametric_pois(
+    fx: &dyn Fn(f64) -> f64,
+    fy: &dyn Fn(f64) -> f64,
+    domain: (f64, f64),
+    vp: &Viewport,
+) -> Vec<Poi> {
+    let Some((t0, t1)) = finite_domain(domain) else {
+        return Vec::new();
+    };
+    let at = |t: f64| [fx(t), fy(t)];
+    let mut out: Vec<Poi> = roots(fy, t0, t1, PARAMETRIC_SAMPLES)
+        .into_iter()
+        .map(|t| Poi {
+            at: [fx(t), 0.0],
+            kind: PoiKind::Zero,
+        })
+        .collect();
+    out.extend(
+        roots(fx, t0, t1, PARAMETRIC_SAMPLES)
+            .into_iter()
+            .map(|t| Poi {
+                at: [0.0, at(t)[1]],
+                kind: PoiKind::Intercept,
+            }),
+    );
+    out.retain(|p| visible(p.at, vp));
+    dedupe(out, vp)
+}
+
+/// Where the parametric curve (x(t), y(t)) meets `y = g(x)`.
+pub fn parametric_intersections(
+    fx: &dyn Fn(f64) -> f64,
+    fy: &dyn Fn(f64) -> f64,
+    domain: (f64, f64),
+    g: &dyn Fn(f64) -> f64,
+    vp: &Viewport,
+) -> Vec<Poi> {
+    let Some((t0, t1)) = finite_domain(domain) else {
+        return Vec::new();
+    };
+    let h = |t: f64| fy(t) - g(fx(t));
+    let out = roots(&h, t0, t1, PARAMETRIC_SAMPLES)
+        .into_iter()
+        .map(|t| Poi {
+            at: [fx(t), fy(t)],
+            kind: PoiKind::Intersection,
+        })
+        .filter(|p| visible(p.at, vp))
+        .collect();
+    dedupe(out, vp)
+}
+
+/// Points of interest on the implicit curve `f(x, y) = 0`: where it
+/// crosses each axis.
+pub fn implicit_pois(f: &dyn Fn(f64, f64) -> f64, vp: &Viewport) -> Vec<Poi> {
+    let ((x0, x1), (y0, y1)) = (vp.x_range(), vp.y_range());
+    let (w, h) = (
+        vp.width_px.ceil().max(2.0) as usize,
+        vp.height_px.ceil().max(2.0) as usize,
+    );
+    let mut out: Vec<Poi> = roots(&|x| f(x, 0.0), x0, x1, w)
+        .into_iter()
+        .map(|x| Poi {
+            at: [x, 0.0],
+            kind: PoiKind::Zero,
+        })
+        .collect();
+    out.extend(roots(&|y| f(0.0, y), y0, y1, h).into_iter().map(|y| Poi {
+        at: [0.0, y],
+        kind: PoiKind::Intercept,
+    }));
+    out.retain(|p| visible(p.at, vp));
+    dedupe(out, vp)
+}
+
+/// Where the implicit curve `f(x, y) = 0` meets `y = g(x)`.
+pub fn implicit_intersections(
+    f: &dyn Fn(f64, f64) -> f64,
+    g: &dyn Fn(f64) -> f64,
+    vp: &Viewport,
+) -> Vec<Poi> {
+    let (lo, hi) = vp.x_range();
+    let n = vp.width_px.ceil().max(2.0) as usize;
+    let out = roots(&|x| f(x, g(x)), lo, hi, n)
+        .into_iter()
+        .map(|x| Poi {
+            at: [x, g(x)],
+            kind: PoiKind::Intersection,
+        })
+        .filter(|p| visible(p.at, vp))
+        .collect();
+    dedupe(out, vp)
+}
+
 /// Drops points within half a pixel of an earlier one, and caps the count.
 pub fn dedupe(points: Vec<Poi>, vp: &Viewport) -> Vec<Poi> {
     let close = vp.units_per_px / 2.0;
@@ -284,5 +400,40 @@ mod tests {
         assert_eq!(coordinate_text(-0.00001, 0.02), "0");
         assert_eq!(coordinate_text(-2.5, 0.02), "\u{2212}2.5");
         assert_eq!(coordinate_text(1234.5678, 2.0), "1234.6");
+    }
+
+    #[test]
+    fn parametric_and_implicit_curves_have_axis_points() {
+        let vp = Viewport::new(800.0, 600.0);
+        // The unit circle crosses the axes at (±1, 0) and (0, ±1).
+        let circle = parametric_pois(
+            &|t: f64| t.cos(),
+            &|t: f64| t.sin(),
+            (0.0, std::f64::consts::TAU),
+            &vp,
+        );
+        let has = |pois: &[Poi], at: [f64; 2]| {
+            pois.iter()
+                .any(|p| (p.at[0] - at[0]).abs() < 1e-9 && (p.at[1] - at[1]).abs() < 1e-9)
+        };
+        for at in [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]] {
+            assert!(has(&circle, at), "{at:?} in {circle:?}");
+        }
+        let implicit = implicit_pois(&|x: f64, y: f64| x * x + y * y - 4.0, &vp);
+        for at in [[2.0, 0.0], [-2.0, 0.0], [0.0, 2.0], [0.0, -2.0]] {
+            assert!(has(&implicit, at), "{at:?} in {implicit:?}");
+        }
+        // The circle of radius 2 meets y = x at (√2, √2) and (−√2, −√2).
+        let r = 2f64.sqrt();
+        let meet = implicit_intersections(&|x: f64, y: f64| x * x + y * y - 4.0, &|x| x, &vp);
+        assert!(has(&meet, [r, r]) && has(&meet, [-r, -r]), "{meet:?}");
+        let meet = parametric_intersections(
+            &|t: f64| 2.0 * t.cos(),
+            &|t: f64| 2.0 * t.sin(),
+            (0.0, std::f64::consts::TAU),
+            &|x| x,
+            &vp,
+        );
+        assert!(has(&meet, [r, r]) && has(&meet, [-r, -r]), "{meet:?}");
     }
 }

@@ -5,7 +5,7 @@ its math and drawing with the machine's own CPU and GPU instead of a browser.
 Private, personal-use project. The full plan lives in the
 [plan doc](https://claude.ai/artifact/DZCzUyaNRYjCzz5fdBDS7n).
 
-**Status: Phase 3 complete, in review.** The window opens with a Desmos-style expression
+**Status: Phase 3 merged; Phase 4 (speed and polish) under way.** The window opens with a Desmos-style expression
 list on the left (the same MathQuill editor Desmos uses) and a GPU-drawn graph
 on the right. What you type is graphed as you type it:
 
@@ -36,8 +36,11 @@ on the right. What you type is graphed as you type it:
   and **Lines** toggles (point lists in expressions get them too).
 - Points of interest: select a row and its curve shows grey dots where it
   crosses the axes, turns, and meets other curves; hover or click one for
-  its coordinates. Press and drag on a curve to trace it, and drag a point
-  such as `(a, b)` to move its sliders.
+  its coordinates. Press and drag on any curve (explicit, parametric, polar
+  or implicit) to trace it, and drag a point such as `(a, b)` to move its
+  sliders.
+- Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
+  A burst of typing or a slider drag undoes as one step.
 - Saving and opening: the ☰ menu (or Ctrl+S, Ctrl+Shift+S, Ctrl+O) saves
   graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.
   The session is autosaved, so the next launch carries on where you left
@@ -58,15 +61,18 @@ on the right. What you type is graphed as you type it:
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
-  an editable range and step (click the -10 or 10) and a play button.
+  an editable range and step (click the -10 or 10) and a play button. While
+  it plays, − and + change its speed and the loop button cycles through
+  back and forth, loop forward, play once and play forever.
 - Rows such as `2 + 3` or `b = 2a` show their value; mistakes show a warning
   triangle with Desmos-style wording on hover.
 - Click a row's color circle to hide or show its curve; hold it (or
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: undo and redo. Tracing and points of interest cover y = f(x) and
-x = g(y) curves so far. Shading is computed by the GPU in single precision, so a
+Not yet: points of interest where two parametric or implicit curves meet
+each other (they show where these meet y = f(x) curves and the axes).
+Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a
 double-precision fallback at that zoom is still to come.
 

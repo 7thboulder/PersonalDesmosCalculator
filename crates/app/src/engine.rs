@@ -34,6 +34,8 @@ pub struct GraphCurve {
 
 /// One parametric or polar curve ready to draw.
 pub struct GraphParametric {
+    /// The panel row it came from.
+    pub row: u64,
     pub x: Program,
     pub y: Program,
     pub domain: (f64, f64),
@@ -87,6 +89,8 @@ pub struct GraphPolygon {
 /// One implicit equation or inequality ready to draw: its boundary is
 /// traced on the CPU, and the shading, when it has any, on the GPU.
 pub struct GraphRegion {
+    /// The panel row it came from.
+    pub row: u64,
     pub program: Program,
     pub compare: Compare,
     pub color: [f32; 4],
@@ -206,6 +210,7 @@ impl Engine {
             }
             for p in &result.parametrics {
                 self.parametrics.push(GraphParametric {
+                    row: result.id,
                     x: p.x.clone(),
                     y: p.y.clone(),
                     domain: p.domain,
@@ -216,6 +221,7 @@ impl Engine {
             }
             for region in &result.regions {
                 self.regions.push(GraphRegion {
+                    row: result.id,
                     shader: wgsl::body(&region.program),
                     program: region.program.clone(),
                     compare: region.compare,

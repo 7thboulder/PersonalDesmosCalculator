@@ -245,10 +245,21 @@ fn from_desmos(state: &Value) -> (Value, Option<View>) {
                     let min = latex_number(&s["min"]).unwrap_or(-10.0);
                     let max = latex_number(&s["max"]).unwrap_or(10.0);
                     let step = latex_number(&s["step"]).filter(|x| *x > 0.0);
-                    row.insert(
-                        "slider".into(),
-                        json!({"min": min, "max": max.max(min), "step": step}),
-                    );
+                    let mut slider = json!({"min": min, "max": max.max(min), "step": step});
+                    let looping = match s["loopMode"].as_str() {
+                        Some("LOOP_FORWARD") => Some("forward"),
+                        Some("PLAY_ONCE") => Some("once"),
+                        Some("PLAY_INDEFINITELY") => Some("forever"),
+                        _ => None,
+                    };
+                    if let Some(l) = looping {
+                        slider["loop"] = json!(l);
+                    }
+                    // Desmos plays at 1x over 4 seconds; its period sets the speed.
+                    if let Some(period) = s["animationPeriod"].as_f64().filter(|p| *p > 0.0) {
+                        slider["speed"] = json!(4000.0 / period);
+                    }
+                    row.insert("slider".into(), slider);
                 }
                 let d = &e["parametricDomain"];
                 if let (Some(a), Some(b)) = (d["min"].as_str(), d["max"].as_str()) {
@@ -458,7 +469,8 @@ mod tests {
                 "list": [
                     {"type": "folder", "id": "1", "title": "stuff"},
                     {"type": "expression", "id": "2", "color": "#c74440", "latex": "a=1",
-                     "slider": {"hardMin": true, "min": "0", "step": "0.01"}},
+                     "slider": {"hardMin": true, "min": "0", "step": "0.01",
+                                "loopMode": "PLAY_ONCE", "animationPeriod": 40000}},
                     {"type": "expression", "id": "3", "color": "#2d70b3", "latex": "(t,t^2)",
                      "lineStyle": "DASHED", "lineWidth": "5", "parametricDomain": {"min": "-1", "max": "\\pi"}},
                     {"type": "text", "id": "4", "text": "a note"},
@@ -485,7 +497,7 @@ mod tests {
         assert_eq!(rows[0]["latex"], "a\\to a+1");
         assert_eq!(
             rows[1]["slider"],
-            json!({"min": 0.0, "max": 10.0, "step": 0.01})
+            json!({"min": 0.0, "max": 10.0, "step": 0.01, "loop": "once", "speed": 0.1})
         );
         assert_eq!(rows[1]["color"], "#c74440");
         assert_eq!(rows[2]["style"], "dashed");

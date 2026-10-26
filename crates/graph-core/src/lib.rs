@@ -12,7 +12,10 @@ pub mod text;
 pub mod viewport;
 
 pub use implicit::{trace_implicit, Field};
-pub use poi::{curve_pois, intersections, point_text, Poi, PoiKind};
+pub use poi::{
+    curve_pois, implicit_intersections, implicit_pois, intersections, parametric_intersections,
+    parametric_pois, point_text, Poi, PoiKind,
+};
 pub use sample::{sample_parametric, Axis};
 pub use scene::{
     build_scene, Curve, Implicit, Mark, MarkKind, Parametric, Plot, PointStyle, Points, Polygon,
