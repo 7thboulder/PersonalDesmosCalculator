@@ -296,6 +296,7 @@ fn row_with_domain(latex: &str, lo: &str, hi: &str) -> RowAnalysis {
         id: 0,
         latex: latex.into(),
         domain: Some([lo.into(), hi.into()]),
+        ..Default::default()
     }])
     .remove(0)
 }
@@ -445,6 +446,85 @@ fn piecewise_and_restrictions() {
     assert!(band.compare.holds(band.program.eval2(2.0, 0.0)));
     assert!(!band.compare.holds(band.program.eval2(0.0, 5.0)));
     assert!(!band.compare.holds(band.program.eval2(5.0, -3.0)));
+}
+
+fn table(headers: &[&str], cells: &[&[&str]]) -> RowInput {
+    RowInput {
+        table: Some(
+            headers
+                .iter()
+                .enumerate()
+                .map(|(c, h)| graph_expr::ColumnInput {
+                    header: h.to_string(),
+                    cells: cells
+                        .iter()
+                        .map(|r| r.get(c).unwrap_or(&"").to_string())
+                        .collect(),
+                })
+                .collect(),
+        ),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn tables() {
+    let with = |extra: &[&str], t: RowInput| {
+        let mut input = vec![RowInput {
+            id: 0,
+            table: t.table,
+            ..Default::default()
+        }];
+        for (i, l) in extra.iter().enumerate() {
+            input.push(RowInput {
+                id: i as u64 + 1,
+                latex: l.to_string(),
+                ..Default::default()
+            });
+        }
+        analyze(&input)
+    };
+    // Points against the first column; the blank row at the end is ignored
+    // and a blank cell skips its point.
+    let t = table(
+        &["x_1", "y_1"],
+        &[&["1", "2"], &["2", ""], &["3", "a"], &["", ""]],
+    );
+    let all = with(
+        &[
+            "a=5",
+            "\\operatorname{total}\\left(x_1\\right)",
+            "y_1\\left[3\\right]",
+        ],
+        t,
+    );
+    assert_eq!(all[0].kind, RowKind::Table);
+    assert_eq!(all[0].columns[1].points, vec![[1.0, 2.0], [3.0, 5.0]]);
+    assert!(close(all[2].number().unwrap(), 6.0));
+    assert!(close(all[3].number().unwrap(), 5.0));
+
+    // A formula column is filled in from the first column, even one headed x.
+    let t = table(&["x", "x^2", "y"], &[&["1", "", "4"], &["-2", "", "5"]]);
+    let all = with(&[], t);
+    assert_eq!(all[0].columns[1].computed, Some(vec![1.0, 4.0]));
+    assert_eq!(all[0].columns[1].points, vec![[1.0, 1.0], [-2.0, 4.0]]);
+    assert_eq!(all[0].columns[2].points, vec![[1.0, 4.0], [-2.0, 5.0]]);
+
+    // Undefined names are offered as sliders; reused names are errors.
+    let t = table(&["x_1", "y_1"], &[&["1", "b"]]);
+    let all = with(&["y_1=3"], t);
+    assert_eq!(
+        all[0].columns[1].error.as_deref(),
+        Some("'y_1' is defined more than once")
+    );
+    let t = table(&["x_1", "y_2"], &[&["1", "b"]]);
+    assert_eq!(with(&[], t)[0].missing, vec!["b".to_string()]);
+
+    // Bad cells and headers say what is wrong.
+    let t = table(&["x_1", "y_1"], &[&["1", "2+"]]);
+    assert_eq!(with(&[], t)[0].columns[1].cell_errors.len(), 1);
+    let t = table(&["x_1^2", "y_1"], &[&["1", "2"]]);
+    assert!(with(&[], t)[0].columns[0].error.is_some());
 }
 
 #[test]

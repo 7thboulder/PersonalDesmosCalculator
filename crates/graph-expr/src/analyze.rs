@@ -21,6 +21,30 @@ pub struct RowInput {
     /// The LaTeX of a parametric or polar row's domain bounds, when the
     /// person has edited them; otherwise Desmos's defaults apply.
     pub domain: Option<[String; 2]>,
+    /// Set when the row is a table instead of an expression.
+    pub table: Option<Vec<ColumnInput>>,
+}
+
+/// One column of a table: its header and the LaTeX of each cell.
+#[derive(Clone, Debug, Default)]
+pub struct ColumnInput {
+    pub header: String,
+    pub cells: Vec<String>,
+}
+
+/// What a table column means and draws.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ColumnAnalysis {
+    pub error: Option<String>,
+    /// Undefined names in the header or cells, offered as sliders.
+    pub missing: Vec<String>,
+    /// For a column whose header is a formula (`x_1^2`), its value in
+    /// each table row, NaN where undefined.
+    pub computed: Option<Vec<f64>>,
+    /// Points against the first column, skipping incomplete rows.
+    pub points: Vec<[f64; 2]>,
+    /// Cells that could not be read, by table row.
+    pub cell_errors: Vec<(usize, String)>,
 }
 
 /// Which variable a curve is a function of.
@@ -115,6 +139,7 @@ pub enum RowKind {
     Variable(String),
     Function(String),
     Curve,
+    Table,
     Value,
     /// Valid math this version cannot graph yet, such as a derivative.
     NotYet,
@@ -141,6 +166,8 @@ pub struct RowAnalysis {
     pub points: Vec<[f64; 2]>,
     /// Set for parametric and polar rows, whose domain the panel shows.
     pub parameter: Option<Parameter>,
+    /// One entry per column for a table row.
+    pub columns: Vec<ColumnAnalysis>,
 }
 
 impl RowAnalysis {
@@ -157,6 +184,7 @@ impl RowAnalysis {
             regions: Vec::new(),
             points: Vec::new(),
             parameter: None,
+            columns: Vec::new(),
         }
     }
 
@@ -190,7 +218,8 @@ impl RowAnalysis {
         !(self.curves.is_empty()
             && self.parametrics.is_empty()
             && self.regions.is_empty()
-            && self.points.is_empty())
+            && self.points.is_empty()
+            && self.columns.iter().all(|c| c.points.is_empty()))
     }
 }
 
@@ -327,7 +356,11 @@ fn bin(op: BinOp, a: Low, b: Low) -> Low {
 pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
     let parsed: Vec<Option<Result<Statement, String>>> = rows
         .iter()
-        .map(|r| (!r.latex.trim().is_empty()).then(|| parse(&r.latex)))
+        .map(|r| (r.table.is_none() && !r.latex.trim().is_empty()).then(|| parse(&r.latex)))
+        .collect();
+    let mut tables: Vec<Option<Table>> = rows
+        .iter()
+        .map(|r| r.table.as_deref().map(Table::read))
         .collect();
 
     // Collect definitions, refusing duplicates and reserved names.
@@ -342,11 +375,26 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
     for def in defs.iter().flatten().flatten() {
         *counts.entry(def_name(def).to_owned()).or_default() += 1;
     }
+    for table in tables.iter().flatten() {
+        for name in table.defined_names() {
+            *counts.entry(name.to_owned()).or_default() += 1;
+        }
+    }
+    let twice = |name: &str| format!("'{}' is defined more than once", name);
     for def in defs.iter_mut() {
         if let Some(Ok(d)) = def {
             let name = def_name(d).to_owned();
             if counts[&name] > 1 {
-                *def = Some(Err(format!("'{}' is defined more than once", name)));
+                *def = Some(Err(twice(&name)));
+            }
+        }
+    }
+    for table in tables.iter_mut().flatten() {
+        for column in &mut table.columns {
+            if let Header::Defines(name) = &column.header {
+                if counts[name] > 1 {
+                    column.header = Header::Bad(twice(name));
+                }
             }
         }
     }
@@ -357,6 +405,14 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
         values: HashMap::new(),
         next_hole: 0,
     };
+    for table in tables.iter().flatten() {
+        for column in &table.columns {
+            if let Header::Defines(name) = &column.header {
+                env.vars
+                    .insert(name.clone(), Expr::List(column.cells.clone()));
+            }
+        }
+    }
     for def in defs.iter().flatten().flatten() {
         match def {
             Def::Var(name, expr) => {
@@ -377,7 +433,9 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
     rows.iter()
         .zip(parsed)
         .zip(defs)
-        .map(|((row, parsed), def)| match (parsed, def) {
+        .zip(tables)
+        .map(|(((row, parsed), def), table)| match (parsed, def) {
+            _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
             (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
             (Some(Err(e)), _) => RowAnalysis::error(row.id, e),
             (Some(Ok(_)), Some(Err(e))) => RowAnalysis::error(row.id, e),
@@ -435,6 +493,114 @@ fn definition(statement: &Statement) -> Option<Result<Def, String>> {
             )))
         }
         _ => None,
+    }
+}
+
+/// What a table column's header says.
+enum Header {
+    /// No header yet.
+    Blank,
+    /// A name such as `y_1`, which the column's cells define as a list.
+    Defines(String),
+    /// `x` or `y`: the cells are plotted but define nothing.
+    Plain(String),
+    /// A formula of the first column, such as `x_1^2`, filled in by the
+    /// engine.
+    Formula(Expr),
+    Bad(String),
+}
+
+struct TableColumn {
+    header: Header,
+    /// One expression per table row; blank cells are NaN.
+    cells: Vec<Expr>,
+    cell_errors: Vec<(usize, String)>,
+    /// Whether any cell has something typed in it.
+    filled: bool,
+}
+
+/// A table with its headers and cells parsed.
+struct Table {
+    columns: Vec<TableColumn>,
+    /// Rows up to the last one with anything in it.
+    rows: usize,
+}
+
+impl Table {
+    fn read(columns: &[ColumnInput]) -> Table {
+        let blank = |s: &str| s.trim().is_empty();
+        let rows = columns
+            .iter()
+            .filter_map(|c| c.cells.iter().rposition(|cell| !blank(cell)))
+            .max()
+            .map_or(0, |last| last + 1);
+        let columns = columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let header = if blank(&c.header) {
+                    Header::Blank
+                } else {
+                    match parse(&c.header) {
+                        Err(e) => Header::Bad(e),
+                        Ok(Statement::Expr(Expr::Var(name))) if definable(&name) => {
+                            Header::Defines(name)
+                        }
+                        Ok(Statement::Expr(Expr::Var(name))) if name == "x" || name == "y" => {
+                            Header::Plain(name)
+                        }
+                        Ok(Statement::Expr(Expr::Var(name)))
+                            if CONSTANTS.iter().any(|(c, _)| *c == name) =>
+                        {
+                            Header::Bad(format!(
+                                "'{name}' is a built-in constant and can't be redefined"
+                            ))
+                        }
+                        Ok(Statement::Expr(_)) if i == 0 => {
+                            Header::Bad("The first column needs a name, like x_1".into())
+                        }
+                        Ok(Statement::Expr(e)) => Header::Formula(e),
+                        Ok(_) => Header::Bad(
+                            "A column header is a name like y_1 or a formula like x_1^2".into(),
+                        ),
+                    }
+                };
+                let mut cell_errors = Vec::new();
+                let cells = (0..rows)
+                    .map(|r| {
+                        let latex = c.cells.get(r).map_or("", String::as_str);
+                        if blank(latex) {
+                            return Expr::Num(f64::NAN);
+                        }
+                        match parse(latex) {
+                            Ok(Statement::Expr(e)) => e,
+                            Ok(_) => {
+                                cell_errors.push((r, "A cell holds a number or expression".into()));
+                                Expr::Num(f64::NAN)
+                            }
+                            Err(e) => {
+                                cell_errors.push((r, e));
+                                Expr::Num(f64::NAN)
+                            }
+                        }
+                    })
+                    .collect();
+                TableColumn {
+                    header,
+                    cells,
+                    cell_errors,
+                    filled: c.cells.iter().any(|cell| !blank(cell)),
+                }
+            })
+            .collect();
+        Table { columns, rows }
+    }
+
+    fn defined_names(&self) -> impl Iterator<Item = &str> {
+        self.columns.iter().filter_map(|c| match &c.header {
+            Header::Defines(name) => Some(name.as_str()),
+            _ => None,
+        })
     }
 }
 
@@ -878,6 +1044,107 @@ impl Env {
         .into_iter()
         .collect();
         self.lower(e, &bindings, &[("x", Arg::X), ("y", Arg::Y)], problems)
+    }
+
+    /// A table: each column after the first is drawn as points against
+    /// the first, and columns headed by a name define it as a list.
+    fn table_row(&mut self, id: u64, table: &Table) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Table);
+        let mut columns: Vec<ColumnAnalysis> = Vec::new();
+        let mut values: Vec<Option<Vec<f64>>> = Vec::new();
+        for (i, column) in table.columns.iter().enumerate() {
+            let mut out = ColumnAnalysis {
+                cell_errors: column.cell_errors.clone(),
+                ..ColumnAnalysis::default()
+            };
+            let mut problems = Problems::default();
+            let numbers = match &column.header {
+                Header::Blank => {
+                    if column.filled {
+                        out.error = Some("Give this column a header, like y_1".into());
+                    }
+                    None
+                }
+                Header::Bad(e) => {
+                    out.error = Some(e.clone());
+                    None
+                }
+                Header::Defines(name) => match self.value_of(name, &mut HashSet::new()) {
+                    Ok(v) => numbers_of(&v, table.rows, &mut out.error),
+                    Err(e) => {
+                        out.error = Some(e);
+                        out.missing = self.missing_in(&Expr::List(column.cells.clone()));
+                        None
+                    }
+                },
+                Header::Plain(_) => {
+                    let val = self.lower(
+                        &Expr::List(column.cells.clone()),
+                        &HashMap::new(),
+                        NO_FREE,
+                        &mut problems,
+                    );
+                    self.column_numbers(&val, table.rows, &problems, &mut out)
+                }
+                Header::Formula(e) => {
+                    // The formula reads the first column's name as its list,
+                    // even when that name is x.
+                    let mut bindings = HashMap::new();
+                    if let (Some(first), Some(Some(xs))) = (table.columns.first(), values.first()) {
+                        if let Header::Defines(n) | Header::Plain(n) = &first.header {
+                            bindings
+                                .insert(n.clone(), Val::from_value(&Value::Numbers(xs.clone())));
+                        }
+                    }
+                    let val = self.lower(e, &bindings, NO_FREE, &mut problems);
+                    let numbers = self.column_numbers(&val, table.rows, &problems, &mut out);
+                    out.computed = numbers.clone();
+                    numbers
+                }
+            };
+            if i > 0 {
+                if let (Some(Some(xs)), Some(ys)) = (values.first(), &numbers) {
+                    out.points = xs
+                        .iter()
+                        .zip(ys)
+                        .map(|(x, y)| [*x, *y])
+                        .filter(|p| p[0].is_finite() && p[1].is_finite())
+                        .collect();
+                }
+            }
+            for m in &out.missing {
+                if !row.missing.contains(m) {
+                    row.missing.push(m.clone());
+                }
+            }
+            values.push(numbers);
+            columns.push(out);
+        }
+        row.columns = columns;
+        row
+    }
+
+    /// A column's numbers from its lowered value, padded with NaN to the
+    /// table's length, or None with the reason recorded.
+    fn column_numbers(
+        &self,
+        val: &Val,
+        rows: usize,
+        problems: &Problems,
+        out: &mut ColumnAnalysis,
+    ) -> Option<Vec<f64>> {
+        out.missing = slider_names(&problems.missing);
+        if let Some(e) = problems.first_message() {
+            out.error = Some(e);
+            return None;
+        }
+        match val.constant() {
+            Some(v) => numbers_of(&v, rows, &mut out.error),
+            None => {
+                out.error = Some("Variables can't depend on x or y".into());
+                None
+            }
+        }
     }
 
     fn value_row(&mut self, id: u64, expr: &Expr) -> RowAnalysis {
@@ -1554,6 +1821,23 @@ fn compile_all<T>(val: &Val, error: &mut Option<String>, make: impl Fn(Program) 
         }
     }
     out
+}
+
+/// A table column's numbers: a list padded or cut to the table's length,
+/// or one number repeated down it.
+fn numbers_of(v: &Value, rows: usize, error: &mut Option<String>) -> Option<Vec<f64>> {
+    match v {
+        Value::Number(n) => Some(vec![*n; rows]),
+        Value::Numbers(ns) => {
+            let mut ns = ns.clone();
+            ns.resize(rows, f64::NAN);
+            Some(ns)
+        }
+        Value::Point(..) | Value::Points(_) => {
+            *error = Some("Table cells hold numbers, not points".into());
+            None
+        }
+    }
 }
 
 fn points_of(v: &Value) -> Vec<[f64; 2]> {

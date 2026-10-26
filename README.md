@@ -28,6 +28,12 @@ on the right. What you type is graphed as you type it:
   (type `sum` or `prod`, as in Desmos), and integrals such as
   `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Derivatives are
   exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
+- Tables (+ then **table**): each column after the first is plotted against
+  it, a column named `y_1` defines that list for other rows, and a column
+  headed by a formula such as `x_1^2` fills itself in. Enter moves down,
+  arrow keys move between cells, and moving right from the last column adds
+  one. Each column has its own color circle and style, including **Points**
+  and **Lines** toggles (point lists in expressions get them too).
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
@@ -38,7 +44,7 @@ on the right. What you type is graphed as you type it:
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: tables; points of interest,
+Not yet: points of interest,
 trace and draggable points; saving and opening graphs. Those are the rest of
 Phase 3. Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a
