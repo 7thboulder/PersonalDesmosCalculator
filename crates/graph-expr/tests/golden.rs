@@ -526,3 +526,24 @@ fn tables() {
     let t = table(&["x_1^2", "y_1"], &[&["1", "2"]]);
     assert!(with(&[], t)[0].columns[0].error.is_some());
 }
+
+#[test]
+fn draggable_points() {
+    let all = rows(&[
+        "a=1",
+        "b=2",
+        "\\left(a,b\\right)",
+        "P=\\left(a,3\\right)",
+        "\\left(a+1,b\\right)",
+        "\\left(2,3\\right)",
+        "c=a+1",
+        "\\left(c,b\\right)",
+    ]);
+    let s = |n: &str| Some(n.to_string());
+    assert_eq!(all[2].drag, Some([s("a"), s("b")]));
+    assert_eq!(all[3].drag, Some([s("a"), None]));
+    // Only bare slider variables drag their coordinate.
+    assert_eq!(all[4].drag, Some([None, s("b")]));
+    assert_eq!(all[5].drag, None);
+    assert_eq!(all[7].drag, Some([None, s("b")]));
+}

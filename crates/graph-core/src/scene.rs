@@ -108,6 +108,30 @@ pub struct Points<'a> {
     pub line: Option<(f32, LineStyle)>,
 }
 
+/// How a mark on top of the graph looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    /// A grey point of interest on the selected curve.
+    Poi,
+    /// A point of interest under the mouse or clicked: larger and labelled.
+    Hot,
+    /// The point following the mouse along a curve while tracing.
+    Trace,
+}
+
+/// A point drawn over everything else, with an optional coordinate label.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub at: [f64; 2],
+    /// The curve's colour, used by trace points.
+    pub color: [f32; 4],
+    pub kind: MarkKind,
+    pub label: Option<String>,
+}
+
+const POI: [f32; 4] = rgb(0x80, 0x80, 0x80);
+const LABEL_BORDER: [f32; 4] = rgb(0xcc, 0xcc, 0xcc);
+
 /// Everything to plot in one frame.
 #[derive(Default)]
 pub struct Plot<'a> {
@@ -115,6 +139,7 @@ pub struct Plot<'a> {
     pub parametrics: &'a [Parametric<'a>],
     pub implicits: &'a [Implicit<'a>],
     pub points: &'a [Points<'a>],
+    pub marks: &'a [Mark],
 }
 
 /// One frame's triangles, in two parts: the renderer draws `vertices` up to
@@ -135,6 +160,7 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
         parametrics,
         implicits,
         points,
+        marks,
     } = *plot;
     let mut out = Vec::with_capacity(64 * 1024);
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
@@ -224,6 +250,15 @@ pub fn build_scene(vp: &Viewport, scale: f32, plot: &Plot, text: &mut TextAtlas)
     for set in points {
         draw_points(vp, scale, set, &mut out);
     }
+    // Labels go after every dot so none is hidden under a neighbour.
+    for mark in marks {
+        draw_mark(vp, scale, mark, &mut out);
+    }
+    for mark in marks {
+        if let Some(label) = &mark.label {
+            draw_mark_label(vp, scale, mark.at, label, text, &mut out);
+        }
+    }
     Scene {
         vertices: out,
         shade_after,
@@ -290,6 +325,61 @@ fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
             }
         }
     }
+}
+
+fn draw_mark(vp: &Viewport, scale: f32, mark: &Mark, out: &mut Vec<Vertex>) {
+    let [sx, sy] = vp.to_screen(mark.at[0], mark.at[1]);
+    if !(sx.is_finite() && sy.is_finite()) {
+        return;
+    }
+    let c = [sx as f32, sy as f32];
+    match mark.kind {
+        MarkKind::Poi => disc(c, 4.0 * scale, POI, out),
+        MarkKind::Hot => {
+            disc(c, 6.5 * scale, BACKGROUND, out);
+            disc(c, 5.0 * scale, POI, out);
+        }
+        MarkKind::Trace => {
+            disc(c, 7.5 * scale, BACKGROUND, out);
+            disc(c, 6.0 * scale, mark.color, out);
+        }
+    }
+}
+
+/// A coordinate label in a white box up and to the right of the point,
+/// flipped to stay on screen.
+fn draw_mark_label(
+    vp: &Viewport,
+    scale: f32,
+    at: [f64; 2],
+    label: &str,
+    text: &mut TextAtlas,
+    out: &mut Vec<Vertex>,
+) {
+    if !text.has_font() {
+        return;
+    }
+    let [sx, sy] = vp.to_screen(at[0], at[1]);
+    let (sx, sy) = (sx as f32, sy as f32);
+    let size = (15.0 * scale).round();
+    let pad = 5.0 * scale;
+    let width = text.measure(label, size) + 2.0 * pad;
+    let height = size + 2.0 * pad;
+    let gap = 10.0 * scale;
+    let (w, h) = (vp.width_px as f32, vp.height_px as f32);
+    let mut x0 = sx + gap;
+    if x0 + width > w {
+        x0 = sx - gap - width;
+    }
+    let mut y0 = sy - gap - height;
+    if y0 < 0.0 {
+        y0 = sy + gap;
+    }
+    let (x0, y0) = (x0.clamp(0.0, (w - width).max(0.0)), y0.clamp(0.0, (h - height).max(0.0)));
+    let border = scale.max(1.0);
+    fill_rect(x0 - border, y0 - border, x0 + width + border, y0 + height + border, LABEL_BORDER, out);
+    fill_rect(x0, y0, x0 + width, y0 + height, BACKGROUND, out);
+    text.draw(label, size, 0.0, x0 + pad, y0 + pad + size * 0.78, LABEL, out);
 }
 
 /// Text of the axis number at `i` major steps, as Desmos writes it: plain

@@ -168,6 +168,9 @@ pub struct RowAnalysis {
     pub parameter: Option<Parameter>,
     /// One entry per column for a table row.
     pub columns: Vec<ColumnAnalysis>,
+    /// For a point whose coordinates are slider variables, as in
+    /// `(a, b)`: the variable each coordinate drags.
+    pub drag: Option<[Option<String>; 2]>,
 }
 
 impl RowAnalysis {
@@ -185,6 +188,7 @@ impl RowAnalysis {
             points: Vec::new(),
             parameter: None,
             columns: Vec::new(),
+            drag: None,
         }
     }
 
@@ -434,14 +438,29 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
         .zip(parsed)
         .zip(defs)
         .zip(tables)
-        .map(|(((row, parsed), def), table)| match (parsed, def) {
-            _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
-            (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
-            (Some(Err(e)), _) => RowAnalysis::error(row.id, e),
-            (Some(Ok(_)), Some(Err(e))) => RowAnalysis::error(row.id, e),
-            (Some(Ok(_)), Some(Ok(Def::Var(name, expr)))) => env.variable_row(row.id, &name, &expr),
-            (Some(Ok(_)), Some(Ok(Def::Func(name, f)))) => env.function_row(row.id, &name, &f),
-            (Some(Ok(statement)), None) => env.other_row(row, &statement),
+        .map(|(((row, parsed), def), table)| {
+            let mut point = None;
+            let mut out = match (parsed, def) {
+                _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
+                (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
+                (Some(Err(e)), _) => RowAnalysis::error(row.id, e),
+                (Some(Ok(_)), Some(Err(e))) => RowAnalysis::error(row.id, e),
+                (Some(Ok(_)), Some(Ok(Def::Var(name, expr)))) => {
+                    point = Some(expr.clone());
+                    env.variable_row(row.id, &name, &expr)
+                }
+                (Some(Ok(_)), Some(Ok(Def::Func(name, f)))) => env.function_row(row.id, &name, &f),
+                (Some(Ok(statement)), None) => {
+                    if let Statement::Expr(e) = &statement {
+                        point = Some(e.clone());
+                    }
+                    env.other_row(row, &statement)
+                }
+            };
+            if out.error.is_none() && out.points.len() == 1 {
+                out.drag = point.and_then(|e| env.drag_of(&e));
+            }
+            out
         })
         .collect()
 }
@@ -662,6 +681,20 @@ impl Problems {
 type Free<'a> = &'a [(&'static str, Arg)];
 
 impl Env {
+    /// The slider variables a point's coordinates are, when it is written
+    /// as `(a, b)` or `(a, 3)` with `a` and `b` defined as plain numbers.
+    fn drag_of(&self, e: &Expr) -> Option<[Option<String>; 2]> {
+        let Expr::Point(x, y) = e else { return None };
+        let slider = |c: &Expr| match c {
+            Expr::Var(n) if self.vars.get(n).and_then(Expr::as_literal).is_some() => {
+                Some(n.clone())
+            }
+            _ => None,
+        };
+        let drag = [slider(x), slider(y)];
+        (drag[0].is_some() || drag[1].is_some()).then_some(drag)
+    }
+
     fn variable_row(&mut self, id: u64, name: &str, expr: &Expr) -> RowAnalysis {
         let mut row = RowAnalysis::new(id, RowKind::Variable(name.to_owned()));
         match self.value_of(name, &mut HashSet::new()) {

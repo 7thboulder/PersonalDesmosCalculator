@@ -5,6 +5,7 @@ mod engine;
 #[cfg(windows)]
 mod gui;
 mod headless;
+mod interact;
 mod ui;
 
 const USAGE: &str = "\

@@ -73,8 +73,16 @@
     rows.forEach(function (r, i) { r.indexEl.textContent = String(i + 1); });
   }
 
+  // The active row is the selected one: the graph shows its points of
+  // interest.
+  var selectedId = null;
   function setActive(row) {
     rows.forEach(function (r) { r.el.classList.toggle('active', r === row); });
+    var id = row ? row.id : null;
+    if (id !== selectedId) {
+      selectedId = id;
+      send({ type: 'select', id: id });
+    }
   }
 
   // `fromBelow` says focus is arriving from the row underneath, so a table
@@ -135,13 +143,16 @@
 
   // ---- Sliders -------------------------------------------------------------
 
-  function setSlider(row, v) {
+  // `exact` keeps v as given (already rounded by the engine for a dragged
+  // point) unless the slider has a step to snap to.
+  function setSlider(row, v, exact) {
     var latex = row.field.latex();
     var eq = latex.indexOf('=');
     if (eq < 0) return;
+    var text = exact && !(row.slider.step > 0) ? formatNumber(v, 10) : sliderValue(row, v);
     // Keep the left side exactly as typed, and replace only the number.
     row.settingSlider = true;
-    row.field.latex(latex.slice(0, eq) + '=' + sliderValue(row, v));
+    row.field.latex(latex.slice(0, eq) + '=' + text);
     row.settingSlider = false;
   }
 
@@ -835,6 +846,24 @@
         var r = byId[row.id];
         if (!r) return;
         if (row.kind === 'table') showTableResult(row, r); else showResult(row, r);
+      });
+    },
+    // Clicking a curve on the graph selects its row; clicking empty paper
+    // selects nothing, as in Desmos.
+    select: function (id) {
+      var row = rows.filter(function (r) { return r.id === id; })[0] || null;
+      selectedId = id;
+      setActive(row);
+      if (row) row.el.scrollIntoView({ block: 'nearest' });
+      else if (document.activeElement) document.activeElement.blur();
+    },
+    // Dragging a point on the graph moves the sliders it is made of.
+    setSliders: function (pairs) {
+      pairs.forEach(function (p) {
+        var row = rows.filter(function (r) { return r.id === p[0]; })[0];
+        if (!row || row.kind === 'table') return;
+        row.playPos = null;
+        setSlider(row, p[1], true);
       });
     },
     // Used by the smoke test: adds a slider and plays it.
