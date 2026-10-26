@@ -14,6 +14,7 @@
     <span class="spacer"></span>
     <button id="undo" class="icon" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
     <button id="redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
+    <button id="help" class="icon" title="Functions and keyboard shortcuts (Ctrl+/)">?</button>
     <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
   </div>
   <div id="list"></div>
@@ -29,7 +30,19 @@
   <button data-file="open">Open&hellip;<span class="key">Ctrl+O</span></button>
   <button data-file="save">Save<span class="key">Ctrl+S</span></button>
   <button data-file="saveAs">Save as&hellip;<span class="key">Ctrl+Shift+S</span></button>
+  <button data-file="import">Import from Desmos&hellip;</button>
+  <button data-file="help">Functions and shortcuts<span class="key">Ctrl+/</span></button>
 </div>
+<div id="import" class="overlay">
+  <div class="box">
+    <h2>Import a Desmos graph</h2>
+    <p>Paste a desmos.com/calculator link, or the text <code>JSON.stringify(Calc.getState())</code>
+      gives in Desmos's browser console. Ctrl+V anywhere in the app does the same.</p>
+    <textarea spellcheck="false" placeholder="https://www.desmos.com/calculator/..."></textarea>
+    <div class="buttons"><button class="cancel">Cancel</button><button class="go">Import</button></div>
+  </div>
+</div>
+<div id="toast"></div>
 <div id="add-menu">
   <button data-add="expression"><span class="glyph">/x</span> expression</button>
   <button data-add="table"><span class="glyph">&#x229E;</span> table</button>
@@ -60,8 +73,10 @@
   <label>Opacity <input class="opacity" type="range" min="0" max="1" step="0.05"></label>
   <label class="fill-options">Fill <input class="fill-opacity" type="range" min="0" max="1" step="0.05"></label>
 </div>
-<div id="shortcuts">
+<div id="shortcuts" class="overlay">
   <div class="box">
+    <div class="tabs"><button data-tab="keys" class="on">Keyboard shortcuts</button><button data-tab="functions">Functions</button><button class="close" title="Close (Esc)">&times;</button></div>
+    <div class="tab keys">
     <h2>Keyboard shortcuts</h2>
     <table>
       <tr><td>Ctrl+Alt+X</td><td>Add an expression</td></tr>
@@ -83,7 +98,10 @@
       <tr><td>sqrt, nthroot, pi, theta, sum, prod, int</td><td>The symbol</td></tr>
       <tr><td>&lt;=, &gt;=, -&gt;, ~</td><td>&le;, &ge;, action arrow, regression</td></tr>
       <tr><td>*</td><td>Multiplication dot</td></tr>
+      <tr><td>Ctrl+V of a desmos.com link</td><td>Import that graph</td></tr>
     </table>
+    </div>
+    <div class="tab functions"></div>
   </div>
 </div>
 <script>{{JQUERY}}</script>

@@ -1267,12 +1267,149 @@
   });
   try { if (localStorage.getItem('keypad')) showKeypad(true); } catch (e) { /* storage is optional */ }
 
+  // ---- Importing a Desmos graph -------------------------------------------
+
+  // A desmos.com link, or the text Calc.getState() gives. The engine checks
+  // it properly; this only decides whether a paste is meant as a graph.
+  function looksLikeDesmos(text) {
+    text = text.trim();
+    return /^(https?:\/\/)?(www\.)?desmos\.com\/calculator\/\w+\S*$/.test(text) ||
+      (text.charAt(0) === '{' && text.indexOf('"expressions"') >= 0);
+  }
+
+  var importBox = document.getElementById('import');
+  var importText = importBox.querySelector('textarea');
+  function openImport() {
+    importText.value = '';
+    importBox.classList.add('open');
+    importText.focus();
+  }
+  function closeImport() {
+    importBox.classList.remove('open');
+    focusRow(Math.max(0, activeIndex()));
+  }
+  importBox.addEventListener('mousedown', function (e) {
+    if (e.target === importBox) { e.preventDefault(); closeImport(); }
+  });
+  importBox.querySelector('.cancel').addEventListener('click', closeImport);
+  importBox.querySelector('.go').addEventListener('click', function () {
+    var text = importText.value;
+    if (!text.trim()) return;
+    closeImport();
+    send({ type: 'paste', text: text });
+  });
+
+  // Ctrl+V of a Desmos graph anywhere opens it, instead of typing it in.
+  document.addEventListener('paste', function (e) {
+    if (e.target === importText) return;
+    var text = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (!text || !looksLikeDesmos(text)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    send({ type: 'paste', text: text });
+  }, true);
+
+  var toast = document.getElementById('toast');
+
   // ---- Keyboard shortcuts, as Desmos lists them under Ctrl+/ ---------------
 
+  // Every function the calculator knows, with an example of each, for the
+  // help box's Functions tab.
+  var FUNCTION_REFERENCE = [
+    ['GRAPHING', [
+      ['y=x^2', 'Curve; x=y^2 works too'], ['x^2+y^2=25', 'Implicit equation'],
+      ['y>x^2', 'Inequality, shaded'], ['r=2\\sin\\left(3\\theta\\right)', 'Polar curve'],
+      ['\\left(\\cos t,\\sin t\\right)', 'Parametric curve'],
+      ['y=x^2\\left\\{x>0\\right\\}', 'Restriction'],
+      ['\\left\\{x<0:-x,x\\right\\}', 'Piecewise'],
+      ['y_1\\sim mx_1+b', 'Regression: fits m and b'],
+      ['a\\to a+1', 'Action (type ->)']]],
+    ['TRIG (RADIANS)', [
+      ['\\sin x,\\ \\cos x,\\ \\tan x', 'Also csc, sec, cot'],
+      ['\\arcsin x,\\ \\sin^{-1}x', 'Inverses; also arccos, arctan, arccsc, arcsec, arccot'],
+      ['\\arctan\\left(b,a\\right)', 'Angle of the point (a, b)'],
+      ['\\sinh x,\\ \\operatorname{arcsinh}x', 'Hyperbolic: sinh to coth and their inverses']]],
+    ['POWERS AND LOGS', [
+      ['e^x,\\ \\exp\\left(x\\right)', 'Exponential'], ['\\ln x', 'Natural log'],
+      ['\\log x', 'Log base 10'], ['\\log_2x', 'Log base 2'],
+      ['\\sqrt{x},\\ \\sqrt[3]{x}', 'Square and nth roots (type sqrt, nthroot)'], ['n!', 'Factorial']]],
+    ['NUMBERS', [
+      ['\\left|x\\right|,\\ \\operatorname{abs}\\left(x\\right)', 'Absolute value'],
+      ['\\operatorname{floor}\\left(x\\right)', 'Also ceil'],
+      ['\\operatorname{round}\\left(x,2\\right)', 'Round, optionally to places'],
+      ['\\operatorname{sign}\\left(x\\right)', 'Sign: -1, 0 or 1'],
+      ['\\operatorname{mod}\\left(a,b\\right)', 'Remainder'],
+      ['\\operatorname{gcd}\\left(a,b\\right)', 'Also lcm'],
+      ['\\operatorname{nCr}\\left(5,2\\right)', 'Combinations; nPr for permutations']]],
+    ['STATISTICS', [
+      ['\\operatorname{mean}\\left(L\\right)', 'Also median'],
+      ['\\min\\left(L\\right),\\ \\max\\left(L\\right)', 'Smallest and largest'],
+      ['\\operatorname{total}\\left(L\\right)', 'Sum of a list'],
+      ['\\operatorname{length}\\left(L\\right)', 'Number of elements']]],
+    ['LISTS', [
+      ['\\left[1,2,3\\right],\\ \\left[1...10\\right]', 'Lists and ranges'],
+      ['L\\left[2\\right],\\ L\\left[2...4\\right]', 'Element (from 1) and slice'],
+      ['\\left[n^2\\ \\operatorname{for}\\ n=\\left[1...5\\right]\\right]', 'Comprehension'],
+      ['\\operatorname{sort}\\left(L\\right)', 'Sort; sort(L, keys) sorts by keys'],
+      ['\\operatorname{join}\\left(A,B\\right)', 'Join lists'],
+      ['\\operatorname{unique}\\left(L\\right)', 'Drop repeats']]],
+    ['CALCULUS', [
+      ['\\frac{d}{dx}\\sin\\left(x^2\\right)', 'Derivative (exact)'], ["f'\\left(x\\right)", "Also f''"],
+      ['\\sum_{n=1}^{10}n^2', 'Sum (type sum); prod for products'],
+      ['\\int_0^1x^2dx', 'Integral (type int); bounds can be infinite']]],
+    ['POINTS AND GEOMETRY', [
+      ['p=\\left(1,2\\right),\\ p.x', 'Point and its coordinates'],
+      ['\\operatorname{distance}\\left(p,q\\right)', 'Distance between points'],
+      ['\\operatorname{midpoint}\\left(p,q\\right)', 'Midpoint'],
+      ['\\operatorname{polygon}\\left(\\left(0,0\\right),\\left(4,0\\right),\\left(2,3\\right)\\right)', 'Filled polygon']]],
+    ['COMPLEX NUMBERS', [
+      ['3+2i,\\ e^{i\\pi}', 'i is the imaginary unit'],
+      ['\\operatorname{real}\\left(z\\right)', 'Also imag'],
+      ['\\operatorname{conj}\\left(z\\right)', 'Conjugate'],
+      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]]
+  ];
+
   var shortcuts = document.getElementById('shortcuts');
+  var functionsTab = shortcuts.querySelector('.tab.functions');
+  function showHelpTab(name) {
+    shortcuts.querySelectorAll('.tabs [data-tab]').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.tab === name);
+    });
+    shortcuts.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('on', t.classList.contains(name)); });
+    if (name === 'functions' && !functionsTab.firstChild) {
+      functionsTab.innerHTML = FUNCTION_REFERENCE.map(function (g) {
+        return '<h3>' + g[0] + '</h3><table>' + g[1].map(function (f) {
+          return '<tr><td><span class="ref-math"></span></td><td></td></tr>';
+        }).join('') + '</table>';
+      }).join('');
+      var cells = functionsTab.querySelectorAll('tr');
+      var i = 0;
+      FUNCTION_REFERENCE.forEach(function (g) {
+        g[1].forEach(function (f) {
+          var tr = cells[i++];
+          tr.children[1].textContent = f[1];
+          var m = tr.querySelector('.ref-math');
+          m.textContent = f[0];
+          MQ.StaticMath(m);
+        });
+      });
+    }
+  }
+  function openHelp(tab) {
+    showHelpTab(tab || 'keys');
+    shortcuts.classList.add('open');
+  }
   shortcuts.addEventListener('mousedown', function (e) {
+    var tab = e.target.closest('[data-tab]');
+    if (tab) { e.preventDefault(); showHelpTab(tab.dataset.tab); return; }
+    if (e.target === shortcuts || e.target.closest('.close')) {
+      e.preventDefault();
+      shortcuts.classList.remove('open');
+    }
+  });
+  document.getElementById('help').addEventListener('mousedown', function (e) {
     e.preventDefault();
-    shortcuts.classList.remove('open');
+    if (shortcuts.classList.contains('open')) shortcuts.classList.remove('open'); else openHelp();
   });
 
   // The row (or table) the focus is in.
@@ -1298,13 +1435,17 @@
       shortcuts.classList.remove('open');
       return;
     }
+    if (importBox.classList.contains('open')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeImport(); }
+      return;
+    }
     var ctrl = e.ctrlKey || e.metaKey;
     var k = e.key.toLowerCase();
     var row = focusedRow();
     var at = row ? indexOf(row) + 1 : rows.length;
     var handled = true;
     if (ctrl && !e.altKey && !e.shiftKey && (k === '/' || k === '?')) {
-      shortcuts.classList.add('open');
+      openHelp();
     } else if (ctrl && e.altKey && k === 'x') {
       addRow('', at).field.focus();
       sendRows();
@@ -1374,7 +1515,9 @@
     var b = e.target.closest('button');
     if (!b) return;
     fileMenu.classList.remove('open');
-    send({ type: b.dataset.file });
+    if (b.dataset.file === 'import') openImport();
+    else if (b.dataset.file === 'help') openHelp();
+    else send({ type: b.dataset.file });
   });
   document.addEventListener('mousedown', function () { fileMenu.classList.remove('open'); });
   document.addEventListener('keydown', function (e) {
@@ -1434,6 +1577,11 @@
 
   // Called by Rust through evaluate_script.
   window.engine = {
+    // While desmos.com is asked for a pasted link.
+    fetching: function (on) {
+      toast.textContent = 'Getting the graph from desmos.com\u2026';
+      toast.classList.toggle('open', on);
+    },
     // A graph opened from a file starts a fresh history.
     load: function (saved) {
       forgetHistory();

@@ -149,13 +149,41 @@ pub fn from_file(text: &str) -> Result<(Value, Option<View>), String> {
 /// was imported, so saving it should ask for a new file rather than
 /// overwrite the Desmos one.
 pub fn open_any(text: &str) -> Result<(Value, Option<View>, bool), String> {
-    if let Ok(file) = serde_json::from_str::<Value>(text) {
-        if file["expressions"]["list"].is_array() {
-            let (rows, view) = from_desmos(&file);
-            return Ok((rows, view, true));
-        }
+    if let Some(state) = desmos_state(text) {
+        let (rows, view) = from_desmos(&state);
+        return Ok((rows, view, true));
     }
     from_file(text).map(|(rows, view)| (rows, view, false))
+}
+
+/// The graph state in text from Desmos: what `Calc.getState()` gives, or
+/// the `{"state": ...}` reply desmos.com sends for a saved graph.
+pub fn desmos_state(text: &str) -> Option<Value> {
+    let mut file = serde_json::from_str::<Value>(text.trim()).ok()?;
+    if file["expressions"]["list"].is_array() {
+        return Some(file);
+    }
+    let state = file.get_mut("state")?.take();
+    state["expressions"]["list"].is_array().then_some(state)
+}
+
+/// The URL to ask desmos.com for, when the text is a link to a saved graph
+/// such as `https://www.desmos.com/calculator/iotrkvyz1u`.
+pub fn desmos_link(text: &str) -> Option<String> {
+    let text = text.trim();
+    let rest = &text[text.find("desmos.com/calculator/")? + "desmos.com/calculator/".len()..];
+    let hash: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let prefix = &text[..text.find("desmos.com").unwrap_or(0)];
+    let host = prefix
+        .strip_prefix("https://")
+        .or_else(|| prefix.strip_prefix("http://"))
+        .unwrap_or(prefix);
+    let plain = host.is_empty() || host == "www.";
+    (!hash.is_empty() && plain && !text.contains(char::is_whitespace))
+        .then(|| format!("https://www.desmos.com/calculator/{hash}"))
 }
 
 /// A number written as plain latex, such as `-2.5` (what Desmos stores for
@@ -458,6 +486,33 @@ mod tests {
         again.rows_changed(&restored.rows);
         assert!(again.dirty(), "the unsaved edit is still unsaved");
         assert_eq!(with_extension(PathBuf::from("a")), PathBuf::from("a.gcalc"));
+    }
+
+    #[test]
+    fn desmos_links_and_pastes_are_recognised() {
+        let url = Some("https://www.desmos.com/calculator/iotrkvyz1u".to_string());
+        assert_eq!(
+            desmos_link("https://www.desmos.com/calculator/iotrkvyz1u"),
+            url
+        );
+        assert_eq!(
+            desmos_link(" desmos.com/calculator/iotrkvyz1u?lang=en\n"),
+            url
+        );
+        assert_eq!(desmos_link("www.desmos.com/calculator/iotrkvyz1u"), url);
+        assert_eq!(desmos_link("https://www.desmos.com/calculator"), None);
+        assert_eq!(desmos_link("y=x see desmos.com/calculator/abc"), None);
+        assert_eq!(
+            desmos_link("https://evil.example/desmos.com/calculator/abc"),
+            None
+        );
+        let state = r#"{"version":11,"expressions":{"list":[{"type":"expression","id":"1","latex":"y=x"}]}}"#;
+        assert!(desmos_state(state).is_some());
+        let reply = format!(r#"{{"title":"t","hash":"abc","state":{state}}}"#);
+        let (rows, _, imported) = open_any(&reply).unwrap();
+        assert!(imported);
+        assert_eq!(rows[0]["latex"], "y=x");
+        assert!(desmos_state("y=x").is_none());
     }
 
     #[test]
