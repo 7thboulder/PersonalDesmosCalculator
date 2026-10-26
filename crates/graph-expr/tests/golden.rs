@@ -827,3 +827,28 @@ fn list_filters() {
     assert!(close(value(&[l, "L\\left[2\\right]"]), -2.0));
     assert!(rows(&["a=3", "a\\left[a>1\\right]"])[1].error.is_some());
 }
+
+#[test]
+fn long_sums_are_compiled_exactly() {
+    // Long sums go through the compiled path; short ones term by term. Both
+    // must give what the formula does, for real and complex terms, nested
+    // sums, inlined functions and list elements.
+    let expect: f64 = (1..=50).map(|n| (n as f64).sin() / n as f64).sum();
+    assert!(close(
+        value(&["\\sum_{n=1}^{50}\\frac{\\sin\\left(n\\right)}{n}"]),
+        expect
+    ));
+    let all = rows(&[
+        "L=\\left[1...40\\right]",
+        "f\\left(k\\right)=L\\left[k\\right]^2",
+        "\\sum_{k=1}^{40}f\\left(k\\right)",
+        "\\sum_{j=1}^{10}\\sum_{k=1}^{j}k",
+        "\\operatorname{real}\\left(\\sum_{n=0}^{11}e^{\\frac{2\\pi in}{12}}\\right)",
+    ]);
+    assert_eq!(
+        all[2].number(),
+        Some((1..=40).map(|k| (k * k) as f64).sum::<f64>())
+    );
+    assert_eq!(all[3].number(), Some(220.0));
+    assert!(all[4].number().unwrap().abs() < 1e-12, "{:?}", all[4]);
+}

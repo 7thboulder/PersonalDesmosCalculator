@@ -51,9 +51,22 @@
         return;
       }
     }
-    if (!cursor || cursor.nextElementSibling) return;
+    if (!cursor) return;
     var block = cursor.parentElement;
-    if (!block.classList.contains('mq-sub')) return;
+    // An integral's bounds take any expression, as in Desmos, but MathQuill
+    // keeps them in a subscript and superscript, which + - = < > leave.
+    // Writing the character puts it in the bound instead.
+    if (block.closest('.mq-int') && (block.classList.contains('mq-sub') ||
+        block.classList.contains('mq-sup-inner')) && '+-=<>'.indexOf(e.key) >= 0) {
+      var bound = MQ(root);
+      if (bound) {
+        e.preventDefault();
+        e.stopPropagation();
+        bound.write(e.key);
+      }
+      return;
+    }
+    if (cursor.nextElementSibling || !block.classList.contains('mq-sub')) return;
     var field = MQ(root);
     if (field) field.keystroke('Right');
   }, true);
