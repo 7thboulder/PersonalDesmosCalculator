@@ -272,6 +272,8 @@ const GRAPH_VARIABLES: &[&str] = &["x", "y", "r", "theta"];
 const MAX_INLINE_DEPTH: usize = 64;
 /// Desmos's limit on list length.
 const MAX_LIST: usize = 10_000;
+/// Lists at least this long are broadcast through a compiled program.
+const FAST_BROADCAST_LEN: usize = 64;
 /// Sums with at least this many terms (less one) are compiled.
 const FAST_SUM_TERMS: f64 = 7.0;
 
@@ -2217,6 +2219,127 @@ impl Env {
         c.prog.repeat(kind == Repeat::Product, 0, a, b)
     }
 
+    /// Arithmetic on long lists of numbers, such as `(n/500 cos(an), ...)`
+    /// for `n` in `[1...5000]`, worked out element by element by a compiled
+    /// program rather than as one symbolic item per element. Gives the same
+    /// numbers as the general path; None when the shortcut does not apply
+    /// (no long list, points or complex numbers in play, or anything the
+    /// compiler cannot express), and the general path takes over.
+    fn fast_broadcast(
+        &mut self,
+        e: &Expr,
+        free: Free,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Val> {
+        let parts: Vec<&Expr> = match e {
+            Expr::Point(a, b) => vec![a, b],
+            Expr::Neg(_)
+            | Expr::Add(..)
+            | Expr::Sub(..)
+            | Expr::Mul(..)
+            | Expr::Div(..)
+            | Expr::Pow(..)
+            | Expr::Call(..)
+            | Expr::Apply(..) => vec![e],
+            _ => return None,
+        };
+        // Functions of whole lists, such as total(n), would see one element.
+        if self.reads_whole_lists(e, 0) {
+            return None;
+        }
+        let mut names: Vec<String> = Vec::new();
+        e.visit_names(&mut |n, applied| {
+            if !applied && !names.iter().any(|m| m == n) {
+                names.push(n.to_owned());
+            }
+        });
+        // `i` brings in complex numbers, whose items the general path keeps.
+        if names.iter().any(|n| n == "i" && !self.vars.contains_key(n)) {
+            return None;
+        }
+        let mut binds: Vec<(String, Bind)> = Vec::new();
+        let mut columns: Vec<Rc<[Scalar]>> = Vec::new();
+        for name in names {
+            if free.iter().any(|(n, _)| *n == name) {
+                return None;
+            }
+            if !self.vars.contains_key(&name) {
+                continue;
+            }
+            self.value_of_ref(&name, visiting).ok()?;
+            let Value::Numbers(v) = self.values.get(&name)?.as_ref().ok()? else {
+                continue;
+            };
+            let column: Rc<[Scalar]> = match self.fast_lists.get(&name) {
+                Some(list) => Rc::clone(list),
+                None => {
+                    let list: Rc<[Scalar]> = v.iter().map(|x| (*x, 0.0)).collect();
+                    self.fast_lists.insert(name.clone(), Rc::clone(&list));
+                    list
+                }
+            };
+            binds.push((name, Bind::Slot(u16::try_from(columns.len()).ok()?)));
+            columns.push(column);
+        }
+        let len = columns.iter().map(|c| c.len()).min()?;
+        if len < FAST_BROADCAST_LEN {
+            return None;
+        }
+        let mut c = FastCompile {
+            prog: fastsum::Program {
+                slots: columns.len(),
+                ..Default::default()
+            },
+            lists: Vec::new(),
+            free,
+        };
+        let mut programs = Vec::new();
+        for part in &parts {
+            let mut ops = Vec::new();
+            self.compile_fast(part, &binds, &mut ops, &mut c, depth, visiting)?;
+            programs.push(ops);
+        }
+        for (name, _) in &binds {
+            self.note_var(name);
+        }
+        let values = c.prog.broadcast(&programs, &columns, len)?;
+        let real = |v: &Scalar| (v.1 == 0.0).then_some(Low::Const(v.0));
+        let items = match &values[..] {
+            [xs, ys] => xs
+                .iter()
+                .zip(ys)
+                .map(|(x, y)| Some(Item::Point(real(x)?, real(y)?)))
+                .collect::<Option<Vec<_>>>()?,
+            [vs] => vs
+                .iter()
+                .map(|v| real(v).map(Item::Num))
+                .collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        Some(Val::list(items))
+    }
+
+    /// Whether `e`, or a function it calls, uses a function of whole lists.
+    fn reads_whole_lists(&self, e: &Expr, depth: usize) -> bool {
+        if depth > MAX_INLINE_DEPTH {
+            return true;
+        }
+        let mut found = false;
+        let mut visit = |e: &Expr| match e {
+            Expr::Call(f, _) => found |= f.takes_list(),
+            Expr::Apply(name, _) | Expr::Prime(name, ..) => {
+                found |= self
+                    .funcs
+                    .get(name)
+                    .is_some_and(|f| self.reads_whole_lists(&f.body, depth + 1))
+            }
+            _ => {}
+        };
+        e.walk(&mut visit);
+        found
+    }
+
     /// Appends ops for `e` to `ops`, returning which locals it reads as a
     /// bit mask (bit 63 standing for every local past 62).
     fn compile_fast(
@@ -2587,6 +2710,11 @@ impl Env {
             ($e:expr) => {
                 self.lower_with($e, bindings, free, depth, problems, visiting)
             };
+        }
+        if bindings.is_empty() {
+            if let Some(v) = self.fast_broadcast(e, free, depth, visiting) {
+                return v;
+            }
         }
         match e {
             Expr::Num(v) => Val::num(Low::Const(*v)),

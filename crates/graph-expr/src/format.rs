@@ -40,9 +40,10 @@ const SHOWN_ELEMENTS: usize = 12;
 pub fn result_latex(v: &crate::Value) -> String {
     use crate::Value;
     let point = |p: [f64; 2]| format!("\\left({},{}\\right)", value_latex(p[0]), value_latex(p[1]));
-    let list = |items: Vec<String>| {
-        let n = items.len();
-        let mut shown: Vec<String> = items.into_iter().take(SHOWN_ELEMENTS).collect();
+    // Only the elements shown are written out; a long list can have
+    // thousands.
+    let list = |n: usize, items: &mut dyn Iterator<Item = String>| {
+        let mut shown: Vec<String> = items.take(SHOWN_ELEMENTS).collect();
         if n > SHOWN_ELEMENTS {
             shown.push("...".into());
         }
@@ -51,15 +52,14 @@ pub fn result_latex(v: &crate::Value) -> String {
     match v {
         Value::Number(n) => value_latex(*n),
         Value::Point(a, b) => point([*a, *b]),
-        Value::Numbers(ns) => list(ns.iter().map(|n| value_latex(*n)).collect()),
-        Value::Points(ps) => list(ps.iter().map(|p| point(*p)).collect()),
+        Value::Numbers(ns) => list(ns.len(), &mut ns.iter().map(|n| value_latex(*n))),
+        Value::Points(ps) => list(ps.len(), &mut ps.iter().map(|p| point(*p))),
         Value::Polygon(p) => polygon(p, &point),
-        Value::Polygons(ps) => list(ps.iter().map(|p| polygon(p, &point)).collect()),
+        Value::Polygons(ps) => list(ps.len(), &mut ps.iter().map(|p| polygon(p, &point))),
         Value::Complex(a, b) => complex(*a, *b, &value_latex),
         Value::Complexes(zs) => list(
-            zs.iter()
-                .map(|z| complex(z[0], z[1], &value_latex))
-                .collect(),
+            zs.len(),
+            &mut zs.iter().map(|z| complex(z[0], z[1], &value_latex)),
         ),
     }
 }

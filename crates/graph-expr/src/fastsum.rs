@@ -99,6 +99,29 @@ impl Program {
         Some(total.unwrap_or((empty, 0.0)))
     }
 
+    /// Runs each of `parts` once for every `k` below `len`, with slot `i`
+    /// holding element `k` of `columns[i]`: a list broadcast element by
+    /// element. One result list per part.
+    pub fn broadcast(
+        &self,
+        parts: &[Vec<Op>],
+        columns: &[Rc<[Scalar]>],
+        len: usize,
+    ) -> Option<Vec<Vec<Scalar>>> {
+        let mut slots = vec![(f64::NAN, 0.0); self.slots.max(columns.len())];
+        let mut stack = Vec::with_capacity(32);
+        let mut out: Vec<Vec<Scalar>> = parts.iter().map(|_| Vec::with_capacity(len)).collect();
+        for k in 0..len {
+            for (slot, column) in slots.iter_mut().zip(columns) {
+                *slot = column[k];
+            }
+            for (ops, values) in parts.iter().zip(&mut out) {
+                values.push(self.run(ops, &mut slots, &mut stack)?);
+            }
+        }
+        Some(out)
+    }
+
     fn run(&self, ops: &[Op], slots: &mut [Scalar], stack: &mut Vec<Scalar>) -> Option<Scalar> {
         let base = stack.len();
         for op in ops {
