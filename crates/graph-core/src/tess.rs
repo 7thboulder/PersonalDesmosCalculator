@@ -180,14 +180,20 @@ pub(crate) fn disc(c: [f32; 2], r: f32, color: [f32; 4], out: &mut Vec<Vertex>) 
     let segments = ((std::f32::consts::PI / (1.0 - 0.1 / r.max(0.2)).clamp(0.0, 1.0).acos()).ceil()
         as usize)
         .clamp(6, 32);
-    let point = |i: usize| {
-        let t = i as f32 / segments as f32 * std::f32::consts::TAU;
-        [c[0] + r * t.cos(), c[1] + r * t.sin()]
-    };
+    // Step around the circle by rotating, rather than a sine and cosine
+    // for every point.
+    let (sin, cos) = (std::f32::consts::TAU / segments as f32).sin_cos();
+    let mut d = [r, 0.0];
     for i in 0..segments {
+        let next = if i + 1 == segments {
+            [r, 0.0]
+        } else {
+            [d[0] * cos - d[1] * sin, d[0] * sin + d[1] * cos]
+        };
         out.push(Vertex::solid(c, color));
-        out.push(Vertex::solid(point(i), color));
-        out.push(Vertex::solid(point(i + 1), color));
+        out.push(Vertex::solid([c[0] + d[0], c[1] + d[1]], color));
+        out.push(Vertex::solid([c[0] + next[0], c[1] + next[1]], color));
+        d = next;
     }
 }
 

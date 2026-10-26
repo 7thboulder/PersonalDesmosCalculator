@@ -1,0 +1,40 @@
+{
+ "version": 11,
+ "randomSeed": "0",
+ "graph": {
+  "viewport": {
+   "xmin": -10,
+   "xmax": 10,
+   "ymin": -6.25,
+   "ymax": 6.25
+  }
+ },
+ "expressions": {
+  "list": [
+   {
+    "type": "expression",
+    "id": "a",
+    "color": "#c74440",
+    "latex": "a=1",
+    "slider": {
+     "hardMin": true,
+     "hardMax": true,
+     "min": "0",
+     "max": "3"
+    }
+   },
+   {
+    "type": "expression",
+    "id": "2",
+    "color": "#2d70b3",
+    "latex": "L=\\left[1...40\\right]"
+   },
+   {
+    "type": "expression",
+    "id": "3",
+    "color": "#388c46",
+    "latex": "y=\\frac{L}{4}-5+a\\sin\\left(Lx\\right)"
+   }
+  ]
+ }
+}

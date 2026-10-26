@@ -5,6 +5,9 @@ use crate::Viewport;
 const MAX_DEPTH: u32 = 10;
 /// Segments steeper than this on screen get bisected.
 const MAX_STEP_PX: f64 = 1.0;
+/// ...unless their midpoint is this close to the straight line between
+/// their ends.
+const STRAIGHT_PX: f64 = 0.25;
 /// Keeps far-off-screen values from overflowing f32 vertex positions.
 const SCREEN_CLAMP_PX: f64 = 1.0e5;
 /// A jump bigger than this that survives full refinement is a discontinuity
@@ -215,6 +218,15 @@ impl Sampler<'_> {
         let steep = both_ok && (b.sv - a.sv).abs() > MAX_STEP_PX;
         if depth < MAX_DEPTH && (steep || a.ok() != b.ok()) {
             let mid = self.eval((a.t + b.t) / 2.0);
+            // A steep stretch that is straight on screen needs no more
+            // points: a fast wave was bisected 64 times a column before.
+            // A jump never passes, since the midpoint lands on one side.
+            if steep && mid.ok() && (mid.sv - (a.sv + b.sv) / 2.0).abs() <= STRAIGHT_PX {
+                self.extend(a);
+                self.extend(mid);
+                self.extend(b);
+                return;
+            }
             self.segment(a, mid, depth + 1);
             self.segment(mid, b, depth + 1);
             return;
@@ -410,6 +422,26 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// `tolerance` pixels of the sampled line. Smooth curves sampled once per
 /// pixel shrink to a small fraction of their points.
 pub(crate) fn simplify(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
+    // Douglas-Peucker rescans a whole stretch for every point it keeps, so a
+    // fast wave with thousands of kept points cost more than sampling it.
+    // Runs of at most CHUNK points (sharing their end points) bound that.
+    const CHUNK: usize = 256;
+    if points.len() <= CHUNK {
+        return simplify_run(points, tolerance);
+    }
+    let mut out = Vec::with_capacity(points.len() / 2);
+    let mut start = 0;
+    while start + 1 < points.len() {
+        let end = (start + CHUNK).min(points.len() - 1);
+        let run = simplify_run(&points[start..=end], tolerance);
+        let skip = usize::from(!out.is_empty());
+        out.extend_from_slice(&run[skip..]);
+        start = end;
+    }
+    out
+}
+
+fn simplify_run(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
     let n = points.len();
     if n <= 2 {
         return points.to_vec();

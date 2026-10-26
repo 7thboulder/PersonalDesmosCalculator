@@ -16,6 +16,11 @@ use graph_render::{Shading, Test};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Combines two hashes into one.
+fn mix(a: u64, b: u64) -> u64 {
+    (a ^ b.wrapping_mul(0x9e37_79b9_7f4a_7c15)).rotate_left(23)
+}
+
 /// How much of the colour Desmos lays down inside an inequality.
 const SHADE_OPACITY: f32 = 0.4;
 /// And inside a polygon, unless the row says otherwise.
@@ -27,6 +32,8 @@ pub struct GraphCurve {
     pub row: u64,
     pub program: Program,
     pub axis: Axis,
+    /// Changes when the curve does, so its drawn lines can be kept.
+    pub key: u64,
     pub color: [f32; 4],
     pub width: f32,
     pub style: LineStyle,
@@ -42,6 +49,8 @@ pub struct GraphParametric {
     pub color: [f32; 4],
     pub width: f32,
     pub style: LineStyle,
+    /// As [`GraphCurve::key`].
+    pub key: u64,
 }
 
 /// A row's points ready to draw.
@@ -98,6 +107,8 @@ pub struct GraphRegion {
     pub style: LineStyle,
     /// The relation as WGSL, when the GPU can evaluate it.
     pub shader: Option<String>,
+    /// As [`GraphCurve::key`].
+    pub key: u64,
 }
 
 impl GraphRegion {
@@ -203,6 +214,7 @@ impl Engine {
                         graph_expr::Axis::X => Axis::X,
                         graph_expr::Axis::Y => Axis::Y,
                     },
+                    key: mix(curve.program.fingerprint(), curve.axis as u64),
                     color,
                     width,
                     style,
@@ -217,6 +229,10 @@ impl Engine {
                     color,
                     width,
                     style,
+                    key: mix(
+                        mix(p.x.fingerprint(), p.y.fingerprint()),
+                        mix(p.domain.0.to_bits(), p.domain.1.to_bits()),
+                    ),
                 });
             }
             for region in &result.regions {
@@ -224,6 +240,7 @@ impl Engine {
                     row: result.id,
                     shader: wgsl::body(&region.program),
                     program: region.program.clone(),
+                    key: region.program.fingerprint(),
                     compare: region.compare,
                     color,
                     width,
@@ -290,6 +307,7 @@ impl Engine {
                 color: c.color,
                 width: c.width,
                 style: c.style,
+                key: Some(c.key),
             })
             .collect();
         let sweeps: Vec<_> = self
@@ -308,6 +326,7 @@ impl Engine {
                 color: p.color,
                 width: p.width,
                 style: p.style,
+                key: Some(p.key),
             })
             .collect();
         // Only the boundaries the GPU cannot draw are traced here.
@@ -325,6 +344,7 @@ impl Engine {
                 color: r.color,
                 width: r.width,
                 style: r.style,
+                key: Some(r.key),
             })
             .collect();
         let points: Vec<Points> = self

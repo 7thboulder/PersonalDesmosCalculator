@@ -5,7 +5,7 @@
 use crate::engine::Engine;
 use crate::files::{self, Document};
 use crate::interact::{Effect, Interaction};
-use graph_core::{build_scene, TextAtlas, Viewport};
+use graph_core::{build_scene_cached, LineCache, TextAtlas, Viewport};
 use graph_render::{new_instance, Area, Gpu, GraphRenderer, ShadingRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,6 +89,8 @@ struct Running {
     engine: Engine,
     interact: Interaction,
     text: TextAtlas,
+    /// Curve lines kept from earlier frames, so panning is cheap.
+    lines: LineCache,
     /// Whether rows have arrived from the panel at least once.
     rows_received: bool,
     frames: u64,
@@ -281,6 +283,7 @@ impl Running {
             engine: Engine::default(),
             interact: Interaction::default(),
             text: TextAtlas::system(),
+            lines: LineCache::default(),
             rows_received: false,
             frames: 0,
             last_stats: Instant::now() - STATS_INTERVAL,
@@ -436,10 +439,10 @@ impl Running {
         let scale = self.window.scale_factor() as f32;
         self.interact.scale = scale as f64;
         let marks = self.interact.marks(&self.engine, &self.viewport);
-        let (viewport, text) = (&self.viewport, &mut self.text);
-        let scene = self
-            .engine
-            .with_plot_marks(&marks, |plot| build_scene(viewport, scale, plot, text));
+        let (viewport, text, lines) = (&self.viewport, &mut self.text, &mut self.lines);
+        let scene = self.engine.with_plot_marks(&marks, |plot| {
+            build_scene_cached(viewport, scale, plot, text, lines)
+        });
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
