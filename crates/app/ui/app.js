@@ -670,7 +670,12 @@
 
     var options = Object.assign({}, MATH_OPTIONS, {
       handlers: {
-        edit: function () { if (!row.settingSlider) row.playPos = null; sendRows(); },
+        edit: function () {
+          // Typing table into an empty row makes a table there, as in Desmos.
+          if (!loading && row.field.latex() === 'table') { replaceWithTable(row); return; }
+          if (!row.settingSlider) row.playPos = null;
+          sendRows();
+        },
         enter: function () { addRow('', indexOf(row) + 1).field.focus(); },
         upOutOf: function () { focusRow(indexOf(row) - 1, true, true); },
         downOutOf: function () { leaveDown(row); },
@@ -1093,6 +1098,237 @@
     ticker.el.classList.toggle('has-error', !!error);
     ticker.el.querySelector('.tick-error').textContent = error;
   }
+
+  // ---- On-screen keypad ------------------------------------------------------
+
+  // The keys type into whichever field was focused last, the way Desmos's
+  // keypad does; pressing one never takes the focus away from it.
+  var lastField = null;
+  document.addEventListener('focusin', function (e) {
+    var f = e.target.closest && e.target.closest('.mq-editable-field');
+    if (f) lastField = f;
+  });
+  function currentField() {
+    var mf = lastField && document.body.contains(lastField) && MQ(lastField);
+    if (mf) return mf;
+    focusRow(Math.max(0, activeIndex()));
+    return lastField && MQ(lastField);
+  }
+
+  // Each key is [label, action, class]. Actions: t: types text as if from
+  // the keyboard, c: a MathQuill command, w: writes LaTeX, k: a keystroke,
+  // and fn/abc/123/shift switch panels.
+  var MAIN_KEYS = [
+    ['<i>x</i>', 't:x'], ['<i>y</i>', 't:y'], ['<i>a</i><sup>2</sup>', 'w:^2'], ['<i>a</i><sup>b</sup>', 'c:^'], null,
+    ['7', 't:7'], ['8', 't:8'], ['9', 't:9'], ['\u00f7', 'c:/'], null,
+    ['functions', 'fn', 'dark wide2'],
+    ['(', 't:('], [')', 't:)'], ['&lt;', 't:<'], ['&gt;', 't:>'], null,
+    ['4', 't:4'], ['5', 't:5'], ['6', 't:6'], ['\u00d7', 't:*'], null,
+    ['\u2190', 'k:Left', 'dark'], ['\u2192', 'k:Right', 'dark'],
+    ['|<i>a</i>|', 'c:|'], [',', 't:,'], ['\u2264', 'c:\\le'], ['\u2265', 'c:\\ge'], null,
+    ['1', 't:1'], ['2', 't:2'], ['3', 't:3'], ['\u2212', 't:-'], null,
+    ['\u232b', 'k:Backspace', 'dark wide2'],
+    ['ABC', 'abc', 'dark'], ['<i>a</i><sub>b</sub>', 'c:_'], ['\u221a', 'c:\\sqrt'], ['\u03c0', 'c:\\pi'], null,
+    ['0', 't:0'], ['.', 't:.'], ['=', 't:='], ['+', 't:+'], null,
+    ['\u21b5', 'k:Enter', 'blue wide2']
+  ];
+  var ABC_KEYS = 'qwertyuiop'.split('').concat('asdfghjkl'.split('')).map(function (ch) {
+    return ['<i>' + ch + '</i>', 't:' + ch, 'letter'];
+  });
+  ABC_KEYS.push(['\u03b8', 'c:\\theta']);
+  ABC_KEYS.push(['\u21e7', 'shift', 'dark']);
+  'zxcvbnm'.split('').forEach(function (ch) { ABC_KEYS.push(['<i>' + ch + '</i>', 't:' + ch, 'letter']); });
+  ABC_KEYS.push(['\u232b', 'k:Backspace', 'dark wide2']);
+  ABC_KEYS.push(['123', '123', 'dark wide2'], ['<i>a</i><sub>b</sub>', 'c:_'], ['!', 't:!'],
+    ['[', 't:['], [']', 't:]'], ['{', 't:{'], ['~', 'c:\\sim'], ['\u21b5', 'k:Enter', 'blue wide2']);
+
+  // Named functions are typed out, so they come out exactly as typing them
+  // would.
+  function named(list) {
+    return list.split(' ').map(function (n) { return [n, 'f:' + n]; });
+  }
+  var FUNCTION_GROUPS = [
+    ['TRIG FUNCTIONS', named('sin cos tan csc sec cot')],
+    ['INVERSE TRIG', named('arcsin arccos arctan arccsc arcsec arccot')],
+    ['HYPERBOLIC', named('sinh cosh tanh csch sech coth')],
+    ['STATISTICS', named('mean median min max total length')],
+    ['LIST OPERATIONS', named('join sort unique').concat([['for', 't: for ']])],
+    ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
+      ['\u222b', 'c:\\int'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
+    ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
+    ['GEOMETRY', named('polygon distance midpoint')],
+    ['COMPLEX', named('real imag conj arg')]
+  ];
+
+  var keypad = document.getElementById('keypad');
+  var keysButton = document.getElementById('keys');
+  var keypadMode = 'main';
+  var shifted = false;
+
+  function keyButtons(keys) {
+    return keys.map(function (k) {
+      if (!k) return '<span class="gap"></span>';
+      return '<button class="' + (k[2] || '') + '" data-key="' + k[1].replace(/"/g, '&quot;') + '">' +
+        k[0] + '</button>';
+    }).join('');
+  }
+
+  function drawKeypad() {
+    var html = '';
+    if (keypadMode === 'fn') {
+      html += '<div class="functions">' + FUNCTION_GROUPS.map(function (g) {
+        return '<h3>' + g[0] + '</h3><div class="keys">' + keyButtons(g[1]) + '</div>';
+      }).join('') + '</div>';
+    }
+    html += keypadMode === 'abc' ?
+      '<div class="keys abc">' + keyButtons(ABC_KEYS) + '</div>' :
+      '<div class="keys main">' + keyButtons(MAIN_KEYS) + '</div>';
+    keypad.innerHTML = html;
+    if (keypadMode === 'abc') {
+      keypad.querySelectorAll('.letter').forEach(function (b) {
+        var ch = b.dataset.key.slice(2);
+        if (shifted) ch = ch.toUpperCase();
+        b.dataset.key = 't:' + ch;
+        b.innerHTML = '<i>' + ch + '</i>';
+      });
+      keypad.querySelector('[data-key="shift"]').classList.toggle('held', shifted);
+    }
+    if (keypadMode === 'fn') keypad.querySelector('[data-key="fn"]').classList.add('held');
+  }
+
+  function showKeypad(open) {
+    keypad.classList.toggle('open', open);
+    keysButton.classList.toggle('on', open);
+    keysButton.title = (open ? 'Hide' : 'Show') + ' keypad (Ctrl+Alt+K)';
+    if (open) drawKeypad();
+    try { localStorage.setItem('keypad', open ? '1' : ''); } catch (e) { /* storage is optional */ }
+  }
+
+  function pressKey(action) {
+    if (action === 'fn' || action === 'abc' || action === '123') {
+      keypadMode = action === '123' || keypadMode === action ? 'main' : action;
+      shifted = false;
+      drawKeypad();
+      return;
+    }
+    if (action === 'shift') {
+      shifted = !shifted;
+      drawKeypad();
+      return;
+    }
+    var mf = currentField();
+    if (!mf) return;
+    var arg = action.slice(2);
+    switch (action[0]) {
+      case 't': mf.typedText(arg); break;
+      case 'c': mf.cmd(arg); break;
+      case 'w': mf.write(arg); break;
+      case 'k':
+        // MathQuill's keystroke() skips the enter handler, so ↵ calls it
+        // through the (vendored, pinned) controller to make the next row.
+        if (arg === 'Enter') {
+          mf.__controller.handle('enter');
+        } else {
+          mf.keystroke(arg);
+        }
+        break;
+      case 'f': mf.typedText(arg); mf.typedText('('); break;
+    }
+    // A function is picked once, and a capital is typed once, as in Desmos.
+    if (keypadMode === 'fn' && action !== 'fn') {
+      keypadMode = 'main';
+      drawKeypad();
+    } else if (shifted && action[0] === 't') {
+      shifted = false;
+      drawKeypad();
+    }
+  }
+
+  // Holding an arrow or backspace repeats it.
+  var repeat = null;
+  function stopRepeat() { clearTimeout(repeat); clearInterval(repeat); repeat = null; }
+  keypad.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    var b = e.target.closest('button');
+    if (!b) return;
+    var action = b.dataset.key;
+    pressKey(action);
+    if (/^k:(Left|Right|Backspace)$/.test(action)) {
+      stopRepeat();
+      repeat = setTimeout(function () {
+        repeat = setInterval(function () { pressKey(action); }, 60);
+      }, 400);
+    }
+  });
+  document.addEventListener('mouseup', stopRepeat);
+  keysButton.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    showKeypad(!keypad.classList.contains('open'));
+  });
+  try { if (localStorage.getItem('keypad')) showKeypad(true); } catch (e) { /* storage is optional */ }
+
+  // ---- Keyboard shortcuts, as Desmos lists them under Ctrl+/ ---------------
+
+  var shortcuts = document.getElementById('shortcuts');
+  shortcuts.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    shortcuts.classList.remove('open');
+  });
+
+  // The row (or table) the focus is in.
+  function focusedRow() {
+    var el = document.activeElement && document.activeElement.closest &&
+      document.activeElement.closest('.row');
+    return rows.filter(function (r) { return r.el === el; })[0] || rows[activeIndex()] || null;
+  }
+
+  function replaceWithTable(row) {
+    var i = indexOf(row);
+    row.el.parentNode.removeChild(row.el);
+    rows.splice(i, 1);
+    var t = addTable(i);
+    renumber();
+    tableFocus(t, 0, 0);
+    sendRows();
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (shortcuts.classList.contains('open') && (e.key === 'Escape' || e.key === '/')) {
+      e.preventDefault();
+      shortcuts.classList.remove('open');
+      return;
+    }
+    var ctrl = e.ctrlKey || e.metaKey;
+    var k = e.key.toLowerCase();
+    var row = focusedRow();
+    var at = row ? indexOf(row) + 1 : rows.length;
+    var handled = true;
+    if (ctrl && !e.altKey && !e.shiftKey && (k === '/' || k === '?')) {
+      shortcuts.classList.add('open');
+    } else if (ctrl && e.altKey && k === 'x') {
+      addRow('', at).field.focus();
+      sendRows();
+    } else if (ctrl && e.altKey && k === 't') {
+      tableFocus(addTable(at), 0, 0);
+      renumber();
+      sendRows();
+    } else if (ctrl && e.altKey && k === 'e') {
+      focusRow(Math.max(0, activeIndex()));
+    } else if (ctrl && e.altKey && k === 'k') {
+      showKeypad(!keypad.classList.contains('open'));
+    } else if (ctrl && e.shiftKey && !e.altKey && k === 'd') {
+      if (row) removeRow(row);
+    } else if (e.key === 'Escape' && !ctrl && !e.altKey && document.activeElement &&
+        document.activeElement.closest && document.activeElement.closest('#list')) {
+      document.activeElement.blur();
+    } else {
+      handled = false;
+    }
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
 
   // The + button offers an expression or a table, as Desmos's does.
   var addMenu = document.getElementById('add-menu');

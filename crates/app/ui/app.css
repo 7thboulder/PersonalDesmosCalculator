@@ -111,6 +111,7 @@ button.icon:disabled { color: #bbb; cursor: default; }
 .row .remove:hover, #ticker .remove:hover { color: #333; }
 
 #status {
+  position: relative;
   border-top: 1px solid #ddd;
   background: #fafafa;
   padding: 8px 12px;
@@ -118,6 +119,91 @@ button.icon:disabled { color: #bbb; cursor: default; }
   color: #777;
   line-height: 1.5;
 }
+
+#status #keys {
+  float: left;
+  margin: -2px 8px -2px -6px;
+  font-size: 20px;
+  color: #666;
+}
+#status #keys.on { background: #e0e0e0; }
+
+/* ---- On-screen keypad, laid out like Desmos's ---- */
+#keypad {
+  display: none;
+  flex: none;
+  padding: 6px;
+  background: #dfe1e5;
+  border-top: 1px solid #c8c8c8;
+  user-select: none;
+}
+#keypad.open { display: block; }
+#keypad .keys {
+  display: grid;
+  gap: 4px;
+}
+#keypad .main { grid-template-columns: repeat(4, 1fr) 6px repeat(4, 1fr) 6px repeat(2, 1fr); }
+#keypad .abc { grid-template-columns: repeat(10, 1fr); }
+#keypad .gap { visibility: hidden; }
+#keypad button {
+  height: 36px;
+  min-width: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: #f4f5f6;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+  font: 15px "Times New Roman", serif;
+  color: #222;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#keypad button:active, #keypad button.held { background: #d0d3d8; }
+#keypad button.dark { background: #ced2d8; font-family: "Segoe UI", Arial, sans-serif; font-size: 13px; }
+#keypad button.blue { background: #2f72dc; color: #fff; font-size: 18px; }
+#keypad button.wide2 { grid-column: span 2; }
+#keypad button.wide3 { grid-column: span 3; }
+#keypad i { font-style: italic; }
+#keypad sup, #keypad sub { font-size: 10px; }
+#keypad .functions {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  padding: 4px 6px 6px;
+  background: #fff;
+  border-radius: 4px;
+}
+#keypad .functions h3 {
+  margin: 6px 0 4px;
+  font: 600 11px "Segoe UI", Arial, sans-serif;
+  color: #777;
+  letter-spacing: 0.05em;
+}
+#keypad .functions .keys { grid-template-columns: repeat(4, 1fr); }
+#keypad .functions button { font-size: 13px; height: 30px; }
+
+#shortcuts {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 50;
+}
+#shortcuts.open { display: flex; align-items: center; justify-content: center; }
+#shortcuts .box {
+  max-width: 92%;
+  max-height: 90%;
+  overflow-y: auto;
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+}
+#shortcuts h2 { margin: 6px 0; font-size: 14px; }
+#shortcuts td { padding: 2px 12px 2px 0; vertical-align: top; }
+#shortcuts td:first-child { white-space: nowrap; font-weight: 600; color: #444; }
 
 
 /* ---- Row contents added in Phase 1 ---- */

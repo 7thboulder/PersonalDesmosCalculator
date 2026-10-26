@@ -40,6 +40,12 @@ on the right. What you type is graphed as you type it:
   or implicit) to trace it, and drag a point such as `(a, b)` to move its
   sliders.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
+- On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
+  opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
+  type into the field you were last in.
+- Desmos's keyboard shortcuts: Ctrl+Alt+X adds an expression, Ctrl+Alt+T
+  (or typing `table` in an empty row) a table, Ctrl+Shift+D deletes the
+  current row, Ctrl+Alt+E jumps to the list, and Ctrl+/ lists them all.
   A burst of typing or a slider drag undoes as one step.
 - Saving and opening: the ☰ menu (or Ctrl+S, Ctrl+Shift+S, Ctrl+O) saves
   graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.

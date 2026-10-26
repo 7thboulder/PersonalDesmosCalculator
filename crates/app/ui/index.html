@@ -17,7 +17,9 @@
     <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
   </div>
   <div id="list"></div>
+  <div id="keypad"></div>
   <div id="status">
+    <button id="keys" class="icon" title="Show keypad (Ctrl+Alt+K)">&#x2328;</button>
     <div id="engine">Starting graph engine&hellip;</div>
     <div id="frame"></div>
   </div>
@@ -57,6 +59,32 @@
   </div>
   <label>Opacity <input class="opacity" type="range" min="0" max="1" step="0.05"></label>
   <label class="fill-options">Fill <input class="fill-opacity" type="range" min="0" max="1" step="0.05"></label>
+</div>
+<div id="shortcuts">
+  <div class="box">
+    <h2>Keyboard shortcuts</h2>
+    <table>
+      <tr><td>Ctrl+Alt+X</td><td>Add an expression</td></tr>
+      <tr><td>Ctrl+Alt+T, or type <b>table</b></td><td>Add a table</td></tr>
+      <tr><td>Ctrl+Shift+D</td><td>Delete the current expression</td></tr>
+      <tr><td>Ctrl+Alt+E</td><td>Focus the expression list</td></tr>
+      <tr><td>Ctrl+Alt+K</td><td>Show or hide the keypad</td></tr>
+      <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
+      <tr><td>Ctrl+S / Ctrl+Shift+S / Ctrl+O</td><td>Save / save as / open</td></tr>
+      <tr><td>Enter, Up, Down</td><td>New expression, move between rows</td></tr>
+      <tr><td>Backspace in an empty row</td><td>Delete it</td></tr>
+      <tr><td>Esc</td><td>Leave the expression list</td></tr>
+      <tr><td>Ctrl+/</td><td>This list</td></tr>
+    </table>
+    <h2>Typing</h2>
+    <table>
+      <tr><td>/</td><td>Fraction</td></tr>
+      <tr><td>^, _</td><td>Exponent, subscript</td></tr>
+      <tr><td>sqrt, nthroot, pi, theta, sum, prod, int</td><td>The symbol</td></tr>
+      <tr><td>&lt;=, &gt;=, -&gt;, ~</td><td>&le;, &ge;, action arrow, regression</td></tr>
+      <tr><td>*</td><td>Multiplication dot</td></tr>
+    </table>
+  </div>
 </div>
 <script>{{JQUERY}}</script>
 <script>{{MATHQUILL_JS}}</script>
