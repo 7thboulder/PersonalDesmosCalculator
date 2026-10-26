@@ -330,6 +330,62 @@ fn sample_all<T: Sync>(
     out
 }
 
+/// Lines to stroke: the lines, width in pixels, style and colour.
+type Stroke = (Vec<Vec<[f32; 2]>>, f32, LineStyle, [f32; 4]);
+
+/// Strokes every line, in order, splitting the work across threads when
+/// there is enough of it.
+fn stroke_all(strokes: &[Stroke], out: &mut Vec<Vertex>) {
+    let stroke = |strokes: &[Stroke], out: &mut Vec<Vertex>| {
+        for (lines, width, style, color) in strokes {
+            for line in lines {
+                stroke_styled(line, *width, *style, *color, out);
+            }
+        }
+    };
+    let points: usize = strokes.iter().flat_map(|s| &s.0).map(Vec::len).sum();
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // Below this a thread costs more than it saves.
+    const POINTS_PER_THREAD: usize = 4096;
+    let threads = threads.min(points / POINTS_PER_THREAD).min(strokes.len());
+    if threads <= 1 {
+        stroke(strokes, out);
+        return;
+    }
+    // Contiguous runs of about equal points, so the order is kept.
+    let mut runs = Vec::with_capacity(threads);
+    let (mut start, mut seen) = (0, 0);
+    for (i, s) in strokes.iter().enumerate() {
+        seen += s.0.iter().map(Vec::len).sum::<usize>();
+        if seen * threads >= points * (runs.len() + 1) {
+            runs.push(&strokes[start..=i]);
+            start = i + 1;
+        }
+    }
+    if start < strokes.len() {
+        runs.push(&strokes[start..]);
+    }
+    let parts: Vec<Vec<Vertex>> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = runs
+            .iter()
+            .map(|run| {
+                scope.spawn(move || {
+                    let mut part = Vec::new();
+                    stroke(run, &mut part);
+                    part
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|j| j.join().unwrap_or_default())
+            .collect()
+    });
+    out.reserve(parts.iter().map(Vec::len).sum());
+    for part in parts {
+        out.extend_from_slice(&part);
+    }
+}
+
 /// As [`build_scene`], reusing lines from `cache` where it can.
 pub fn build_scene_cached(
     vp: &Viewport,
@@ -421,20 +477,12 @@ pub fn build_scene_cached(
     for polygon in polygons {
         draw_polygon(vp, scale, polygon, &mut out);
     }
-    let stroke = |lines: Vec<Vec<[f32; 2]>>, width: f32, style, color, out: &mut Vec<Vertex>| {
-        for line in lines {
-            stroke_styled(&line, width * scale, style, color, out);
-        }
-    };
-    for (c, lines) in curves.iter().zip(sampled) {
-        stroke(lines, c.width, c.style, c.color, &mut out);
-    }
-    for (p, lines) in parametrics.iter().zip(swept) {
-        stroke(lines, p.width, p.style, p.color, &mut out);
-    }
-    for (i, lines) in implicits.iter().zip(traced) {
-        stroke(lines, i.width, i.style, i.color, &mut out);
-    }
+    let strokes: Vec<Stroke> = (curves.iter().zip(sampled))
+        .map(|(c, lines)| (lines, c.width * scale, c.style, c.color))
+        .chain((parametrics.iter().zip(swept)).map(|(p, l)| (l, p.width * scale, p.style, p.color)))
+        .chain((implicits.iter().zip(traced)).map(|(i, l)| (l, i.width * scale, i.style, i.color)))
+        .collect();
+    stroke_all(&strokes, &mut out);
     for set in points {
         draw_points(vp, scale, set, &mut out);
     }
