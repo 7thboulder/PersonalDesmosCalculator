@@ -1,0 +1,12 @@
+[package]
+name = "graph-render"
+description = "Draws graph-core scenes with wgpu (DirectX 12 on Windows), on screen or offscreen."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+graph-core.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+pollster.workspace = true

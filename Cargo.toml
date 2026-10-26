@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/graph-core", "crates/graph-render", "crates/app"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+publish = false
+
+[workspace.dependencies]
+graph-core = { path = "crates/graph-core" }
+graph-render = { path = "crates/graph-render" }
+bytemuck = { version = "1", features = ["derive"] }
+wgpu = "30"
+pollster = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,9 @@
+[package]
+name = "graph-core"
+description = "Viewport math, grid layout, curve sampling and line tessellation. No GPU or window code."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
