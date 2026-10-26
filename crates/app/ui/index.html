@@ -9,6 +9,7 @@
 <body>
 <div id="panel">
   <div id="topbar">
+    <button id="menu" class="icon" title="Graph menu">&#x2630;</button>
     <button id="add" class="icon" title="Add item">+</button>
     <span class="spacer"></span>
     <button class="icon" title="Undo (coming later)" disabled>&#x21B6;</button>
@@ -20,6 +21,12 @@
     <div id="engine">Starting graph engine&hellip;</div>
     <div id="frame"></div>
   </div>
+</div>
+<div id="file-menu">
+  <button data-file="new">New graph</button>
+  <button data-file="open">Open&hellip;<span class="key">Ctrl+O</span></button>
+  <button data-file="save">Save<span class="key">Ctrl+S</span></button>
+  <button data-file="saveAs">Save as&hellip;<span class="key">Ctrl+Shift+S</span></button>
 </div>
 <div id="add-menu">
   <button data-add="expression"><span class="glyph">/x</span> expression</button>

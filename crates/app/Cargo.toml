@@ -21,4 +21,4 @@ serde_json = "1"
 [target.'cfg(windows)'.dependencies]
 winit = "0.30"
 wry = "0.57"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
