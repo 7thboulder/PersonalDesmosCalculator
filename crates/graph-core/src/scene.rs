@@ -375,11 +375,29 @@ fn draw_mark_label(
     if y0 < 0.0 {
         y0 = sy + gap;
     }
-    let (x0, y0) = (x0.clamp(0.0, (w - width).max(0.0)), y0.clamp(0.0, (h - height).max(0.0)));
+    let (x0, y0) = (
+        x0.clamp(0.0, (w - width).max(0.0)),
+        y0.clamp(0.0, (h - height).max(0.0)),
+    );
     let border = scale.max(1.0);
-    fill_rect(x0 - border, y0 - border, x0 + width + border, y0 + height + border, LABEL_BORDER, out);
+    fill_rect(
+        x0 - border,
+        y0 - border,
+        x0 + width + border,
+        y0 + height + border,
+        LABEL_BORDER,
+        out,
+    );
     fill_rect(x0, y0, x0 + width, y0 + height, BACKGROUND, out);
-    text.draw(label, size, 0.0, x0 + pad, y0 + pad + size * 0.78, LABEL, out);
+    text.draw(
+        label,
+        size,
+        0.0,
+        x0 + pad,
+        y0 + pad + size * 0.78,
+        LABEL,
+        out,
+    );
 }
 
 /// Text of the axis number at `i` major steps, as Desmos writes it: plain

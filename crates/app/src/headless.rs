@@ -43,7 +43,11 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         let (x, y) = xy.split_once(',')?;
         Some([x.parse::<f64>().ok()?, y.parse::<f64>().ok()?])
     });
-    let latex: Vec<String> = latex.iter().filter(|l| !l.starts_with("--")).cloned().collect();
+    let latex: Vec<String> = latex
+        .iter()
+        .filter(|l| !l.starts_with("--"))
+        .cloned()
+        .collect();
     let latex = &latex[..];
     let default = ["y=\\sin\\left(x\\right)".to_owned()];
     let latex = if latex.is_empty() {
@@ -67,7 +71,11 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         interact.moved(&engine, &vp, vp.to_screen(x, y));
     }
     let marks = interact.marks(&engine, &vp);
-    eprintln!("DEBUG {select:?} {} {:?}", marks.len(), engine.curves.iter().map(|c| c.row).collect::<Vec<_>>());
+    eprintln!(
+        "DEBUG {select:?} {} {:?}",
+        marks.len(),
+        engine.curves.iter().map(|c| c.row).collect::<Vec<_>>()
+    );
     let scene = engine.with_plot_marks(&marks, |plot| build_scene(&vp, 1.0, plot, &mut text));
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);

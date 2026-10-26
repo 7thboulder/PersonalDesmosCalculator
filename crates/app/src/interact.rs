@@ -36,9 +36,13 @@ enum Mode {
     Idle,
     Pan,
     /// Following the mouse along `engine.curves[curve]`.
-    Trace { curve: usize },
+    Trace {
+        curve: usize,
+    },
     /// Moving a point; the slider rows its x and y set.
-    Drag { sliders: [Option<u64>; 2] },
+    Drag {
+        sliders: [Option<u64>; 2],
+    },
 }
 
 /// The selected row's points of interest, remembered until the view or the
@@ -99,7 +103,11 @@ impl Interaction {
                     if c.axis != Axis::X {
                         continue;
                     }
-                    for other in engine.curves.iter().filter(|o| o.row != row && o.axis == Axis::X) {
+                    for other in engine
+                        .curves
+                        .iter()
+                        .filter(|o| o.row != row && o.axis == Axis::X)
+                    {
                         let g = |t: f64| other.program.eval(t);
                         pois.extend(intersections(&f, &g, vp));
                     }
@@ -113,7 +121,13 @@ impl Interaction {
         &self.cache.as_ref().expect("filled above").pois
     }
 
-    fn near_poi(&mut self, engine: &Engine, vp: &Viewport, at: [f64; 2], px: f64) -> Option<[f64; 2]> {
+    fn near_poi(
+        &mut self,
+        engine: &Engine,
+        vp: &Viewport,
+        at: [f64; 2],
+        px: f64,
+    ) -> Option<[f64; 2]> {
         let reach = px * self.scale;
         self.pois(engine, vp)
             .iter()
@@ -125,7 +139,12 @@ impl Interaction {
 
     /// The nearest drawn explicit curve within reach of `at`, and the point
     /// on it under the mouse.
-    fn near_curve(&self, engine: &Engine, vp: &Viewport, at: [f64; 2]) -> Option<(usize, [f64; 2])> {
+    fn near_curve(
+        &self,
+        engine: &Engine,
+        vp: &Viewport,
+        at: [f64; 2],
+    ) -> Option<(usize, [f64; 2])> {
         let reach = GRAB_PX * self.scale;
         engine
             .curves
@@ -154,7 +173,8 @@ impl Interaction {
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((p, _)) = grabbed {
             let drag = p.drag.as_ref().expect("filtered");
-            let slider = |n: &Option<String>| n.as_ref().and_then(|n| engine.sliders.get(n).copied());
+            let slider =
+                |n: &Option<String>| n.as_ref().and_then(|n| engine.sliders.get(n).copied());
             self.mode = Mode::Drag {
                 sliders: [slider(&drag[0]), slider(&drag[1])],
             };
@@ -325,7 +345,10 @@ mod tests {
         // Zeros at ±2 (one shared with the line), the vertex, and where
         // the curves meet at x = -1.
         let has = |x: f64, y: f64| marks.iter().any(|m| dist(m.at, [x, y]) < 1e-9);
-        assert!(has(2.0, 0.0) && has(-2.0, 0.0) && has(0.0, -4.0) && has(-1.0, -3.0), "{marks:?}");
+        assert!(
+            has(2.0, 0.0) && has(-2.0, 0.0) && has(0.0, -4.0) && has(-1.0, -3.0),
+            "{marks:?}"
+        );
 
         // Hovering one lights it up with Desmos's label.
         let at = vp.to_screen(0.0, -4.0);
@@ -341,16 +364,28 @@ mod tests {
         let (engine, vp) = setup(json!([{"id": 7, "latex": "y=\\sin\\left(x\\right)"}]));
         let mut ui = Interaction::default();
         let on = vp.to_screen(1.0, 1f64.sin());
-        assert_eq!(ui.press(&engine, &vp, [on[0], on[1] + 4.0]), Effect::Select(7));
+        assert_eq!(
+            ui.press(&engine, &vp, [on[0], on[1] + 4.0]),
+            Effect::Select(7)
+        );
         let to = vp.to_screen(2.0, 0.0);
         assert_eq!(ui.moved(&engine, &vp, to), Effect::Redraw);
-        let trace = ui.marks(&engine, &vp).into_iter().find(|m| m.kind == MarkKind::Trace);
+        let trace = ui
+            .marks(&engine, &vp)
+            .into_iter()
+            .find(|m| m.kind == MarkKind::Trace);
         let trace = trace.expect("a trace point");
-        assert!((trace.at[0] - 2.0).abs() < 0.03 && (trace.at[1] - trace.at[0].sin()).abs() < 1e-12);
+        assert!(
+            (trace.at[0] - 2.0).abs() < 0.03 && (trace.at[1] - trace.at[0].sin()).abs() < 1e-12
+        );
         ui.release();
 
         let far = vp.to_screen(3.0, 8.0);
-        assert_eq!(ui.press(&engine, &vp, far), Effect::Redraw, "clears the trace");
+        assert_eq!(
+            ui.press(&engine, &vp, far),
+            Effect::Redraw,
+            "clears the trace"
+        );
         assert!(ui.panning());
         assert_eq!(ui.moved(&engine, &vp, [far[0] + 5.0, far[1]]), Effect::Pan);
     }

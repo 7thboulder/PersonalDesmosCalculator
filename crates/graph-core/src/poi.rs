@@ -277,7 +277,10 @@ mod tests {
 
     #[test]
     fn labels_round_to_the_zoom() {
-        assert_eq!(point_text([std::f64::consts::FRAC_PI_2, 1.0], 0.02), "(1.571, 1)");
+        assert_eq!(
+            point_text([std::f64::consts::FRAC_PI_2, 1.0], 0.02),
+            "(1.571, 1)"
+        );
         assert_eq!(coordinate_text(-0.00001, 0.02), "0");
         assert_eq!(coordinate_text(-2.5, 0.02), "\u{2212}2.5");
         assert_eq!(coordinate_text(1234.5678, 2.0), "1234.6");
