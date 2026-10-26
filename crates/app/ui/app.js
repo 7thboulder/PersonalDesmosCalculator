@@ -104,7 +104,82 @@
     }
     if (ticker) ticker.waiting = true;
     send({ type: 'rows', rows: sent });
+    remember(sent);
   }
+
+  // ---- Undo and redo -------------------------------------------------------
+
+  // Every state the rows have been in, as loadRows takes them, oldest first.
+  // Changes in quick succession (typing a word, dragging a slider, a playing
+  // ticker) make one step, as in Desmos.
+  var history = [];
+  var historyAt = -1;
+  var lastChange = 0;
+  var restoring = false;
+  var MERGE_MS = 800;
+
+  function snapshot(sent) {
+    return JSON.stringify(sent.map(function (r) {
+      var c = Object.assign({}, r);
+      delete c.id;
+      if (c.ticker) c.ticker = { step: c.ticker.step, playing: false };
+      return c;
+    }));
+  }
+
+  function remember(sent) {
+    if (restoring) return;
+    var state = snapshot(sent);
+    if (history[historyAt] === state) return;
+    var now = Date.now();
+    history.length = historyAt + 1;
+    // A change soon after the last one joins its step, unless that step is
+    // the starting state.
+    if (historyAt > 0 && now - lastChange < MERGE_MS) history[historyAt] = state;
+    else history.push(state);
+    historyAt = history.length - 1;
+    lastChange = now;
+    showUndoState();
+  }
+
+  function forgetHistory() {
+    history = [];
+    historyAt = -1;
+  }
+
+  function undoTo(at) {
+    if (at < 0 || at >= history.length || at === historyAt) return;
+    var focused = activeIndex();
+    historyAt = at;
+    restoring = true;
+    loadRows(JSON.parse(history[at]));
+    restoring = false;
+    // The next change starts a new step.
+    lastChange = 0;
+    if (focused >= 0) focusRow(Math.min(focused, rows.length - 1));
+    showUndoState();
+  }
+
+  function undo() { undoTo(historyAt - 1); }
+  function redo() { undoTo(historyAt + 1); }
+
+  var undoButton = document.getElementById('undo');
+  var redoButton = document.getElementById('redo');
+  function showUndoState() {
+    undoButton.disabled = historyAt <= 0;
+    redoButton.disabled = historyAt >= history.length - 1;
+  }
+  undoButton.addEventListener('click', undo);
+  redoButton.addEventListener('click', redo);
+  // Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes, wherever the focus is.
+  document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    var k = e.key.toLowerCase();
+    if (k !== 'z' && k !== 'y') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (k === 'y' || e.shiftKey) redo(); else undo();
+  }, true);
 
   function indexOf(row) { return rows.indexOf(row); }
 
@@ -237,18 +312,73 @@
       var s = r.slider;
       var span = s.max - s.min;
       if (r.playPos == null) r.playPos = r.result.slider;
-      r.playPos += r.playDir * span * dt / PLAY_SECONDS;
-      // Back and forth between the limits, Desmos's default.
-      if (r.playPos >= s.max) { r.playPos = s.max; r.playDir = -1; }
-      if (r.playPos <= s.min) { r.playPos = s.min; r.playDir = 1; }
+      var mode = s.loop || 'bounce';
+      if (mode !== 'bounce') r.playDir = 1;
+      r.playPos += r.playDir * span * dt * (s.speed || 1) / PLAY_SECONDS;
+      var done = false;
+      if (mode === 'bounce') {
+        // Back and forth between the limits, Desmos's default.
+        if (r.playPos >= s.max) { r.playPos = s.max; r.playDir = -1; }
+        if (r.playPos <= s.min) { r.playPos = s.min; r.playDir = 1; }
+      } else if (mode === 'forward' && r.playPos >= s.max) {
+        r.playPos = s.min;
+      } else if (mode === 'once' && r.playPos >= s.max) {
+        r.playPos = s.max;
+        done = true;
+      }
       setSlider(r, r.playPos);
+      if (done) togglePlay(r);
     });
     requestAnimationFrame(tick);
+  }
+
+  // Desmos's play speeds, slowest first.
+  var SPEEDS = [0.05, 0.1, 0.15, 0.2, 0.35, 0.5, 0.7, 1, 1.5, 2, 3, 4, 5, 10, 20];
+  // Desmos's loop modes, in the order its loop button cycles through them.
+  var LOOPS = [
+    { mode: 'bounce', glyph: '\u21C4', title: 'Loop back and forth' },
+    { mode: 'forward', glyph: '\u21BB', title: 'Loop forward' },
+    { mode: 'once', glyph: '\u21E5', title: 'Play once' },
+    { mode: 'forever', glyph: '\u221E', title: 'Play indefinitely' }
+  ];
+
+  function showPlayOptions(row) {
+    var s = row.slider;
+    var speed = s.speed || 1;
+    row.speedEl.textContent = formatNumber(speed, 2) + '\u00D7';
+    var loop = LOOPS.filter(function (l) { return l.mode === (s.loop || 'bounce'); })[0] || LOOPS[0];
+    row.loopEl.textContent = loop.glyph;
+    row.loopEl.title = loop.title;
+  }
+
+  function changeSpeed(row, by) {
+    var speed = row.slider.speed || 1;
+    // The nearest listed speed, then one step along.
+    var at = 0;
+    SPEEDS.forEach(function (v, i) {
+      if (Math.abs(v - speed) < Math.abs(SPEEDS[at] - speed)) at = i;
+    });
+    row.slider.speed = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, at + by))];
+    showPlayOptions(row);
+    sendRows();
+  }
+
+  function nextLoop(row) {
+    var at = LOOPS.map(function (l) { return l.mode; }).indexOf(row.slider.loop || 'bounce');
+    row.slider.loop = LOOPS[(at + 1) % LOOPS.length].mode;
+    showPlayOptions(row);
+    sendRows();
   }
 
   function togglePlay(row) {
     row.playing = !row.playing;
     row.playPos = null;
+    // Playing once from the end starts again from the beginning.
+    var s = row.slider;
+    if (row.playing && s.loop === 'once' && row.result && row.result.slider >= s.max) {
+      row.playPos = s.min;
+    }
+    if (row.playing) showPlayOptions(row);
     row.el.classList.toggle('playing', row.playing);
     if (row.playing && lastTick == null) requestAnimationFrame(tick);
   }
@@ -494,7 +624,10 @@
       '<div class="run-box"><button class="run" title="Run this action">&#x25B6; Run</button></div>' +
       '<div class="slider-box"><span class="lim min" title="Edit range"></span>' +
       '<input type="range" min="-10" max="10" step="any">' +
-      '<span class="lim max" title="Edit range"></span></div>' +
+      '<span class="lim max" title="Edit range"></span>' +
+      '<span class="play-options"><button class="slower" title="Slower">\u2212</button>' +
+      '<span class="speed"></span><button class="faster" title="Faster">+</button>' +
+      '<button class="loop"></button></span></div>' +
       '<div class="limits"><input class="lmin" size="5"> ≤ <span class="lname"></span> ≤ ' +
       '<input class="lmax" size="5"> Step: <input class="lstep" size="4"></div>' +
       '<div class="domain"><span class="bound dmin"></span> ≤ <span class="dname"></span> ≤ ' +
@@ -515,6 +648,8 @@
       limMin: el.querySelector('.lmin'),
       limMax: el.querySelector('.lmax'),
       limStep: el.querySelector('.lstep'),
+      speedEl: el.querySelector('.speed'),
+      loopEl: el.querySelector('.loop'),
       missingButtons: el.querySelector('.missing .buttons'),
       valueMath: null,
       domain: null,
@@ -583,6 +718,9 @@
     bindSwatch(row);
 
     row.play.addEventListener('click', function () { togglePlay(row); });
+    el.querySelector('.slower').addEventListener('click', function () { changeSpeed(row, -1); });
+    el.querySelector('.faster').addEventListener('click', function () { changeSpeed(row, 1); });
+    row.loopEl.addEventListener('click', function () { nextLoop(row); });
     row.range.addEventListener('input', function () {
       row.playPos = null;
       setSlider(row, Number(row.range.value));
@@ -1060,7 +1198,11 @@
 
   // Called by Rust through evaluate_script.
   window.engine = {
-    load: function (saved) { loadRows(saved); },
+    // A graph opened from a file starts a fresh history.
+    load: function (saved) {
+      forgetHistory();
+      loadRows(saved);
+    },
     info: function (adapter) {
       document.getElementById('engine').textContent = 'Graph engine: ' + adapter;
     },
@@ -1110,7 +1252,9 @@
   addRow('y=\\sin\\left(x\\right)', 0);
   addRow('', 1);
   focusRow(0);
-  // Rows first, so a graph the engine loads on 'ready' replaces them.
+  // Rows first, so a graph the engine loads on 'ready' replaces them. History
+  // starts from here, not from the rows being built.
+  forgetHistory();
   sendRows();
   send({ type: 'ready' });
 })();

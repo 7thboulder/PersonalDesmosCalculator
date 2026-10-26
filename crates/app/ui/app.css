@@ -235,6 +235,22 @@ button.icon:disabled { color: #bbb; cursor: default; }
 .row.limits-open .slider-box { display: none; }
 .row .slider-box input[type=range] { flex: 1; min-width: 0; accent-color: #2f72dc; }
 .row .lim { cursor: pointer; padding: 2px; border-radius: 3px; }
+/* Speed and loop mode, shown while the slider plays, as in Desmos. */
+.row .play-options { display: none; align-items: center; gap: 2px; }
+.row.playing .play-options { display: flex; }
+.row .play-options button {
+  font: inherit;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #fff;
+  color: #555;
+  cursor: pointer;
+}
+.row .play-options button:hover { background: #eee; }
+.row .play-options .speed { min-width: 34px; text-align: center; }
 .row .lim:hover { background: #eee; color: #333; }
 
 .row .limits {

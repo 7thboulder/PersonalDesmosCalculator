@@ -5,8 +5,13 @@
 // Only the Windows window drives this outside tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use crate::engine::Engine;
-use graph_core::{curve_pois, intersections, point_text, Axis, Mark, MarkKind, Poi, Viewport};
+use crate::engine::{Engine, GraphParametric};
+use graph_core::poi::PARAMETRIC_SAMPLES;
+use graph_core::{
+    curve_pois, implicit_intersections, implicit_pois, intersections, parametric_intersections,
+    parametric_pois, point_text, Axis, Mark, MarkKind, Poi, Viewport,
+};
+use graph_expr::{Compare, Program};
 
 /// How close, in logical pixels, the mouse has to be to grab something.
 const GRAB_PX: f64 = 10.0;
@@ -31,13 +36,24 @@ pub enum Effect {
     SetSliders(Vec<(u64, f64)>),
 }
 
+/// A curve the mouse can trace, by its place in the engine's lists.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    /// `engine.curves`: y = f(x) or x = g(y).
+    Curve(usize),
+    /// `engine.parametrics`: parametric and polar curves.
+    Parametric(usize),
+    /// `engine.regions`: an implicit equation such as x² + y² = 4.
+    Implicit(usize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Mode {
     Idle,
     Pan,
-    /// Following the mouse along `engine.curves[curve]`.
+    /// Following the mouse along a curve.
     Trace {
-        curve: usize,
+        target: Target,
     },
     /// Moving a point; the slider rows its x and y set.
     Drag {
@@ -97,19 +113,50 @@ impl Interaction {
         if self.cache.as_ref().map(|c| c.key) != Some(key) {
             let mut pois = Vec::new();
             if let Some(row) = engine.selected {
+                let explicit = |row: u64| {
+                    engine
+                        .curves
+                        .iter()
+                        .filter(move |o| o.row != row && o.axis == Axis::X)
+                };
                 for c in engine.curves.iter().filter(|c| c.row == row) {
                     let f = |t: f64| c.program.eval(t);
                     pois.extend(curve_pois(&f, vp, c.axis == Axis::Y));
                     if c.axis != Axis::X {
                         continue;
                     }
-                    for other in engine
-                        .curves
-                        .iter()
-                        .filter(|o| o.row != row && o.axis == Axis::X)
-                    {
+                    for other in explicit(row) {
                         let g = |t: f64| other.program.eval(t);
                         pois.extend(intersections(&f, &g, vp));
+                    }
+                    for p in engine.parametrics.iter().filter(|p| p.row != row) {
+                        let (x, y) = (|t: f64| p.x.eval(t), |t: f64| p.y.eval(t));
+                        pois.extend(parametric_intersections(&x, &y, p.domain, &f, vp));
+                    }
+                    for r in engine.regions.iter().filter(|r| r.row != row) {
+                        if r.compare == Compare::Eq {
+                            let field = |x: f64, y: f64| r.program.eval2(x, y);
+                            pois.extend(implicit_intersections(&field, &f, vp));
+                        }
+                    }
+                }
+                for p in engine.parametrics.iter().filter(|p| p.row == row) {
+                    let (x, y) = (|t: f64| p.x.eval(t), |t: f64| p.y.eval(t));
+                    pois.extend(parametric_pois(&x, &y, p.domain, vp));
+                    for other in explicit(row) {
+                        let g = |t: f64| other.program.eval(t);
+                        pois.extend(parametric_intersections(&x, &y, p.domain, &g, vp));
+                    }
+                }
+                for r in engine.regions.iter().filter(|r| r.row == row) {
+                    if r.compare != Compare::Eq {
+                        continue;
+                    }
+                    let field = |x: f64, y: f64| r.program.eval2(x, y);
+                    pois.extend(implicit_pois(&field, vp));
+                    for other in explicit(row) {
+                        let g = |t: f64| other.program.eval(t);
+                        pois.extend(implicit_intersections(&field, &g, vp));
                     }
                 }
             }
@@ -137,26 +184,31 @@ impl Interaction {
             .map(|(p, _)| p)
     }
 
-    /// The nearest drawn explicit curve within reach of `at`, and the point
-    /// on it under the mouse.
+    /// The nearest drawn curve within reach of `at`, and the point on it
+    /// under the mouse.
     fn near_curve(
         &self,
         engine: &Engine,
         vp: &Viewport,
         at: [f64; 2],
-    ) -> Option<(usize, [f64; 2])> {
+    ) -> Option<(Target, [f64; 2])> {
         let reach = GRAB_PX * self.scale;
-        engine
-            .curves
-            .iter()
-            .enumerate()
-            .filter_map(|(i, _)| {
-                let p = curve_point(engine, i, vp, at)?;
+        let targets = (0..engine.curves.len())
+            .map(Target::Curve)
+            .chain((0..engine.parametrics.len()).map(Target::Parametric))
+            .chain(
+                (0..engine.regions.len())
+                    .filter(|&i| engine.regions[i].compare == Compare::Eq)
+                    .map(Target::Implicit),
+            );
+        targets
+            .filter_map(|t| {
+                let p = target_point(engine, t, vp, at)?;
                 let d = dist(vp.to_screen(p[0], p[1]), at);
-                (d <= reach).then_some((i, p, d))
+                (d <= reach).then_some((t, p, d))
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
-            .map(|(i, p, _)| (i, p))
+            .map(|(t, p, _)| (t, p))
     }
 
     /// A mouse press at `at`.
@@ -187,12 +239,12 @@ impl Interaction {
             self.mode = Mode::Pan;
             return Effect::Redraw;
         }
-        if let Some((curve, p)) = self.near_curve(engine, vp, at) {
-            self.mode = Mode::Trace { curve };
+        if let Some((target, p)) = self.near_curve(engine, vp, at) {
+            self.mode = Mode::Trace { target };
             self.pinned = None;
-            let c = &engine.curves[curve];
-            self.trace = Some((p, c.color));
-            return Effect::Select(c.row);
+            let (row, color) = target_style(engine, target);
+            self.trace = Some((p, color));
+            return Effect::Select(row);
         }
         self.mode = Mode::Pan;
         let had = self.pinned.take().is_some() | self.trace.take().is_some();
@@ -211,15 +263,15 @@ impl Interaction {
         self.hover = Some(at);
         match self.mode.clone() {
             Mode::Pan => Effect::Pan,
-            Mode::Trace { curve } => {
-                let Some(mut p) = curve_point(engine, curve, vp, at) else {
+            Mode::Trace { target } => {
+                let Some(mut p) = target_point(engine, target, vp, at) else {
                     return Effect::None;
                 };
                 let s = vp.to_screen(p[0], p[1]);
                 if let Some(poi) = self.near_poi(engine, vp, s, SNAP_PX) {
                     p = poi;
                 }
-                self.trace = Some((p, engine.curves[curve].color));
+                self.trace = Some((p, target_style(engine, target).1));
                 Effect::Redraw
             }
             Mode::Drag { sliders } => {
@@ -327,16 +379,101 @@ impl Interaction {
     }
 }
 
-/// The point on curve `i` under the mouse: straight above or below it for
-/// y = f(x), level with it for x = g(y).
-fn curve_point(engine: &Engine, i: usize, vp: &Viewport, at: [f64; 2]) -> Option<[f64; 2]> {
-    let c = engine.curves.get(i)?;
+/// The row a traced curve belongs to, and its colour.
+fn target_style(engine: &Engine, target: Target) -> (u64, [f32; 4]) {
+    match target {
+        Target::Curve(i) => (engine.curves[i].row, engine.curves[i].color),
+        Target::Parametric(i) => (engine.parametrics[i].row, engine.parametrics[i].color),
+        Target::Implicit(i) => (engine.regions[i].row, engine.regions[i].color),
+    }
+}
+
+/// The point on a curve the mouse at `at` traces: straight above or below
+/// it for y = f(x), level with it for x = g(y), and the nearest point on a
+/// parametric or implicit curve.
+fn target_point(engine: &Engine, target: Target, vp: &Viewport, at: [f64; 2]) -> Option<[f64; 2]> {
     let w = vp.to_world(at[0], at[1]);
-    let p = match c.axis {
-        Axis::X => [w[0], c.program.eval(w[0])],
-        Axis::Y => [c.program.eval(w[1]), w[1]],
+    let p = match target {
+        Target::Curve(i) => {
+            let c = engine.curves.get(i)?;
+            match c.axis {
+                Axis::X => [w[0], c.program.eval(w[0])],
+                Axis::Y => [c.program.eval(w[1]), w[1]],
+            }
+        }
+        Target::Parametric(i) => parametric_point(engine.parametrics.get(i)?, vp, at)?,
+        Target::Implicit(i) => implicit_point(&engine.regions.get(i)?.program, vp, w)?,
     };
     (p[0].is_finite() && p[1].is_finite()).then_some(p)
+}
+
+/// The point of a parametric curve nearest the mouse on screen: the nearest
+/// of evenly spaced samples, then narrowed down between its neighbours.
+fn parametric_point(p: &GraphParametric, vp: &Viewport, at: [f64; 2]) -> Option<[f64; 2]> {
+    let (t0, t1) = p.domain;
+    if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+        return None;
+    }
+    let point = |t: f64| [p.x.eval(t), p.y.eval(t)];
+    let off = |t: f64| {
+        let q = point(t);
+        if q[0].is_finite() && q[1].is_finite() {
+            dist(vp.to_screen(q[0], q[1]), at)
+        } else {
+            f64::INFINITY
+        }
+    };
+    let step = (t1 - t0) / PARAMETRIC_SAMPLES as f64;
+    let best = (0..=PARAMETRIC_SAMPLES)
+        .map(|i| t0 + step * i as f64)
+        .min_by(|a, b| off(*a).total_cmp(&off(*b)))?;
+    if !off(best).is_finite() {
+        return None;
+    }
+    // Ternary search between the neighbouring samples.
+    let (mut lo, mut hi) = ((best - step).max(t0), (best + step).min(t1));
+    for _ in 0..40 {
+        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if off(a) <= off(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    let t = [best, (lo + hi) / 2.0]
+        .into_iter()
+        .min_by(|a, b| off(*a).total_cmp(&off(*b)))?;
+    Some(point(t))
+}
+
+/// The point of the implicit curve `program = 0` nearest `w`, by Newton
+/// steps along the gradient. None when it does not settle on the curve.
+fn implicit_point(program: &Program, vp: &Viewport, w: [f64; 2]) -> Option<[f64; 2]> {
+    let f = |p: [f64; 2]| program.eval2(p[0], p[1]);
+    let h = vp.units_per_px * 1e-3;
+    let gradient = |p: [f64; 2]| {
+        [
+            (f([p[0] + h, p[1]]) - f([p[0] - h, p[1]])) / (2.0 * h),
+            (f([p[0], p[1] + h]) - f([p[0], p[1] - h])) / (2.0 * h),
+        ]
+    };
+    let mut p = w;
+    for _ in 0..32 {
+        let (v, g) = (f(p), gradient(p));
+        let g2 = g[0] * g[0] + g[1] * g[1];
+        if !(v.is_finite() && g2.is_finite() && g2 > 0.0) {
+            return None;
+        }
+        let k = v / g2;
+        p = [p[0] - k * g[0], p[1] - k * g[1]];
+        if (k * g2.sqrt()).abs() < vp.units_per_px * 1e-6 {
+            break;
+        }
+    }
+    // On the curve to well within a pixel.
+    let (v, g) = (f(p), gradient(p));
+    let off = v.abs() / (g[0] * g[0] + g[1] * g[1]).sqrt();
+    (off < vp.units_per_px * 0.1).then_some(p)
 }
 
 #[cfg(test)]
@@ -406,6 +543,74 @@ mod tests {
         );
         assert!(ui.panning());
         assert_eq!(ui.moved(&engine, &vp, [far[0] + 5.0, far[1]]), Effect::Pan);
+    }
+
+    #[test]
+    fn parametric_and_implicit_curves_trace_and_show_points() {
+        let (mut engine, vp) = setup(json!([
+            {"id": 1, "latex": "\\left(2\\cos t,2\\sin t\\right)", "domain": ["0", "2\\pi"]},
+            {"id": 2, "latex": "x^2+\\frac{y^2}{4}=9"},
+            {"id": 3, "latex": "y=x"},
+        ]));
+        let mut ui = Interaction::default();
+        let on_circle = |p: [f64; 2]| (p[0].hypot(p[1]) - 2.0).abs() < 1e-6;
+        let on_ellipse = |p: [f64; 2]| (p[0] * p[0] + p[1] * p[1] / 4.0 - 9.0).abs() < 1e-6;
+        let trace = |ui: &mut Interaction, engine: &Engine| {
+            ui.marks(engine, &vp)
+                .into_iter()
+                .find(|m| m.kind == MarkKind::Trace)
+                .expect("a trace point")
+                .at
+        };
+
+        // Pressing just off the circle traces it, following the mouse.
+        let near = vp.to_screen(2.0 * 0.3f64.cos() + 0.02, 2.0 * 0.3f64.sin());
+        assert_eq!(ui.press(&engine, &vp, near), Effect::Select(1));
+        assert!(on_circle(trace(&mut ui, &engine)));
+        let to = vp.to_screen(-1.0, 1.9);
+        assert_eq!(ui.moved(&engine, &vp, to), Effect::Redraw);
+        let p = trace(&mut ui, &engine);
+        assert!(on_circle(p) && p[0] < 0.0 && p[1] > 0.0, "{p:?}");
+        ui.release();
+
+        // And the ellipse, an implicit curve.
+        let near = vp.to_screen(3.0 + 0.03, 0.4);
+        assert_eq!(ui.press(&engine, &vp, near), Effect::Select(2));
+        let p = trace(&mut ui, &engine);
+        assert!(on_ellipse(p), "{p:?}");
+        ui.release();
+
+        // Selected, each shows where it crosses the axes and meets y = x.
+        let has = |marks: &[Mark], at: [f64; 2]| marks.iter().any(|m| dist(m.at, at) < 1e-6);
+        engine.selected = Some(1);
+        ui.selection_changed();
+        let marks = ui.marks(&engine, &vp);
+        let r = 2f64.sqrt();
+        for at in [
+            [2.0, 0.0],
+            [0.0, 2.0],
+            [-2.0, 0.0],
+            [0.0, -2.0],
+            [r, r],
+            [-r, -r],
+        ] {
+            assert!(has(&marks, at), "{at:?} in {marks:?}");
+        }
+        engine.selected = Some(2);
+        ui.selection_changed();
+        let marks = ui.marks(&engine, &vp);
+        // x² + x²/4 = 9 where the ellipse meets y = x.
+        let m = (36.0f64 / 5.0).sqrt();
+        for at in [
+            [3.0, 0.0],
+            [-3.0, 0.0],
+            [0.0, 6.0],
+            [0.0, -6.0],
+            [m, m],
+            [-m, -m],
+        ] {
+            assert!(has(&marks, at), "{at:?} in {marks:?}");
+        }
     }
 
     #[test]
