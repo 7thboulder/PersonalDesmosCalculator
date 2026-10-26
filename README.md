@@ -40,6 +40,14 @@ on the right. What you type is graphed as you type it:
   or implicit) to trace it, and drag a point such as `(a, b)` to move its
   sliders.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
+- On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
+  opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
+  type into the field you were last in.
+- Desmos's keyboard shortcuts: Ctrl+Alt+X adds an expression, Ctrl+Alt+T
+  (or typing `table` in an empty row) a table, Ctrl+Shift+D deletes the
+  current row, and Ctrl+Alt+E jumps to the list.
+- Help: the **?** button at the top (or Ctrl+/) lists every keyboard
+  shortcut and every function, with an example of each.
   A burst of typing or a slider drag undoes as one step.
 - Saving and opening: the ☰ menu (or Ctrl+S, Ctrl+Shift+S, Ctrl+O) saves
   graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.
@@ -54,8 +62,15 @@ on the right. What you type is graphed as you type it:
 - Actions: `a \to a + 1` (type `->`) gets a **Run** button, `l = a \to 1`
   names one, and `l_1, l_2` runs several at once. The + menu's **ticker**
   runs an action over and over, every so many milliseconds.
-- Opening a Desmos graph: save what `Calc.getState()` gives in Desmos's
-  browser console as a `.json` or `.txt` file and open it with Ctrl+O.
+- Regressions: `y_1 \sim m x_1 + b` (type `~`) fits every name that is not
+  defined elsewhere, shows the values and R², draws the fitted curve, and
+  stores the residuals as `e_1` (then `e_2`, ...). The fitted names can be
+  used in other rows. Any model works, such as `y_1 \sim a e^{k x_1}`.
+- Opening a Desmos graph: paste its desmos.com/calculator link anywhere in
+  the app (Ctrl+V), or use ☰ then **Import from Desmos**, and the app fetches
+  it. Pasting the text `JSON.stringify(Calc.getState())` gives in Desmos's
+  browser console works too, as does opening it saved as a `.json` or `.txt`
+  file with Ctrl+O.
   Expressions, tables, sliders, styles, the ticker and the view come across;
   folders, notes and images are left out. Save writes a new `.gcalc` file.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined

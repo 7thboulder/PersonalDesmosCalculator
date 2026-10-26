@@ -746,3 +746,50 @@ fn cached_analyses_match_fresh_ones() {
         assert_eq!(cached, analyze(&rows), "step {n}");
     }
 }
+
+#[test]
+fn regressions() {
+    let all = rows(&[
+        "x_1=[1,2,3,4,5]",
+        "y_1=[3,5,7,9,11]",
+        "y_1\\sim mx_1+b",
+        "c=m+b",
+    ]);
+    let fit = all[2]
+        .fit
+        .as_ref()
+        .unwrap_or_else(|| panic!("{:?}", all[2]));
+    assert_eq!(all[2].kind, RowKind::Regression);
+    let param = |n: &str| fit.params.iter().find(|(p, _)| p == n).unwrap().1;
+    assert!(close(param("m"), 2.0) && close(param("b"), 1.0), "{fit:?}");
+    assert!(close(fit.r2.unwrap(), 1.0));
+    assert_eq!(fit.residuals.as_deref(), Some("e_1"));
+    // The model is drawn as y = 2x + 1, and the parameters are defined.
+    assert!(close(all[2].curves[0].program.eval(10.0), 21.0));
+    assert_eq!(all[3].value, Some(Value::Number(param("m") + param("b"))));
+    assert!(all[3].missing.is_empty());
+
+    // A model that is not linear in its parameters.
+    let all = rows(&[
+        "x_1=[0,1,2,3]",
+        "y_1=[2,2e,2e^2,2e^3]",
+        "y_1\\sim ae^{kx_1}",
+    ]);
+    let fit = all[2].fit.as_ref().unwrap();
+    let param = |n: &str| fit.params.iter().find(|(p, _)| p == n).unwrap().1;
+    assert!(
+        (param("a") - 2.0).abs() < 1e-6 && (param("k") - 1.0).abs() < 1e-6,
+        "{fit:?}"
+    );
+
+    // Noisy data fits less than perfectly.
+    let all = rows(&["x_1=[1,2,3,4]", "y_1=[1,3,2,4]", "y_1\\sim mx_1+b"]);
+    let fit = all[2].fit.as_ref().unwrap();
+    let param = |n: &str| fit.params.iter().find(|(p, _)| p == n).unwrap().1;
+    // Least squares: m = 0.8, b = 0.5, R² = 0.64.
+    assert!(
+        (param("m") - 0.8).abs() < 1e-9 && (param("b") - 0.5).abs() < 1e-9,
+        "{fit:?}"
+    );
+    assert!((fit.r2.unwrap() - 0.64).abs() < 1e-9);
+}

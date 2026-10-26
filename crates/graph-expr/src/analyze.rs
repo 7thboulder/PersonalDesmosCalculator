@@ -149,6 +149,8 @@ pub enum RowKind {
     Value,
     /// An action, such as `a \to a + 1`, which runs when clicked.
     Action,
+    /// A regression, such as `y_1 \sim m x_1 + b`.
+    Regression,
     /// Valid math this version cannot graph yet, such as a derivative.
     NotYet,
     Error,
@@ -184,6 +186,21 @@ pub struct RowAnalysis {
     /// For a point whose coordinates are slider variables, as in
     /// `(a, b)`: the variable each coordinate drags.
     pub drag: Option<[Option<String>; 2]>,
+    /// For a regression: the fitted parameters and how well they fit.
+    pub fit: Option<Fit>,
+}
+
+/// What a regression found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fit {
+    /// Each parameter with its best value, in the order they first appear.
+    pub params: Vec<(String, f64)>,
+    /// The share of the left side's variation the model explains, when
+    /// the left side varies.
+    pub r2: Option<f64>,
+    /// The variable holding the residuals (left minus right side), e_1 for
+    /// the first regression, as in Desmos.
+    pub residuals: Option<String>,
 }
 
 impl RowAnalysis {
@@ -204,6 +221,7 @@ impl RowAnalysis {
             parameter: None,
             columns: Vec::new(),
             drag: None,
+            fit: None,
         }
     }
 
@@ -852,6 +870,25 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
         env.actions.extend(found);
     }
 
+    // Regressions define their parameters and residuals for every other
+    // row, so they are fitted before any row is worked out.
+    let mut fits: HashMap<u64, Result<Fit, String>> = HashMap::new();
+    for (row, statement) in rows.iter().zip(&parsed) {
+        if let Some(Ok(Statement::Regression(lhs, rhs))) = statement {
+            let fit = env.fit(lhs, rhs);
+            if let Ok((fit, residuals)) = &fit {
+                for (name, v) in &fit.params {
+                    env.vars.insert(name.clone(), Expr::Num(*v));
+                }
+                if let Some(name) = &fit.residuals {
+                    let cells = residuals.iter().map(|r| Expr::Num(*r)).collect();
+                    env.vars.insert(name.clone(), Expr::List(cells));
+                }
+            }
+            fits.insert(row.id, fit.map(|(fit, _)| fit));
+        }
+    }
+
     let results = rows
         .iter()
         .zip(parsed)
@@ -876,6 +913,10 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
                     env.variable_row(row.id, &name, &expr)
                 }
                 (Some(Ok(_)), Some(Ok(Def::Func(name, f)))) => env.function_row(row.id, &name, &f),
+                (Some(Ok(Statement::Regression(_, rhs))), None) => {
+                    let fit = fits.remove(&row.id).expect("fitted above");
+                    env.regression_row(row.id, &rhs, fit)
+                }
                 (Some(Ok(statement)), None) => {
                     if let Statement::Expr(e) = &statement {
                         point = Some(e.clone());
@@ -1360,6 +1401,7 @@ impl Env {
                 self.region_row(id, lhs, rhs, compare)
             }
             Statement::Chain(condition) => self.chain_row(id, condition),
+            Statement::Regression(..) => unreachable!("regressions have their own rows"),
             Statement::Expr(e) => self.expression_row(input, e),
         }
     }
@@ -3017,6 +3059,130 @@ impl Env {
         }
     }
 
+    /// Fits `lhs \sim rhs`: the names nothing defines become parameters,
+    /// set by least squares (Levenberg-Marquardt) so the two sides agree as
+    /// closely as they can. Also gives the residuals.
+    fn fit(&mut self, lhs: &Expr, rhs: &Expr) -> Result<(Fit, Vec<f64>), String> {
+        let mut params: Vec<String> = Vec::new();
+        for side in [lhs, rhs] {
+            side.visit_names(&mut |n, applied| {
+                let free = !self.vars.contains_key(n)
+                    && !self.funcs.contains_key(n)
+                    && definable(n)
+                    && !(applied && self.funcs.contains_key(n))
+                    && n != "i"
+                    && !params.iter().any(|p| p == n);
+                if free {
+                    params.push(n.to_owned());
+                }
+            });
+        }
+        let holes: Vec<u32> = params.iter().map(|_| self.hole()).collect();
+        let bindings: HashMap<String, Val> = params
+            .iter()
+            .zip(&holes)
+            .map(|(p, h)| (p.clone(), Val::num(Low::Hole(*h))))
+            .collect();
+        let mut problems = Problems::default();
+        let observed = self.lower(lhs, &HashMap::new(), NO_FREE, &mut problems);
+        let diff = Expr::Sub(Box::new(lhs.clone()), Box::new(rhs.clone()));
+        let diff = self.lower(&diff, &bindings, NO_FREE, &mut problems);
+        if let Some(e) = problems.first_message() {
+            return Err(e);
+        }
+        let terms: Vec<Low> = diff
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::Num(l) => Ok(l.clone()),
+                _ => Err("Regressions fit numbers, not points".to_owned()),
+            })
+            .collect::<Result<_, _>>()?;
+        let residuals = |p: &[f64]| -> Vec<f64> {
+            terms
+                .iter()
+                .map(|t| {
+                    let filled = t.map_leaves(&|leaf| match leaf {
+                        Low::Hole(h) => holes.iter().position(|k| k == h).map(|k| Low::Const(p[k])),
+                        _ => None,
+                    });
+                    match filled.fold() {
+                        Low::Const(v) => v,
+                        _ => f64::NAN,
+                    }
+                })
+                .collect()
+        };
+        let values = least_squares(&residuals, params.len())
+            .ok_or("These points can't be fitted to this model")?;
+        let left_over = residuals(&values);
+        let observed: Vec<f64> = observed
+            .constant()
+            .map(|v| match v {
+                Value::Number(n) => vec![n],
+                Value::Numbers(ns) => ns,
+                _ => Vec::new(),
+            })
+            .unwrap_or_default();
+        let r2 = (observed.len() == left_over.len() && observed.len() > 1)
+            .then(|| {
+                let mean = observed.iter().sum::<f64>() / observed.len() as f64;
+                let total: f64 = observed.iter().map(|v| (v - mean).powi(2)).sum();
+                let unexplained: f64 = left_over.iter().map(|r| r * r).sum();
+                (total > 0.0).then(|| 1.0 - unexplained / total)
+            })
+            .flatten();
+        let residuals = (1..)
+            .map(|n| format!("e_{n}"))
+            .find(|n| !self.vars.contains_key(n) && !self.funcs.contains_key(n));
+        let fit = Fit {
+            params: params.into_iter().zip(values).collect(),
+            r2,
+            residuals: diff.list.then_some(residuals).flatten(),
+        };
+        Ok((fit, left_over))
+    }
+
+    /// A regression's row: its fit, and the model drawn as a curve when the
+    /// right side reads one list, which then stands for x (y_1 \sim m x_1 + b
+    /// draws y = m x + b).
+    fn regression_row(&mut self, id: u64, rhs: &Expr, fit: Result<Fit, String>) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Regression);
+        let fit = match fit {
+            Ok(fit) => fit,
+            Err(e) => {
+                row.error = Some(e);
+                return row;
+            }
+        };
+        let mut lists: Vec<String> = Vec::new();
+        rhs.visit_names(&mut |n, applied| {
+            if !applied && !lists.iter().any(|l| l == n) && self.vars.contains_key(n) {
+                lists.push(n.to_owned());
+            }
+        });
+        let mut visiting = HashSet::new();
+        lists.retain(|n| {
+            self.value_of_ref(n, &mut visiting).is_ok()
+                && matches!(self.values.get(n), Some(Ok(Value::Numbers(_))))
+        });
+        if let [list] = &lists[..] {
+            let mut bindings = HashMap::new();
+            bindings.insert(list.clone(), Val::num(Low::Arg(Arg::X)));
+            let mut problems = Problems::default();
+            let val = self.lower(rhs, &bindings, &[("x", Arg::X)], &mut problems);
+            if problems.first_message().is_none() && !val.list && !val.has_points() {
+                let mut error = None;
+                row.curves = compile_all(&val, &mut error, |program| Curve {
+                    axis: Axis::X,
+                    program,
+                });
+            }
+        }
+        row.fit = Some(fit);
+        row
+    }
+
     fn hole(&mut self) -> u32 {
         self.next_hole += 1;
         self.next_hole
@@ -3291,6 +3457,148 @@ fn is_var(e: &Expr, name: &str) -> bool {
 }
 
 /// Undefined names that Desmos would offer as sliders.
+/// The values of `n` parameters that make the residuals smallest in the
+/// least-squares sense, by Levenberg-Marquardt from a few starting points.
+/// None when no start gets anywhere finite.
+fn least_squares(residuals: &dyn Fn(&[f64]) -> Vec<f64>, n: usize) -> Option<Vec<f64>> {
+    let cost = |p: &[f64]| -> f64 {
+        let c: f64 = residuals(p).iter().map(|r| r * r).sum();
+        if c.is_nan() {
+            f64::INFINITY
+        } else {
+            c
+        }
+    };
+    // The normal equations at `p`: J^T J and J^T r, with the Jacobian by
+    // differences of step `h(p_k)`, forward or central.
+    let normal = |p: &[f64], central: bool| -> (Vec<Vec<f64>>, Vec<f64>) {
+        let r = residuals(p);
+        let jacobian: Vec<Vec<f64>> = (0..n)
+            .map(|k| {
+                let h = if central { 1e-5 } else { 1e-7 } * p[k].abs().max(1.0);
+                let mut q = p.to_vec();
+                q[k] += h;
+                let up = residuals(&q);
+                let down = if central {
+                    q[k] -= 2.0 * h;
+                    residuals(&q)
+                } else {
+                    r.clone()
+                };
+                let width = if central { 2.0 * h } else { h };
+                up.iter().zip(&down).map(|(a, b)| (a - b) / width).collect()
+            })
+            .collect();
+        let mut a = vec![vec![0.0; n]; n];
+        let mut g = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i][j] = jacobian[i]
+                    .iter()
+                    .zip(&jacobian[j])
+                    .map(|(x, y)| x * y)
+                    .sum();
+            }
+            g[i] = jacobian[i].iter().zip(&r).map(|(x, y)| x * y).sum();
+        }
+        (a, g)
+    };
+    let solve = |start: f64| -> (Vec<f64>, f64) {
+        let mut p = vec![start; n];
+        let mut c = cost(&p);
+        let mut lambda = 1e-3;
+        for _ in 0..200 {
+            let (a, g) = normal(&p, false);
+            let mut improved = false;
+            for _ in 0..30 {
+                let mut damped = a.clone();
+                for (i, row) in damped.iter_mut().enumerate() {
+                    row[i] += lambda * a[i][i].max(1e-12);
+                }
+                let Some(step) = gauss(damped, g.iter().map(|v| -v).collect()) else {
+                    lambda *= 10.0;
+                    continue;
+                };
+                let q: Vec<f64> = p.iter().zip(&step).map(|(a, b)| a + b).collect();
+                let cq = cost(&q);
+                if cq < c {
+                    let gain = c - cq;
+                    p = q;
+                    c = cq;
+                    lambda = (lambda / 3.0).max(1e-12);
+                    improved = gain > 1e-15 * c.max(1e-300);
+                    break;
+                }
+                lambda *= 4.0;
+            }
+            if !improved {
+                break;
+            }
+        }
+        (p, c)
+    };
+    let mut best: Option<(Vec<f64>, f64)> = None;
+    for start in [1.0, 0.1, -1.0, 10.0] {
+        let (p, c) = solve(start);
+        if c.is_finite() && best.as_ref().is_none_or(|b| c < b.1) {
+            best = Some((p, c));
+        }
+        // A near-perfect fit needs no other start.
+        if best.as_ref().is_some_and(|b| b.1 < 1e-20) {
+            break;
+        }
+    }
+    // Finish with plain Gauss-Newton steps on a central-difference Jacobian,
+    // which land a model linear in its parameters on the exact answer.
+    let (mut p, mut c) = best?;
+    for _ in 0..8 {
+        let (a, g) = normal(&p, true);
+        let Some(step) = gauss(a, g.iter().map(|v| -v).collect()) else {
+            break;
+        };
+        let q: Vec<f64> = p.iter().zip(&step).map(|(a, b)| a + b).collect();
+        let cq = cost(&q);
+        // Near the minimum the cost is flat to rounding, so a step that
+        // leaves it the same to 12 digits still counts.
+        if cq.is_nan() || cq > c * (1.0 + 1e-12) {
+            break;
+        }
+        let settled = q == p;
+        (p, c) = (q, cq);
+        if settled {
+            break;
+        }
+    }
+    Some(p)
+}
+
+/// Solves `a x = b` by Gaussian elimination with partial pivoting.
+fn gauss(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[pivot][col].abs().is_nan() || a[pivot][col].abs() <= 1e-300 {
+            return None;
+        }
+        a.swap(col, pivot);
+        b.swap(col, pivot);
+        for row in col + 1..n {
+            let f = a[row][col] / a[col][col];
+            let (top, rest) = a.split_at_mut(row);
+            for (x, &y) in rest[0][col..].iter_mut().zip(&top[col][col..]) {
+                *x -= f * y;
+            }
+            b[row] -= f * b[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let s: f64 = (i + 1..n).map(|k| a[i][k] * x[k]).sum();
+        x[i] = (b[i] - s) / a[i][i];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
 fn slider_names(missing: &[String]) -> Vec<String> {
     missing.iter().filter(|m| definable(m)).cloned().collect()
 }

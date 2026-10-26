@@ -451,6 +451,7 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         RowKind::Table => ("table", None),
         RowKind::Value => ("value", None),
         RowKind::Action => ("action", None),
+        RowKind::Regression => ("regression", None),
         RowKind::NotYet => ("notyet", None),
         RowKind::Error => ("error", None),
     };
@@ -460,6 +461,18 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "name": name,
         "error": r.error,
         "value": r.value.as_ref().map(result_latex),
+        // A regression's parameters and R², as Desmos lists them under it.
+        "fit": r.fit.as_ref().map(|f| {
+            let mut parts: Vec<String> = f
+                .params
+                .iter()
+                .map(|(n, v)| format!("{}={}", name_latex(n), value_latex(fitted(*v))))
+                .collect();
+            if let Some(r2) = f.r2 {
+                parts.push(format!("R^{{2}}={}", value_latex(fitted(r2))));
+            }
+            parts.join("\\quad ")
+        }),
         "slider": r.slider.filter(|v| v.is_finite()),
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
@@ -493,6 +506,15 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
 }
 
 /// How the panel types a name: `a_1` is `a_{1}`, `alpha` is `\alpha`.
+/// Fitted values carry least-squares noise in the last few digits, so they
+/// are shown to 10 significant figures, as Desmos rounds them.
+fn fitted(v: f64) -> f64 {
+    if v == 0.0 || !v.is_finite() {
+        return v;
+    }
+    format!("{v:.9e}").parse().unwrap_or(v)
+}
+
 pub fn name_latex(name: &str) -> String {
     let (base, sub) = match name.split_once('_') {
         Some((b, s)) => (b, Some(s)),

@@ -46,6 +46,8 @@ pub enum Tok {
     Int,
     /// `\to`, which makes an action.
     Arrow,
+    /// `\sim` (typed `~`), which makes a regression.
+    Tilde,
     /// A command this calculator does not understand yet.
     Unsupported(String),
 }
@@ -256,6 +258,7 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "prod" => Tok::Prod,
         "int" => Tok::Int,
         "to" | "rightarrow" => Tok::Arrow,
+        "sim" => Tok::Tilde,
         "mathrm" | "text" | "mathit" => {
             return Err(format!("text (\\{name}) is not supported"));
         }

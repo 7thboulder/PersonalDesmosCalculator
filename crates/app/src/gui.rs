@@ -41,6 +41,11 @@ pub struct Options {
 pub enum UserEvent {
     /// A JSON message posted by the panel with `window.ipc.postMessage`.
     Ipc(String),
+    /// desmos.com's reply for a pasted link, fetched off the UI thread.
+    Fetched {
+        url: String,
+        reply: Result<String, String>,
+    },
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -98,6 +103,7 @@ struct Running {
     autosave_due: Option<Instant>,
     /// A file named on the command line, opened once the panel is ready.
     open_on_start: Option<PathBuf>,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -116,8 +122,10 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
-        if let (Some(state), UserEvent::Ipc(message)) = (&mut self.state, event) {
-            state.on_panel_message(&message);
+        let Some(state) = &mut self.state else { return };
+        match event {
+            UserEvent::Ipc(message) => state.on_panel_message(&message),
+            UserEvent::Fetched { url, reply } => state.fetched(&url, reply),
         }
     }
 
@@ -236,12 +244,13 @@ impl Running {
         let renderer = GraphRenderer::new(&gpu, config.format);
         let shader = ShadingRenderer::new(&gpu);
 
+        let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
             .with_bounds(panel_bounds(&window))
             .with_html(crate::ui::panel_html())
             .with_devtools(cfg!(debug_assertions))
             .with_ipc_handler(move |request| {
-                let _ = proxy.send_event(UserEvent::Ipc(request.body().clone()));
+                let _ = ipc_proxy.send_event(UserEvent::Ipc(request.body().clone()));
             })
             .build_as_child(&window);
         let webview = match webview {
@@ -282,6 +291,7 @@ impl Running {
             rows: serde_json::Value::Array(Vec::new()),
             autosave_due: None,
             open_on_start: options.open.clone(),
+            proxy,
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -503,6 +513,10 @@ impl Running {
                     self.window.request_redraw();
                 }
             }
+            Some("paste") => {
+                let text = value["text"].as_str().unwrap_or_default().to_owned();
+                self.paste(&text);
+            }
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
@@ -606,6 +620,55 @@ impl Running {
         }
     }
 
+    /// A Desmos graph pasted into the panel: a desmos.com link, which is
+    /// fetched, or the text `Calc.getState()` gives, which opens at once.
+    fn paste(&mut self, text: &str) {
+        if let Some(url) = files::desmos_link(text) {
+            if self.keep_changes() {
+                return;
+            }
+            self.run_script("window.engine.fetching(true)");
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                let reply = fetch_desmos(&url);
+                let _ = proxy.send_event(UserEvent::Fetched { url, reply });
+            });
+        } else if files::desmos_state(text).is_some() {
+            if !self.keep_changes() {
+                self.open_desmos(text);
+            }
+        } else {
+            show_error(
+                "That isn't a Desmos graph.\n\nPaste a desmos.com/calculator link, or the text \
+                 Calc.getState() gives in Desmos's browser console.",
+            );
+        }
+    }
+
+    fn fetched(&mut self, url: &str, reply: Result<String, String>) {
+        self.run_script("window.engine.fetching(false)");
+        match reply {
+            Ok(body) if files::desmos_state(&body).is_some() => self.open_desmos(&body),
+            Ok(_) => show_error(&format!("desmos.com did not send a graph for {url}.")),
+            Err(e) => show_error(&format!("Could not get {url}.\n\n{e}")),
+        }
+    }
+
+    fn open_desmos(&mut self, text: &str) {
+        match files::open_any(text) {
+            Ok((rows, view, _)) => {
+                // Like an opened Desmos file, it saves to a new graph file.
+                self.doc.loading(None);
+                if let Some(view) = view {
+                    view.apply(&mut self.viewport);
+                }
+                self.run_script(&format!("window.engine.load({rows})"));
+                self.update_title();
+            }
+            Err(e) => show_error(&format!("Could not open the Desmos graph.\n\n{e}")),
+        }
+    }
+
     /// Brings back the last session, unsaved changes included.
     fn restore(&mut self) {
         let Some(path) = files::autosave_path() else {
@@ -694,6 +757,25 @@ fn finish_smoke_test(state: Option<&Running>, path: &std::path::Path) -> Result<
     } else {
         Err(report)
     }
+}
+
+/// Asks desmos.com for a saved graph. With `Accept: application/json` it
+/// answers with the graph's state instead of the calculator page.
+fn fetch_desmos(url: &str) -> Result<String, String> {
+    let tls = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .tls_connector(Arc::new(tls))
+        .timeout(Duration::from_secs(20))
+        .build();
+    let reply = agent
+        .get(url)
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(404, _) => "desmos.com has no graph at that link.".to_string(),
+            e => e.to_string(),
+        })?;
+    reply.into_string().map_err(|e| e.to_string())
 }
 
 fn show_error(message: &str) {
