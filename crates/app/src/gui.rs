@@ -3,6 +3,7 @@
 //! This is the layout wry's own wgpu example uses on Windows.
 
 use crate::engine::Engine;
+use crate::files::{self, Document};
 use crate::interact::{Effect, Interaction};
 use graph_core::{build_scene, TextAtlas, Viewport};
 use graph_render::{new_instance, Area, Gpu, GraphRenderer, ShadingRenderer};
@@ -11,8 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, ModifiersState};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowId};
 use wry::{Rect, WebView, WebViewBuilder};
@@ -23,12 +25,16 @@ const PANEL_WIDTH: f64 = 380.0;
 const WHEEL_ZOOM: f64 = 1.2;
 /// How often frame timings are pushed to the panel.
 const STATS_INTERVAL: Duration = Duration::from_millis(250);
+/// How long after a change the session is autosaved.
+const AUTOSAVE_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 pub struct Options {
     pub opaque_window: bool,
     /// Run for this long, then write a pass/fail report to the file and exit.
     pub smoke_test: Option<(Duration, PathBuf)>,
+    /// A graph file to open instead of restoring the last session.
+    pub open: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -85,6 +91,13 @@ struct Running {
     /// Presentation times while the smoke test plays a slider.
     play_frames: Vec<Instant>,
     smoke_test: bool,
+    modifiers: ModifiersState,
+    doc: Document,
+    /// The rows as the panel last sent them: the graph to save.
+    rows: serde_json::Value,
+    autosave_due: Option<Instant>,
+    /// A file named on the command line, opened once the panel is ready.
+    open_on_start: Option<PathBuf>,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -111,7 +124,28 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = &mut self.state else { return };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                state.autosave();
+                event_loop.exit();
+            }
+            WindowEvent::ModifiersChanged(m) => state.modifiers = m.state(),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if state.modifiers.control_key() => {
+                let shift = state.modifiers.shift_key();
+                match c.to_lowercase().as_str() {
+                    "s" if shift => state.file_command("saveAs"),
+                    "s" => state.file_command("save"),
+                    "o" => state.file_command("open"),
+                    _ => {}
+                }
+            }
             WindowEvent::Resized(size) => state.resize(size),
             WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
             WindowEvent::RedrawRequested => state.render(),
@@ -139,7 +173,18 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(state) = &mut self.state {
+            if let Some(due) = state.autosave_due {
+                if Instant::now() >= due {
+                    state.autosave();
+                } else if self.smoke_deadline.is_none() {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+                    return;
+                }
+            }
+        }
         let Some(deadline) = self.smoke_deadline else {
+            event_loop.set_control_flow(ControlFlow::Wait);
             return;
         };
         if Instant::now() < deadline {
@@ -232,6 +277,11 @@ impl Running {
             last_stats: Instant::now() - STATS_INTERVAL,
             play_frames: Vec::new(),
             smoke_test: options.smoke_test.is_some(),
+            modifiers: ModifiersState::empty(),
+            doc: Document::default(),
+            rows: serde_json::Value::Array(Vec::new()),
+            autosave_due: None,
+            open_on_start: options.open.clone(),
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -437,7 +487,12 @@ impl Running {
                     // Add a slider and play it, so the report shows the frame
                     // rate while the graph animates.
                     self.run_script("window.engine.demo()");
+                } else if let Some(path) = self.open_on_start.take() {
+                    self.open_path(path);
+                } else {
+                    self.restore();
                 }
+                self.update_title();
                 self.window.request_redraw();
             }
             Some("select") => {
@@ -448,7 +503,17 @@ impl Running {
                     self.window.request_redraw();
                 }
             }
+            Some(command @ ("new" | "open" | "save" | "saveAs")) => {
+                let command = command.to_owned();
+                self.file_command(&command);
+            }
             Some("rows") => {
+                self.rows = value["rows"].clone();
+                self.doc.rows_changed(&self.rows);
+                self.update_title();
+                if !self.smoke_test && self.autosave_due.is_none() {
+                    self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
+                }
                 let results = self.engine.update(&value["rows"]);
                 self.rows_received = true;
                 self.run_script(&format!("window.engine.analysis({results})"));
@@ -456,6 +521,119 @@ impl Running {
             }
             _ => {}
         }
+    }
+
+    fn update_title(&self) {
+        self.window.set_title(&self.doc.title());
+    }
+
+    /// New, open, save or save as, from the panel's menu or a shortcut.
+    fn file_command(&mut self, command: &str) {
+        match command {
+            "new" => {
+                if self.keep_changes() {
+                    return;
+                }
+                self.doc.loading(None);
+                let area = self.graph_area();
+                self.viewport = Viewport::new(area.width as f64, area.height as f64);
+                self.run_script("window.engine.load([])");
+            }
+            "open" => {
+                if self.keep_changes() {
+                    return;
+                }
+                if let Some(path) = dialogs::open(&self.window) {
+                    self.open_path(path);
+                }
+            }
+            "save" => match self.doc.path.clone() {
+                Some(path) => self.save_to(path),
+                None => self.file_command("saveAs"),
+            },
+            "saveAs" => {
+                if let Some(path) = dialogs::save(&self.window, self.doc.path.as_deref()) {
+                    self.save_to(files::with_extension(path));
+                }
+            }
+            _ => {}
+        }
+        self.update_title();
+        self.window.request_redraw();
+    }
+
+    /// When the graph has unsaved changes, asks whether to save them first.
+    /// Returns true when the person cancelled, so nothing should happen.
+    fn keep_changes(&mut self) -> bool {
+        if !self.doc.dirty() {
+            return false;
+        }
+        match dialogs::ask_to_save(&self.window, &self.doc.title()) {
+            dialogs::Answer::Save => {
+                self.file_command("save");
+                self.doc.dirty()
+            }
+            dialogs::Answer::Discard => false,
+            dialogs::Answer::Cancel => true,
+        }
+    }
+
+    fn save_to(&mut self, path: PathBuf) {
+        let text = files::to_file(&self.rows, &self.viewport);
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.doc.saved_to(path);
+                self.autosave();
+            }
+            Err(e) => show_error(&format!("Could not save {}.\n\n{e}", path.display())),
+        }
+    }
+
+    fn open_path(&mut self, path: PathBuf) {
+        let opened = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| files::from_file(&text));
+        match opened {
+            Ok((rows, view)) => {
+                self.doc.loading(Some(path));
+                if let Some(view) = view {
+                    view.apply(&mut self.viewport);
+                }
+                self.run_script(&format!("window.engine.load({rows})"));
+            }
+            Err(e) => show_error(&format!("Could not open {}.\n\n{e}", path.display())),
+        }
+    }
+
+    /// Brings back the last session, unsaved changes included.
+    fn restore(&mut self) {
+        let Some(path) = files::autosave_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Some(restored) = files::read_autosave(&text) else {
+            return;
+        };
+        restored.resume(&mut self.doc);
+        if let Some(view) = restored.view {
+            view.apply(&mut self.viewport);
+        }
+        self.run_script(&format!("window.engine.load({})", restored.rows));
+    }
+
+    fn autosave(&mut self) {
+        self.autosave_due = None;
+        if self.smoke_test || !self.rows_received {
+            return;
+        }
+        let Some(path) = files::autosave_path() else {
+            return;
+        };
+        let contents = files::autosave_contents(&self.doc, &self.rows, &self.viewport);
+        // Losing the autosave is not worth interrupting anyone over.
+        let _ = files::write_autosave(&path, &contents);
     }
 
     fn run_script(&self, js: &str) {
@@ -533,5 +711,116 @@ fn show_error(message: &str) {
             title.as_ptr(),
             MB_OK | MB_ICONERROR,
         );
+    }
+}
+
+/// Windows' own file and question dialogs, owned by the calculator window.
+mod dialogs {
+    use super::files::EXTENSION;
+    use std::path::{Path, PathBuf};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, GetSaveFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR,
+        OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDCANCEL, IDNO, MB_ICONWARNING, MB_YESNOCANCEL,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use winit::window::Window;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn hwnd(window: &Window) -> *mut core::ffi::c_void {
+        match window.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => h.hwnd.get() as *mut core::ffi::c_void,
+            _ => std::ptr::null_mut(),
+        }
+    }
+
+    /// Runs the open or save dialog, starting from `initial` when given.
+    fn file_dialog(window: &Window, save: bool, initial: Option<&Path>) -> Option<PathBuf> {
+        // Filters are pairs of NUL-terminated strings, ended by an extra NUL.
+        let filter: Vec<u16> =
+            format!("Graphs (*.{EXTENSION})\0*.{EXTENSION}\0All files (*.*)\0*.*\0\0")
+                .encode_utf16()
+                .collect();
+        let ext = wide(EXTENSION);
+        let mut buffer = vec![0u16; 4096];
+        if let Some(name) = initial.and_then(|p| p.to_str()) {
+            let name: Vec<u16> = name.encode_utf16().take(buffer.len() - 1).collect();
+            buffer[..name.len()].copy_from_slice(&name);
+        }
+        let mut ofn = OPENFILENAMEW {
+            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: hwnd(window),
+            lpstrFilter: filter.as_ptr(),
+            lpstrFile: buffer.as_mut_ptr(),
+            nMaxFile: buffer.len() as u32,
+            lpstrDefExt: ext.as_ptr(),
+            Flags: OFN_EXPLORER
+                | OFN_NOCHANGEDIR
+                | OFN_PATHMUSTEXIST
+                | if save {
+                    OFN_OVERWRITEPROMPT
+                } else {
+                    OFN_FILEMUSTEXIST
+                },
+            ..Default::default()
+        };
+        // SAFETY: every pointer in `ofn` refers to a buffer that outlives
+        // the call, and the file buffer's length is passed with it.
+        let ok = unsafe {
+            if save {
+                GetSaveFileNameW(&mut ofn)
+            } else {
+                GetOpenFileNameW(&mut ofn)
+            }
+        };
+        if ok == 0 {
+            return None;
+        }
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
+    }
+
+    pub fn open(window: &Window) -> Option<PathBuf> {
+        file_dialog(window, false, None)
+    }
+
+    pub fn save(window: &Window, current: Option<&Path>) -> Option<PathBuf> {
+        file_dialog(window, true, current)
+    }
+
+    pub enum Answer {
+        Save,
+        Discard,
+        Cancel,
+    }
+
+    /// "Save changes to this graph?" with Yes, No and Cancel.
+    pub fn ask_to_save(window: &Window, title: &str) -> Answer {
+        let name = title
+            .trim_start_matches('*')
+            .split(" - ")
+            .next()
+            .unwrap_or("this graph");
+        let text = wide(&format!("Save changes to {name}?"));
+        let caption = wide("Graphing Calculator");
+        // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+        let answer = unsafe {
+            MessageBoxW(
+                hwnd(window),
+                text.as_ptr(),
+                caption.as_ptr(),
+                MB_YESNOCANCEL | MB_ICONWARNING,
+            )
+        };
+        match answer {
+            IDCANCEL => Answer::Cancel,
+            IDNO => Answer::Discard,
+            _ => Answer::Save,
+        }
     }
 }

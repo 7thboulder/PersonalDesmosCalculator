@@ -343,7 +343,7 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #style-menu.no-dots .point-options { display: none; }
 
 /* ---- Add menu (the + button) ---- */
-#add-menu {
+#file-menu, #add-menu {
   display: none;
   position: fixed;
   z-index: 20;
@@ -355,8 +355,9 @@ button.icon:disabled { color: #bbb; cursor: default; }
   background: #fff;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
 }
-#add-menu.open { display: block; }
-#add-menu button {
+#file-menu.open, #add-menu.open { display: block; }
+#add-menu { left: 42px; }
+#file-menu button, #add-menu button {
   display: block;
   width: 150px;
   padding: 7px 12px;
@@ -367,7 +368,9 @@ button.icon:disabled { color: #bbb; cursor: default; }
   color: #333;
   cursor: pointer;
 }
-#add-menu button:hover { background: #eef3fc; }
+#file-menu button:hover, #add-menu button:hover { background: #eef3fc; }
+#file-menu button { width: 210px; display: flex; justify-content: space-between; }
+#file-menu .key { color: #999; font-size: 12px; }
 #add-menu .glyph { display: inline-block; width: 24px; color: #666; font-style: italic; }
 
 /* ---- Tables ---- */

@@ -5,7 +5,7 @@ its math and drawing with the machine's own CPU and GPU instead of a browser.
 Private, personal-use project. The full plan lives in the
 [plan doc](https://claude.ai/artifact/DZCzUyaNRYjCzz5fdBDS7n).
 
-**Status: Phase 3 in progress.** The window opens with a Desmos-style expression
+**Status: Phase 3 complete, in review.** The window opens with a Desmos-style expression
 list on the left (the same MathQuill editor Desmos uses) and a GPU-drawn graph
 on the right. What you type is graphed as you type it:
 
@@ -38,6 +38,10 @@ on the right. What you type is graphed as you type it:
   crosses the axes, turns, and meets other curves; hover or click one for
   its coordinates. Press and drag on a curve to trace it, and drag a point
   such as `(a, b)` to move its sliders.
+- Saving and opening: the ☰ menu (or Ctrl+S, Ctrl+Shift+S, Ctrl+O) saves
+  graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.
+  The session is autosaved, so the next launch carries on where you left
+  off, unsaved changes included; New and Open ask before dropping them.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
@@ -48,8 +52,8 @@ on the right. What you type is graphed as you type it:
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
 
-Not yet: saving and opening graphs, the last part of Phase 3. Tracing and
-points of interest cover y = f(x) and x = g(y) curves so far. Shading is computed by the GPU in single precision, so a
+Not yet: undo and redo. Tracing and points of interest cover y = f(x) and
+x = g(y) curves so far. Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a
 double-precision fallback at that zoom is still to come.
 

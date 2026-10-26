@@ -47,7 +47,11 @@
     };
   }
 
+  // Set while a saved graph is being loaded, so rows are sent once at the end.
+  var loading = false;
+
   function sendRows() {
+    if (loading) return;
     send({
       type: 'rows',
       rows: rows.map(function (r) {
@@ -62,7 +66,9 @@
             })
           };
         }
-        return Object.assign(styleOf(r), { id: r.id, latex: r.field.latex(), domain: r.domain });
+        return Object.assign(styleOf(r), {
+          id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider
+        });
       })
     });
   }
@@ -829,8 +835,76 @@
   });
   buildMenu();
 
+  // ---- Saving and opening ---------------------------------------------------
+
+  // The file menu (top left) and its shortcuts. The engine does the file
+  // work; the panel only asks.
+  var fileMenu = document.getElementById('file-menu');
+  document.getElementById('menu').addEventListener('mousedown', function (e) {
+    e.stopPropagation();
+    fileMenu.classList.toggle('open');
+  });
+  fileMenu.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+  fileMenu.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    fileMenu.classList.remove('open');
+    send({ type: b.dataset.file });
+  });
+  document.addEventListener('mousedown', function () { fileMenu.classList.remove('open'); });
+  document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    var k = e.key.toLowerCase();
+    var action = k === 's' ? (e.shiftKey ? 'saveAs' : 'save') : k === 'o' ? 'open' : null;
+    if (!action) return;
+    e.preventDefault();
+    e.stopPropagation();
+    send({ type: action });
+  }, true);
+
+  function applyStyle(target, saved) {
+    ['color', 'hidden', 'style', 'width', 'opacity', 'pointStyle', 'pointSize', 'dots', 'connect']
+      .forEach(function (k) { if (saved[k] !== undefined && saved[k] !== null) target[k] = saved[k]; });
+  }
+
+  // Replaces every row with the saved ones (the rows array the panel sends).
+  function loadRows(saved) {
+    loading = true;
+    closeMenu();
+    rows.slice().forEach(function (r) {
+      if (r.playing) togglePlay(r);
+      r.el.parentNode.removeChild(r.el);
+    });
+    rows = [];
+    nextColor = 0;
+    selectedId = null;
+    (saved || []).forEach(function (s, i) {
+      if (s.table) {
+        var t = addTable(i, s.table.map(function (c) { return { header: c.header, cells: c.cells }; }));
+        t.columns.forEach(function (c, ci) {
+          applyStyle(c, s.table[ci] || {});
+          paintColumn(c);
+        });
+        return;
+      }
+      var row = addRow(s.latex || '', i);
+      applyStyle(row, s);
+      if (s.slider && typeof s.slider.min === 'number') row.slider = s.slider;
+      if (s.domain && s.domain.length === 2) row.domain = s.domain;
+      paintRow(row);
+    });
+    if (rows.length === 0) addRow('', 0);
+    // Colors carry on after the last one used, as in Desmos.
+    nextColor = rows.length;
+    loading = false;
+    renumber();
+    focusRow(0);
+    sendRows();
+  }
+
   // Called by Rust through evaluate_script.
   window.engine = {
+    load: function (saved) { loadRows(saved); },
     info: function (adapter) {
       document.getElementById('engine').textContent = 'Graph engine: ' + adapter;
     },
@@ -879,6 +953,7 @@
   addRow('y=\\sin\\left(x\\right)', 0);
   addRow('', 1);
   focusRow(0);
-  send({ type: 'ready' });
+  // Rows first, so a graph the engine loads on 'ready' replaces them.
   sendRows();
+  send({ type: 'ready' });
 })();

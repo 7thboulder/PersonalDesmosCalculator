@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod engine;
+mod files;
 #[cfg(windows)]
 mod gui;
 mod headless;
@@ -12,7 +13,8 @@ const USAGE: &str = "\
 graphcalc (Phase 1 preview)
 
 USAGE:
-    graphcalc                          open the calculator window
+    graphcalc [FILE]                   open the calculator window, with a
+                                       saved graph if one is given
     graphcalc --render-png FILE [WxH] [LATEX...] [--select=N] [--hover=X,Y]
                                        graph the LaTeX rows (default y=sin x)
                                        offscreen to a PNG and exit
@@ -107,6 +109,8 @@ fn run_gui(args: &[String]) -> Result<(), String> {
                 let out = rest.next().ok_or("--smoke-test needs an output file")?;
                 options.smoke_test = Some((std::time::Duration::from_secs_f64(secs), out.into()));
             }
+            // A graph file, as when one is double-clicked.
+            other if !other.starts_with("--") => options.open = Some(other.into()),
             other => return Err(format!("unknown argument: {other}\n\n{USAGE}")),
         }
     }
