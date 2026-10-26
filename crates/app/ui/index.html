@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Expressions</title>
+<style>{{MATHQUILL_CSS}}</style>
+<style>{{STYLE}}</style>
+</head>
+<body>
+<div id="panel">
+  <div id="topbar">
+    <button id="add" class="icon" title="Add item">+</button>
+    <span class="spacer"></span>
+    <button class="icon" title="Undo (coming later)" disabled>&#x21B6;</button>
+    <button class="icon" title="Redo (coming later)" disabled>&#x21B7;</button>
+    <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
+  </div>
+  <div id="list"></div>
+  <div id="status">
+    <div id="engine">Starting graph engine&hellip;</div>
+    <div id="frame"></div>
+    <div id="note">Prototype: the graph always shows y = sin(x). Typing reaches the
+      engine, and graphing what you type arrives in Phase 1.</div>
+  </div>
+</div>
+<script>{{JQUERY}}</script>
+<script>{{MATHQUILL_JS}}</script>
+<script>{{SCRIPT}}</script>
+</body>
+</html>

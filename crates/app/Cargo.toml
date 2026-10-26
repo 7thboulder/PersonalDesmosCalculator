@@ -1,0 +1,23 @@
+[package]
+name = "app"
+description = "The calculator window: native wgpu graph plus the MathQuill expression panel."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+# Placeholder name until the app has a real one.
+name = "graphcalc"
+path = "src/main.rs"
+
+[dependencies]
+graph-core.workspace = true
+graph-render.workspace = true
+wgpu.workspace = true
+png = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+winit = "0.30"
+wry = "0.57"
+serde_json = "1"
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
