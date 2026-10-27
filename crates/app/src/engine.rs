@@ -807,7 +807,10 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "kind": kind,
         "name": name,
         "error": r.error,
-        "value": r.value.as_ref().map(result_latex),
+        "value": r.value.as_ref().map(|v| match &r.unit {
+            Some(unit) => format!("{}\\ {unit}", result_latex(v)),
+            None => result_latex(v),
+        }),
         // A regression's parameters and R², as Desmos lists them under it.
         "fit": r.fit.as_ref().map(|f| {
             let mut parts: Vec<String> = f

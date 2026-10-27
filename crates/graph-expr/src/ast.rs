@@ -1,4 +1,5 @@
 use crate::builtins::Builtin;
+use crate::units::Quantity;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
@@ -56,6 +57,11 @@ pub enum Expr {
     Update(String, Box<Expr>),
     /// Several actions run together: `a \to 1, b \to 2`.
     Actions(Vec<Expr>),
+    /// A unit or constant written as text, as in `5\text{m/s}`. Rows are
+    /// worked out with units replaced by their SI factors.
+    Unit(Box<Quantity>),
+    /// `… \text{in km}`: the answer shown in another unit.
+    Convert(Box<Expr>, Box<Quantity>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,9 +157,11 @@ impl Expr {
     /// of applied functions.
     pub fn visit_names(&self, f: &mut dyn FnMut(&str, bool)) {
         match self {
-            Expr::Num(_) => {}
+            Expr::Num(_) | Expr::Unit(_) => {}
             Expr::Var(name) => f(name, false),
-            Expr::Neg(a) | Expr::Factorial(a) | Expr::Coord(a, _) => a.visit_names(f),
+            Expr::Neg(a) | Expr::Factorial(a) | Expr::Coord(a, _) | Expr::Convert(a, _) => {
+                a.visit_names(f)
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -230,10 +238,12 @@ impl Expr {
     pub fn walk(&self, f: &mut dyn FnMut(&Expr)) {
         f(self);
         match self {
-            Expr::Num(_) | Expr::Var(_) => {}
-            Expr::Neg(a) | Expr::Factorial(a) | Expr::Coord(a, _) | Expr::Derivative(_, a) => {
-                a.walk(f)
-            }
+            Expr::Num(_) | Expr::Var(_) | Expr::Unit(_) => {}
+            Expr::Neg(a)
+            | Expr::Factorial(a)
+            | Expr::Coord(a, _)
+            | Expr::Derivative(_, a)
+            | Expr::Convert(a, _) => a.walk(f),
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
