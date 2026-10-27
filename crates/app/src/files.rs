@@ -217,6 +217,22 @@ fn desmos_space(state: &Value) -> Space {
             let mut box3 = View3::new(1.0, 1.0);
             box3.center = [(x.0 + x.1) / 2.0, (y.0 + y.1) / 2.0, (z.0 + z.1) / 2.0];
             box3.half = [(x.1 - x.0) / 2.0, (y.1 - y.0) / 2.0, (z.1 - z.0) / 2.0];
+            // worldRotation3D is a 3×3 matrix by rows; minus its first
+            // column points toward the camera.
+            let m: Vec<f64> = g["worldRotation3D"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_f64)
+                .collect();
+            if let [m0, _, _, m3, _, _, m6, _, _] = m[..] {
+                let toward = [-m0, -m3, -m6];
+                let len = toward.iter().map(|c| c * c).sum::<f64>().sqrt();
+                if len > 1e-9 && len.is_finite() {
+                    box3.yaw = toward[1].atan2(toward[0]);
+                    box3.pitch = (toward[2] / len).clamp(-1.0, 1.0).asin();
+                }
+            }
             Some(BoxView::of(&box3))
         }
         _ => None,
@@ -678,6 +694,7 @@ mod tests {
             "graph": {
                 "threeDMode": true,
                 "viewport": {"xmin": -5, "xmax": 5, "ymin": -5, "ymax": 5, "zmin": 0, "zmax": 20},
+                "worldRotation3D": [0.1423, -0.9852, 0.0956, 0.8177, 0.1715, 0.5496, -0.5578, 0.0, 0.83],
             },
             "expressions": {"list": [{"type": "expression", "id": "1", "latex": "z=x^2+y^2"}]}
         })
@@ -689,6 +706,9 @@ mod tests {
             (view.center, view.half),
             ([0.0, 0.0, 10.0], [5.0, 5.0, 10.0])
         );
+        // The camera Desmos saved: from the -y side, about 34° up.
+        assert!((view.pitch - 0.5917).abs() < 1e-3, "{}", view.pitch);
+        assert!((view.yaw + 1.7431).abs() < 1e-3, "{}", view.yaw);
         assert_eq!(open_any(&state).unwrap().0[0]["latex"], "z=x^2+y^2");
         // A 2D graph stays 2D.
         let flat = r#"{"graph":{"viewport":{"xmin":-1,"xmax":1,"ymin":-1,"ymax":1}},"expressions":{"list":[]}}"#;
