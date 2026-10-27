@@ -15,6 +15,9 @@ use crate::parser::parse;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+mod fractal;
+pub use fractal::Fractal;
+
 #[derive(Clone, Debug, Default)]
 pub struct RowInput {
     pub id: u64,
@@ -248,6 +251,10 @@ pub struct RowAnalysis {
     pub drag: Option<[Option<String>; 2]>,
     /// For a regression: the fitted parameters and how well they fit.
     pub fit: Option<Fit>,
+    /// Escape-time sets and bifurcation diagrams, drawn over the plane.
+    pub fractals: Vec<Fractal>,
+    /// Lines through points in order, such as a cobweb diagram.
+    pub paths: Vec<Vec<[f64; 2]>>,
 }
 
 /// What a regression found.
@@ -289,6 +296,8 @@ impl RowAnalysis {
             columns: Vec::new(),
             drag: None,
             fit: None,
+            fractals: Vec::new(),
+            paths: Vec::new(),
         }
     }
 
@@ -328,6 +337,8 @@ impl RowAnalysis {
             && self.points3.is_empty()
             && self.curves3.is_empty()
             && self.points.is_empty()
+            && self.fractals.is_empty()
+            && self.paths.is_empty()
             && self.polygons.is_empty()
             && self.polygons3.is_empty()
             && self.boxes3.is_empty()
@@ -1144,6 +1155,8 @@ fn into_3d(row: &mut RowAnalysis) {
     row.drag = None;
     let flat = !(row.curves.is_empty()
         && row.regions.is_empty()
+        && row.fractals.is_empty()
+        && row.paths.is_empty()
         && row.polygons.is_empty()
         && row.columns.iter().all(|c| c.points.is_empty()));
     if !flat {
@@ -1151,6 +1164,8 @@ fn into_3d(row: &mut RowAnalysis) {
     }
     row.curves.clear();
     row.regions.clear();
+    row.fractals.clear();
+    row.paths.clear();
     row.polygons.clear();
     row.parameter = None;
     for column in &mut row.columns {
@@ -1878,6 +1893,11 @@ impl Env {
     /// parametric curve in t, or a value.
     fn expression_row(&mut self, input: &RowInput, e: &Expr) -> RowAnalysis {
         let id = input.id;
+        if let Expr::Shape(f, args) = e {
+            if fractal::draws_row(*f) {
+                return self.fractal_row(id, *f, args);
+            }
+        }
         // First see what the expression is and which graph variables it
         // reads, with t free unless a row defines it.
         let t_free = !self.vars.contains_key("t");
@@ -3682,6 +3702,10 @@ impl Env {
                     }
                 })
             }
+            Expr::Shape(f, _) if fractal::draws_row(*f) => {
+                problems.error(fractal::whole_row(*f));
+                Val::nan()
+            }
             Expr::Shape(f, args) => {
                 let args: Vec<Val> = args.iter().map(|a| go!(a)).collect();
                 self.shape(*f, args, problems)
@@ -4086,6 +4110,10 @@ impl Env {
                     }),
                     _ => Err(format!("Function '{name}' takes 2 points")),
                 })
+            }
+            ShapeFn::Mandelbrot | ShapeFn::Julia | ShapeFn::Cobweb | ShapeFn::Bifurcation => {
+                problems.error(fractal::whole_row(f));
+                Val::nan()
             }
         }
     }

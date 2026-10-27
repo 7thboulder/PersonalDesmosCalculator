@@ -11,7 +11,7 @@ use graph_core::{
 };
 use graph_expr::format::{exact_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_mode, wgsl, Cache, ColumnInput, Compare, Interval, Mode, Program, RowAnalysis,
+    analyze_mode, wgsl, Cache, ColumnInput, Compare, Fractal, Interval, Mode, Program, RowAnalysis,
     RowInput, RowKind,
 };
 use graph_render::{Frame3, Shading, Test};
@@ -184,6 +184,14 @@ pub struct GraphCurve3 {
     pub width: f32,
 }
 
+/// One fractal row ready to draw.
+pub struct GraphFractal {
+    pub fractal: Fractal,
+    /// A bifurcation diagram's function as WGSL.
+    pub shader: Option<wgsl::Shader>,
+    pub color: [f32; 4],
+}
+
 /// A region's field, in the form graph-core traces.
 struct RegionField<'a>(&'a Program);
 
@@ -211,6 +219,7 @@ pub struct Engine {
     pub points3: Vec<GraphPoints3>,
     pub curves3: Vec<GraphCurve3>,
     pub polygons3: Vec<GraphPolygon3>,
+    pub fractals: Vec<GraphFractal>,
     /// Flat or 3D, as the panel last said.
     pub mode: Mode,
     /// Surface meshes for the current view, by surface and range.
@@ -280,6 +289,7 @@ impl Engine {
         self.points3.clear();
         self.curves3.clear();
         self.polygons3.clear();
+        self.fractals.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -426,6 +436,30 @@ impl Engine {
                     style,
                 });
             }
+            for fractal in &result.fractals {
+                let shader = match fractal {
+                    Fractal::Bifurcation { program, .. } => wgsl::body(program),
+                    _ => None,
+                };
+                self.fractals.push(GraphFractal {
+                    fractal: fractal.clone(),
+                    shader,
+                    color,
+                });
+            }
+            // A cobweb is a path: lines through its points, without dots.
+            for path in &result.paths {
+                self.points.push(GraphPoints {
+                    row: result.id,
+                    points: path.clone(),
+                    color,
+                    size: point_size(row),
+                    style: point_style(row),
+                    dots: false,
+                    line: Some((width, style)),
+                    drag: None,
+                });
+            }
             if !result.points.is_empty() {
                 let mut points = GraphPoints::styled(result.id, result.points.clone(), row);
                 points.drag = result.drag.clone();
@@ -558,6 +592,7 @@ impl Engine {
             + self.surfaces.len()
             + self.points3.len()
             + self.curves3.len()
+            + self.fractals.len()
     }
 
     /// Calls `draw` with a 3D frame of `view` and the 2D overlay (the
@@ -660,6 +695,69 @@ impl Engine {
         draw(&frame, &overlay, text)
     }
 
+    /// What the GPU draws for this frame's fractal rows. `origin` is the
+    /// world position of the target's pixel (0, 0) and `size` the target's
+    /// size in physical pixels. Escape-time sets get a reference orbit
+    /// worked out here in f64, at the middle of the target, which is what
+    /// lets the GPU's f32 zoom in as far as the view's own f64 can.
+    pub fn fractals(
+        &self,
+        origin: [f64; 2],
+        units_per_px: f64,
+        size: (u32, u32),
+    ) -> Vec<graph_render::Fractal> {
+        let reference_px = [size.0 as f64 / 2.0, size.1 as f64 / 2.0];
+        let reference = [
+            origin[0] + reference_px[0] * units_per_px,
+            origin[1] - reference_px[1] * units_per_px,
+        ];
+        let auto_iterations = || {
+            let depth = (4.0 / (units_per_px * size.0.max(1) as f64))
+                .log2()
+                .max(0.0);
+            (250.0 + 150.0 * depth) as u32
+        };
+        self.fractals
+            .iter()
+            .filter_map(|f| {
+                Some(match &f.fractal {
+                    Fractal::Mandelbrot { iterations } | Fractal::Julia { iterations, .. } => {
+                        let iterations = iterations.unwrap_or_else(auto_iterations);
+                        let (orbits, start_len, julia) = match &f.fractal {
+                            Fractal::Julia { c, .. } => {
+                                let mut orbits = orbit(reference, *c, iterations);
+                                let start_len = orbits.len() as u32;
+                                orbits.extend(orbit([0.0, 0.0], *c, iterations));
+                                (orbits, start_len, true)
+                            }
+                            _ => (orbit([0.0, 0.0], reference, iterations), 0, false),
+                        };
+                        graph_render::Fractal::Escape(graph_render::Escape {
+                            orbits,
+                            start_len,
+                            julia,
+                            reference_px: reference_px.map(|v| v as f32),
+                            units_per_px: units_per_px as f32,
+                            iterations,
+                            color: f.color,
+                        })
+                    }
+                    Fractal::Bifurcation { start, .. } => {
+                        let shader = f.shader.as_ref()?;
+                        graph_render::Fractal::Bifurcation(graph_render::Bifurcation {
+                            body: shader.body.clone(),
+                            constants: shader.constants.clone(),
+                            origin: origin.map(|v| v as f32),
+                            units_per_px: units_per_px as f32,
+                            start: *start as f32,
+                            color: f.color,
+                        })
+                    }
+                })
+            })
+            .collect()
+    }
+
     /// What the GPU draws for this frame: the fill inside every inequality
     /// it can evaluate, and the boundary of every solid-styled one.
     /// `origin` is the world position of the target's pixel (0, 0), and
@@ -696,6 +794,21 @@ impl Engine {
             })
             .collect()
     }
+}
+
+/// The orbit of z → z² + c from `z`, in f64, until it escapes or has
+/// taken `iterations` steps.
+fn orbit(mut z: [f64; 2], c: [f64; 2], iterations: u32) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(iterations as usize + 1);
+    out.push(z.map(|v| v as f32));
+    for _ in 0..iterations {
+        z = [z[0] * z[0] - z[1] * z[1] + c[0], 2.0 * z[0] * z[1] + c[1]];
+        out.push(z.map(|v| v as f32));
+        if z[0] * z[0] + z[1] * z[1] > 4096.0 {
+            break;
+        }
+    }
+    out
 }
 
 fn style_color(row: &Value) -> [f32; 4] {
@@ -778,6 +891,7 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "latex": exact_latex(v),
         }))).collect::<Vec<_>>(),
         "lines": !(r.curves.is_empty()
+            && r.paths.is_empty()
             && r.parametrics.is_empty()
             && r.regions.is_empty()
             && r.curves3.is_empty()),
@@ -852,6 +966,56 @@ pub fn parse_color(hex: &str, opacity: f64) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractal_rows_send_reference_orbits_and_cobwebs_draw_as_lines() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "\\operatorname{mandelbrot}\\left(\\right)"},
+            {"id": 2, "latex": "\\operatorname{julia}\\left(-0.8+0.156i,50\\right)"},
+            {"id": 3, "latex": "f\\left(x\\right)=3.7x\\left(1-x\\right)"},
+            {"id": 4, "latex": "\\operatorname{cobweb}\\left(f,0.2,10\\right)"},
+            {"id": 5, "latex": "g\\left(r,x\\right)=rx\\left(1-x\\right)"},
+            {"id": 6, "latex": "\\operatorname{bifurcation}\\left(g\\right)"},
+        ]));
+        assert_eq!(reply[3]["lines"], true);
+        assert_eq!(reply[3]["points"], false);
+        assert_eq!(engine.fractals.len(), 3);
+        let cobweb = &engine.points[0];
+        assert!(!cobweb.dots && cobweb.line.is_some());
+        assert_eq!(cobweb.points.len(), 21);
+
+        // A 200 x 100 target whose middle is (-0.5, 0.25), 0.01 units a pixel.
+        let jobs = engine.fractals([-1.5, 0.75], 0.01, (200, 100));
+        let graph_render::Fractal::Escape(m) = &jobs[0] else {
+            panic!("the Mandelbrot set is an escape-time set")
+        };
+        assert!(!m.julia && m.start_len == 0);
+        assert_eq!(m.reference_px, [100.0, 50.0]);
+        // The orbit of 0 under z² + c for c = -0.5 + 0.25i.
+        assert_eq!(m.orbits[0], [0.0, 0.0]);
+        assert_eq!(m.orbits[1], [-0.5, 0.25]);
+        assert_eq!(
+            m.orbits[2],
+            [(0.25 - 0.0625 - 0.5) as f32, (-0.25 + 0.25) as f32]
+        );
+        assert!(m.iterations >= 250, "more iterations as the view narrows");
+        let graph_render::Fractal::Escape(j) = &jobs[1] else {
+            panic!("a Julia set is an escape-time set")
+        };
+        // The reference point's orbit, then the orbit of 0.
+        assert!(j.julia && j.iterations == 50);
+        assert_eq!(j.orbits[0], [-0.5, 0.25]);
+        assert_eq!(j.orbits[j.start_len as usize], [0.0, 0.0]);
+        assert!(matches!(&jobs[2], graph_render::Fractal::Bifurcation(b) if b.start == 0.5));
+
+        // Deeper views get more iterations.
+        let deep = engine.fractals([-1.5, 0.75], 1e-14, (200, 100));
+        let graph_render::Fractal::Escape(d) = &deep[0] else {
+            unreachable!()
+        };
+        assert!(d.iterations > 4 * m.iterations);
+    }
 
     #[test]
     fn polygons_draw_and_actions_name_their_rows() {

@@ -29,7 +29,8 @@
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
-      'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg'
+      'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
+      'mandelbrot julia cobweb bifurcation'
   };
 
   // Desmos subscripts hold only letters and digits, so typing anything else
@@ -1240,7 +1241,8 @@
       ['\u222b', 'c:\\int'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
     ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
-    ['COMPLEX', named('real imag conj arg')]
+    ['COMPLEX', named('real imag conj arg')],
+    ['FRACTALS', named('mandelbrot julia cobweb bifurcation')]
   ];
 
   var keypad = document.getElementById('keypad');
@@ -1450,7 +1452,12 @@
       ['3+2i,\\ e^{i\\pi}', 'i is the imaginary unit'],
       ['\\operatorname{real}\\left(z\\right)', 'Also imag'],
       ['\\operatorname{conj}\\left(z\\right)', 'Conjugate'],
-      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]]
+      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]],
+    ['FRACTALS AND ITERATION', [
+      ['\\operatorname{mandelbrot}\\left(\\right)', 'Mandelbrot set, sharp however far you zoom; mandelbrot(n) sets the iterations'],
+      ['\\operatorname{julia}\\left(-0.8+0.156i\\right)', 'Julia set of z^2+c; julia(c, n) sets the iterations'],
+      ['\\operatorname{cobweb}\\left(f,0.2,30\\right)', 'Cobweb of x \u2192 f(x) from 0.2, 30 steps; f(x) = \u2026 on its own row'],
+      ['\\operatorname{bifurcation}\\left(f,0.5\\right)', 'Where x \u2192 f(r, x) settles, r along the x axis; f(r, x) = \u2026 on its own row']]]
   ];
 
   var shortcuts = document.getElementById('shortcuts');

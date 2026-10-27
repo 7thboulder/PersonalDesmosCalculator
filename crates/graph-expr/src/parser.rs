@@ -662,6 +662,11 @@ impl Parser {
             if self.peek() != Some(&Tok::LParen) {
                 return Err(format!("Function '{name}' needs parentheses"));
             }
+            // `mandelbrot()` needs nothing more.
+            if shape == ShapeFn::Mandelbrot && self.toks.get(self.pos + 1) == Some(&Tok::RParen) {
+                self.pos += 2;
+                return Ok(Expr::Shape(shape, Vec::new()));
+            }
             return Ok(Expr::Shape(shape, self.paren_args()?));
         }
         let mut builtin =
