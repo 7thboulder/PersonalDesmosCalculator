@@ -9,6 +9,7 @@ pub mod scene;
 pub mod shader;
 pub mod tess;
 pub mod text;
+pub mod three;
 pub mod viewport;
 
 pub use implicit::{trace_implicit, Field};
@@ -23,4 +24,5 @@ pub use scene::{
 };
 pub use tess::{LineStyle, Vertex};
 pub use text::TextAtlas;
+pub use three::{Mesh, View3};
 pub use viewport::Viewport;

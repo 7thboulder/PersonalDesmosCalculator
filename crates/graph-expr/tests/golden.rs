@@ -901,3 +901,54 @@ fn long_list_arithmetic_is_compiled_exactly() {
     assert!(complex.error.is_none(), "{complex:?}");
     assert!(complex.points.is_empty());
 }
+
+fn rows_3d(latex: &[&str]) -> Vec<RowAnalysis> {
+    let input: Vec<RowInput> = latex
+        .iter()
+        .enumerate()
+        .map(|(i, l)| RowInput {
+            id: i as u64,
+            latex: l.to_string(),
+            ..Default::default()
+        })
+        .collect();
+    graph_expr::analyze_mode(&input, &mut Cache::default(), graph_expr::Mode::ThreeD)
+}
+
+#[test]
+fn three_d_surfaces() {
+    let r = rows_3d(&[
+        "z=x^2-y^2",
+        "\\sin\\left(x\\right)\\cos\\left(y\\right)=z",
+        "a=2",
+        "z=ar",
+        "x^2+y^2",
+        "z=\\left[1,2\\right]",
+        "1+1",
+        "z=b",
+        "y=x^2",
+        "\\left(1,2\\right)",
+        "x+z",
+    ]);
+    let at = |i: usize, x: f64, y: f64| r[i].surfaces[0].program.eval2(x, y);
+    assert!(close(at(0, 3.0, 1.0), 8.0));
+    assert!(close(at(1, 1.0, 0.0), 1f64.sin()));
+    assert_eq!(r[2].slider, Some(2.0), "variables still work");
+    assert!(
+        close(at(3, 3.0, 4.0), 10.0),
+        "r is the distance from the z axis"
+    );
+    assert!(close(at(4, 1.0, 2.0), 5.0), "a bare expression is z = …");
+    assert_eq!(r[5].surfaces.len(), 2, "one surface per list element");
+    assert_eq!(r[6].value, Some(Value::Number(2.0)));
+    assert_eq!(r[7].missing, vec!["b".to_string()]);
+    for i in [8, 9, 10] {
+        assert!(
+            r[i].error.is_some() && !r[i].graphed(),
+            "row {i}: {:?}",
+            r[i]
+        );
+    }
+    // In 2D the same z = … defines a variable.
+    assert_eq!(rows(&["z=3"])[0].kind, RowKind::Variable("z".into()));
+}

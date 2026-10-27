@@ -72,6 +72,13 @@ pub struct Parametric {
     pub domain: (f64, f64),
 }
 
+/// A surface `z = f(x, y)` in a 3D graph. The program reads x as
+/// `Arg::X` and y as `Arg::Y`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Surface {
+    pub program: Program,
+}
+
 /// How a relation compares its two sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compare {
@@ -172,6 +179,8 @@ pub struct RowAnalysis {
     pub parametrics: Vec<Parametric>,
     /// Implicit equations and inequalities to plot over the plane.
     pub regions: Vec<Region>,
+    /// Surfaces over the xy plane, in a 3D graph.
+    pub surfaces: Vec<Surface>,
     /// Fixed points to draw.
     pub points: Vec<[f64; 2]>,
     /// Filled polygons to draw, each a list of vertices.
@@ -215,6 +224,7 @@ impl RowAnalysis {
             curves: Vec::new(),
             parametrics: Vec::new(),
             regions: Vec::new(),
+            surfaces: Vec::new(),
             points: Vec::new(),
             polygons: Vec::new(),
             updates: Vec::new(),
@@ -255,6 +265,7 @@ impl RowAnalysis {
         !(self.curves.is_empty()
             && self.parametrics.is_empty()
             && self.regions.is_empty()
+            && self.surfaces.is_empty()
             && self.points.is_empty()
             && self.polygons.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
@@ -787,9 +798,23 @@ pub fn analyze(rows: &[RowInput]) -> Vec<RowAnalysis> {
     analyze_cached(rows, &mut Cache::default())
 }
 
+/// Whether rows are read for a flat graph or a 3D one, where z is a graph
+/// variable and `z = f(x, y)` is a surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Flat,
+    ThreeD,
+}
+
 /// As `analyze`, reusing variable values from `cache` where nothing they
 /// depend on has changed, and leaving this analysis's values in it.
 pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> {
+    analyze_mode(rows, cache, Mode::Flat)
+}
+
+/// As `analyze_cached`, for a graph in the given mode.
+pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<RowAnalysis> {
     let parsed: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| (r.table.is_none() && !r.latex.trim().is_empty()).then(|| parse(&r.latex)))
@@ -803,7 +828,9 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
     let mut defs: Vec<Option<Result<Def, String>>> = parsed
         .iter()
         .map(|p| match p {
-            Some(Ok(statement)) => definition(statement),
+            // In 3D, z = … is a surface rather than a variable.
+            Some(Ok(statement)) => definition(statement)
+                .filter(|d| !(mode == Mode::ThreeD && matches!(d, Ok(Def::Var(n, _)) if n == "z"))),
             _ => None,
         })
         .collect();
@@ -848,6 +875,7 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
         old: std::mem::take(cache),
         new: Cache::default(),
         recording: Vec::new(),
+        mode,
     };
     for table in tables.iter().flatten() {
         for column in &table.columns {
@@ -946,12 +974,42 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
             if out.error.is_none() && out.points.len() == 1 {
                 out.drag = point.and_then(|e| env.drag_of(&e));
             }
+            if mode == Mode::ThreeD {
+                flat_only(&mut out);
+            }
             out
         })
         .collect::<Vec<_>>();
     env.new.funcs = std::mem::take(&mut env.funcs);
     *cache = std::mem::take(&mut env.new);
     results
+}
+
+/// In a 3D graph, drops what only a flat graph can draw (curves, points,
+/// shading) and says so on the row.
+fn flat_only(row: &mut RowAnalysis) {
+    let flat = !(row.curves.is_empty()
+        && row.parametrics.is_empty()
+        && row.regions.is_empty()
+        && row.points.is_empty()
+        && row.polygons.is_empty()
+        && row.columns.iter().all(|c| c.points.is_empty()));
+    if !flat {
+        return;
+    }
+    row.curves.clear();
+    row.parametrics.clear();
+    row.regions.clear();
+    row.points.clear();
+    row.polygons.clear();
+    row.drag = None;
+    row.parameter = None;
+    for column in &mut row.columns {
+        column.points.clear();
+    }
+    if row.error.is_none() {
+        row.error = Some("3D graphs can't draw this yet".into());
+    }
 }
 
 fn def_name(def: &Def) -> &str {
@@ -1138,6 +1196,7 @@ struct Env {
     new: Cache,
     /// What each value being worked out has read so far, innermost last.
     recording: Vec<Vec<Read>>,
+    mode: Mode,
 }
 
 /// A value's constants as bits, to key remembered function calls; None
@@ -1390,6 +1449,9 @@ impl Env {
 
     fn other_row(&mut self, input: &RowInput, statement: &Statement) -> RowAnalysis {
         let id = input.id;
+        if self.mode == Mode::ThreeD {
+            return self.other_row_3d(input, statement);
+        }
         match statement {
             Statement::Relation(lhs, Relation::Eq, rhs) => {
                 let (lhs_x, lhs_y) = (lhs.mentions("x"), lhs.mentions("y"));
@@ -1426,6 +1488,60 @@ impl Env {
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
             Statement::Expr(e) => self.expression_row(input, e),
         }
+    }
+
+    /// A row of a 3D graph that defines nothing: `z = f(x, y)` (either way
+    /// round) or a bare expression in x and y is a surface, and anything
+    /// without a graph variable is a value or points as in 2D.
+    fn other_row_3d(&mut self, input: &RowInput, statement: &Statement) -> RowAnalysis {
+        let id = input.id;
+        let spatial = |e: &Expr| ["x", "y", "z", "r", "theta"].iter().any(|v| e.mentions(v));
+        match statement {
+            Statement::Relation(lhs, Relation::Eq, rhs)
+                if is_var(lhs, "z") && !rhs.mentions("z") =>
+            {
+                self.surface_row(id, rhs)
+            }
+            Statement::Relation(lhs, Relation::Eq, rhs)
+                if is_var(rhs, "z") && !lhs.mentions("z") =>
+            {
+                self.surface_row(id, lhs)
+            }
+            Statement::Expr(e) if e.mentions("z") => RowAnalysis {
+                kind: RowKind::NotYet,
+                ..RowAnalysis::error(id, "Try writing this as z = …")
+            },
+            Statement::Expr(e) if spatial(e) && !self.is_parametric(e) => self.surface_row(id, e),
+            Statement::Expr(e) => self.expression_row(input, e),
+            _ => RowAnalysis {
+                kind: RowKind::NotYet,
+                ..RowAnalysis::error(id, "3D graphs can only draw z = f(x, y) so far")
+            },
+        }
+    }
+
+    /// Whether a bare expression is a point that moves with t.
+    fn is_parametric(&mut self, e: &Expr) -> bool {
+        let mut probe = Problems::default();
+        let val = self.lower(e, &HashMap::new(), &[("t", Arg::X)], &mut probe);
+        val.has_points()
+    }
+
+    /// `z = f(x, y)`, one surface per list element. r and θ are measured
+    /// around the z axis, so `z = r` is a cone.
+    fn surface_row(&mut self, id: u64, expr: &Expr) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        let mut problems = Problems::default();
+        let val = self.lower_plane(expr, &mut problems);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_none() && val.has_points() {
+            row.error = Some("z can't equal a point".into());
+        }
+        if row.error.is_none() {
+            row.surfaces = compile_all(&val, &mut row.error, |program| Surface { program });
+        }
+        row
     }
 
     /// A bare expression: a curve in x, a point or list of points, a

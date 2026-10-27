@@ -11,6 +11,9 @@
   <div id="topbar">
     <button id="menu" class="icon" title="Graph menu">&#x2630;</button>
     <button id="add" class="icon" title="Add item">+</button>
+    <div id="mode" title="Graph in 2D or 3D">
+      <button data-mode="2d" class="on">2D</button><button data-mode="3d">3D</button>
+    </div>
     <span class="spacer"></span>
     <button id="undo" class="icon" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
     <button id="redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
@@ -92,6 +95,13 @@
       <tr><td>Backspace in an empty row</td><td>Delete it</td></tr>
       <tr><td>Esc</td><td>Leave the expression list</td></tr>
       <tr><td>Ctrl+/</td><td>This list</td></tr>
+    </table>
+    <h2>3D graphs</h2>
+    <table>
+      <tr><td>2D / 3D at the top</td><td>Switch this graph between 2D and 3D</td></tr>
+      <tr><td>Drag</td><td>Turn the box</td></tr>
+      <tr><td>Shift+drag</td><td>Slide what the box shows</td></tr>
+      <tr><td>Scroll wheel</td><td>Zoom in or out</td></tr>
     </table>
     <h2>Typing</h2>
     <table>

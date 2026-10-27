@@ -1,0 +1,587 @@
+//! 3D graphs, as Desmos 3D draws them: a cube (the box) showing a range of
+//! x, y and z, seen from a camera that orbits it. Everything is built in box
+//! coordinates, where the box runs from -1 to 1 along each axis, so turning
+//! the camera only changes the matrix and nothing has to be rebuilt.
+
+use crate::grid::{grid_spacing, line_indices};
+use crate::scene::axis_label;
+use crate::tess::Vertex;
+use crate::text::TextAtlas;
+use bytemuck::{Pod, Zeroable};
+
+/// How far the camera sits from the centre of the box, in box units. Far
+/// enough that the perspective is gentle.
+const EYE_DISTANCE: f64 = 7.0;
+/// The box's half width on screen, as a share of the smaller side of the
+/// graph area, at the depth of its centre.
+const BOX_SCREEN: f64 = 0.29;
+/// Desmos 3D's starting view: x toward the viewer and to the left, y to the
+/// right, z up, seen from a little above.
+const DEFAULT_YAW: f64 = 0.62;
+const DEFAULT_PITCH: f64 = 0.42;
+/// Turn per pixel dragged, in radians.
+const TURN_PER_PX: f64 = 0.008;
+
+const EDGE: [f32; 4] = rgb(0xb4, 0xb4, 0xb4);
+const GRID: [f32; 4] = rgb(0xdd, 0xdd, 0xdd);
+const AXIS: [f32; 4] = rgb(0x55, 0x55, 0x55);
+const LABEL: [f32; 4] = rgb(0x1a, 0x1a, 0x1a);
+const LABEL_SIZE: f32 = 13.0;
+const NAME_SIZE: f32 = 17.0;
+const LABEL_HALO: f32 = 2.0;
+
+const fn rgb(r: u8, g: u8, b: u8) -> [f32; 4] {
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+}
+
+/// What a 3D graph shows and from where.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct View3 {
+    /// The point at the centre of the box.
+    pub center: [f64; 3],
+    /// Half the box's extent along each axis, in graph units.
+    pub half: [f64; 3],
+    /// The camera's turn about the z axis, measured from the x axis.
+    pub yaw: f64,
+    /// The camera's height above the xy plane, as an angle.
+    pub pitch: f64,
+    pub width_px: f64,
+    pub height_px: f64,
+}
+
+impl View3 {
+    /// Desmos 3D's starting view: -10 to 10 on every axis.
+    pub fn new(width_px: f64, height_px: f64) -> Self {
+        Self {
+            center: [0.0; 3],
+            half: [10.0; 3],
+            yaw: DEFAULT_YAW,
+            pitch: DEFAULT_PITCH,
+            width_px,
+            height_px,
+        }
+    }
+
+    pub fn resize(&mut self, width_px: f64, height_px: f64) {
+        self.width_px = width_px;
+        self.height_px = height_px;
+    }
+
+    /// A graph point in box coordinates.
+    pub fn to_box(&self, p: [f64; 3]) -> [f64; 3] {
+        [0, 1, 2].map(|i| (p[i] - self.center[i]) / self.half[i])
+    }
+
+    /// The camera's axes in box coordinates: screen right, screen up, and
+    /// toward the camera.
+    fn axes(&self) -> [[f64; 3]; 3] {
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let toward = [cp * cy, cp * sy, sp];
+        let right = [-sy, cy, 0.0];
+        let up = cross(toward, right);
+        [right, up, toward]
+    }
+
+    /// The direction toward the camera, in box coordinates.
+    pub fn toward(&self) -> [f64; 3] {
+        self.axes()[2]
+    }
+
+    /// Pixels per box unit at the depth of the box's centre.
+    fn pixels_per_unit(&self) -> f64 {
+        BOX_SCREEN * self.width_px.min(self.height_px)
+    }
+
+    /// The matrix from box coordinates to clip space, by rows. Depth runs
+    /// from 0 just in front of the box to 1 just behind it.
+    pub fn matrix(&self) -> [[f32; 4]; 4] {
+        let [right, up, toward] = self.axes();
+        let focal = self.pixels_per_unit() * EYE_DISTANCE;
+        let sx = focal / (self.width_px.max(1.0) / 2.0);
+        let sy = focal / (self.height_px.max(1.0) / 2.0);
+        let (near, far) = (EYE_DISTANCE - 2.0, EYE_DISTANCE + 2.0);
+        let a = far / (far - near);
+        let b = -far * near / (far - near);
+        let row = |v: [f64; 3], k: f64, w: f64| {
+            [
+                (v[0] * k) as f32,
+                (v[1] * k) as f32,
+                (v[2] * k) as f32,
+                w as f32,
+            ]
+        };
+        [
+            row(right, sx, 0.0),
+            row(up, sy, 0.0),
+            row(toward, -a, a * EYE_DISTANCE + b),
+            row(toward, -1.0, EYE_DISTANCE),
+        ]
+    }
+
+    /// Where a box point lands in graph-area pixels.
+    pub fn project(&self, b: [f64; 3]) -> [f64; 2] {
+        let [right, up, toward] = self.axes();
+        let depth = EYE_DISTANCE - dot(b, toward);
+        let k = self.pixels_per_unit() * EYE_DISTANCE / depth;
+        [
+            self.width_px / 2.0 + dot(b, right) * k,
+            self.height_px / 2.0 - dot(b, up) * k,
+        ]
+    }
+
+    /// Turns the camera for a drag of (`dx`, `dy`) pixels, as Desmos does:
+    /// sideways turns about the z axis and up and down tilts, stopping at
+    /// straight overhead and straight below.
+    pub fn turn_px(&mut self, dx: f64, dy: f64) {
+        self.yaw = (self.yaw - dx * TURN_PER_PX).rem_euclid(std::f64::consts::TAU);
+        let limit = std::f64::consts::FRAC_PI_2;
+        self.pitch = (self.pitch + dy * TURN_PER_PX).clamp(-limit, limit);
+    }
+
+    /// Slides the box's contents with the mouse, across the screen.
+    pub fn pan_px(&mut self, dx: f64, dy: f64) {
+        let [right, up, _] = self.axes();
+        let k = 1.0 / self.pixels_per_unit();
+        for i in 0..3 {
+            self.center[i] -= (right[i] * dx - up[i] * dy) * k * self.half[i];
+        }
+    }
+
+    /// Shows `factor` times closer (more than 1 zooms in): the box keeps
+    /// its size and shows a smaller range.
+    pub fn zoom(&mut self, factor: f64) {
+        if factor.is_finite() && factor > 0.0 {
+            for h in &mut self.half {
+                *h = (*h / factor).clamp(1e-12, 1e12);
+            }
+        }
+    }
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// One vertex of a surface, in box coordinates.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Vertex3 {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [f32; 4],
+}
+
+/// Triangles sharing vertices.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mesh {
+    pub vertices: Vec<Vertex3>,
+    pub indices: Vec<u32>,
+}
+
+/// Samples along each side of the box for a surface.
+pub const SURFACE_SAMPLES: usize = 160;
+/// How far past the box a surface's height is kept before it is cut off;
+/// the GPU trims everything outside the box.
+const HEIGHT_LIMIT: f64 = 4.0;
+
+/// The surface `z = f(x, y)` over the box, as a grid of `n` by `n` cells.
+/// Cells where f is undefined are left out.
+pub fn surface_mesh(
+    view: &View3,
+    f: &(dyn Fn(f64, f64) -> f64 + Sync),
+    color: [f32; 4],
+    n: usize,
+) -> Mesh {
+    let n = n.max(2);
+    let side = n + 1;
+    let step = 2.0 / n as f64;
+    // The height in box units over a box point, NaN where undefined.
+    let height = |bx: f64, by: f64| {
+        let x = view.center[0] + bx * view.half[0];
+        let y = view.center[1] + by * view.half[1];
+        let z = (f(x, y) - view.center[2]) / view.half[2];
+        if z.is_finite() {
+            z.clamp(-HEIGHT_LIMIT, HEIGHT_LIMIT)
+        } else {
+            f64::NAN
+        }
+    };
+    let height = &height;
+    let mut heights = vec![f64::NAN; side * side];
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let rows_each = side.div_ceil(threads.clamp(1, 16));
+    std::thread::scope(|scope| {
+        for (chunk, rows) in heights.chunks_mut(rows_each * side).enumerate() {
+            scope.spawn(move || {
+                for (k, h) in rows.iter_mut().enumerate() {
+                    let (j, i) = (chunk * rows_each + k / side, k % side);
+                    *h = height(-1.0 + i as f64 * step, -1.0 + j as f64 * step);
+                }
+            });
+        }
+    });
+
+    let at = |i: usize, j: usize| heights[j * side + i];
+    // The slope from neighbours on both sides where they are defined.
+    let slope = |i: usize, j: usize, di: usize, dj: usize| -> f64 {
+        let here = at(i, j);
+        let before = (i >= di && j >= dj).then(|| at(i - di, j - dj));
+        let after = (i + di < side && j + dj < side).then(|| at(i + di, j + dj));
+        match (
+            before.filter(|v| v.is_finite()),
+            after.filter(|v| v.is_finite()),
+        ) {
+            (Some(b), Some(a)) => (a - b) / (2.0 * step),
+            (Some(b), None) => (here - b) / step,
+            (None, Some(a)) => (a - here) / step,
+            (None, None) => 0.0,
+        }
+    };
+    let mut mesh = Mesh::default();
+    let mut index = vec![u32::MAX; side * side];
+    for j in 0..side {
+        for i in 0..side {
+            let z = at(i, j);
+            if !z.is_finite() {
+                continue;
+            }
+            let (dx, dy) = (slope(i, j, 1, 0), slope(i, j, 0, 1));
+            let len = (dx * dx + dy * dy + 1.0).sqrt();
+            index[j * side + i] = mesh.vertices.len() as u32;
+            mesh.vertices.push(Vertex3 {
+                pos: [
+                    (-1.0 + i as f64 * step) as f32,
+                    (-1.0 + j as f64 * step) as f32,
+                    z as f32,
+                ],
+                normal: [(-dx / len) as f32, (-dy / len) as f32, (1.0 / len) as f32],
+                color,
+            });
+        }
+    }
+    for j in 0..n {
+        for i in 0..n {
+            // Corners in order around the cell.
+            let corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+            let ids = corners.map(|(i, j)| index[j * side + i]);
+            let defined = ids.iter().filter(|&&v| v != u32::MAX).count();
+            if defined == 4 {
+                mesh.indices
+                    .extend([ids[0], ids[1], ids[3], ids[1], ids[2], ids[3]]);
+                continue;
+            }
+            if defined == 0 {
+                continue;
+            }
+            // Where the surface stops partway across the cell, as it does
+            // at the rim of a hemisphere, find where along each edge it
+            // stops, so the rim is smooth rather than stepped.
+            let mut polygon: Vec<u32> = Vec::with_capacity(6);
+            for k in 0..4 {
+                let (here, next) = (ids[k], ids[(k + 1) % 4]);
+                if here != u32::MAX {
+                    polygon.push(here);
+                }
+                if (here == u32::MAX) == (next == u32::MAX) {
+                    continue;
+                }
+                let (inside, outside) = if here != u32::MAX {
+                    (corners[k], corners[(k + 1) % 4])
+                } else {
+                    (corners[(k + 1) % 4], corners[k])
+                };
+                let point =
+                    |c: (usize, usize)| [-1.0 + c.0 as f64 * step, -1.0 + c.1 as f64 * step];
+                let (mut good, mut bad) = (point(inside), point(outside));
+                let mut z = at(inside.0, inside.1);
+                for _ in 0..10 {
+                    let mid = [(good[0] + bad[0]) / 2.0, (good[1] + bad[1]) / 2.0];
+                    let h = height(mid[0], mid[1]);
+                    if h.is_finite() {
+                        good = mid;
+                        z = h;
+                    } else {
+                        bad = mid;
+                    }
+                }
+                let near = mesh.vertices[index[inside.1 * side + inside.0] as usize];
+                polygon.push(mesh.vertices.len() as u32);
+                mesh.vertices.push(Vertex3 {
+                    pos: [good[0] as f32, good[1] as f32, z as f32],
+                    ..near
+                });
+            }
+            for k in 1..polygon.len().saturating_sub(1) {
+                mesh.indices
+                    .extend([polygon[0], polygon[k], polygon[k + 1]]);
+            }
+        }
+    }
+    mesh
+}
+
+/// One corner of a line segment's quad. The GPU projects both ends and
+/// pushes this corner out sideways by half the width, so lines keep their
+/// width in pixels however the box is turned.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct LineVertex {
+    pub a: [f32; 3],
+    /// Which end this corner belongs to: 0 for `a`, 1 for `b`.
+    pub end: f32,
+    pub b: [f32; 3],
+    /// Which side of the line: -1 or 1.
+    pub side: f32,
+    pub color: [f32; 4],
+    pub width: f32,
+    pub _pad: [f32; 3],
+}
+
+fn segment(a: [f64; 3], b: [f64; 3], width: f32, color: [f32; 4], out: &mut Vec<LineVertex>) {
+    let a = a.map(|v| v as f32);
+    let b = b.map(|v| v as f32);
+    for (end, side) in [
+        (0.0, -1.0),
+        (0.0, 1.0),
+        (1.0, -1.0),
+        (1.0, -1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        out.push(LineVertex {
+            a,
+            end,
+            b,
+            side,
+            color,
+            width,
+            _pad: [0.0; 3],
+        });
+    }
+}
+
+/// Grid steps along each axis, in graph units: a 1-2-5 step giving about
+/// six numbers across the box.
+pub fn steps(view: &View3) -> [f64; 3] {
+    view.half.map(|h| grid_spacing(2.0 * h / 6.0, 1.0).major)
+}
+
+/// The box's frame: its twelve edges, a grid over the xy plane, and the
+/// three axes through the origin, where they pass through the box.
+pub fn box_lines(view: &View3, scale: f32) -> Vec<LineVertex> {
+    let mut out = Vec::new();
+    let s = |v: f64| if v < 0.5 { -1.0 } else { 1.0 };
+    for k in 0..12 {
+        // Edges along axis k / 4, at the other two coordinates' corners.
+        let (axis, corner) = (k / 4, k % 4);
+        let (u, v) = (s((corner & 1) as f64), s((corner >> 1) as f64));
+        let mut a = [0.0; 3];
+        let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
+        a[p] = u;
+        a[q] = v;
+        let mut b = a;
+        a[axis] = -1.0;
+        b[axis] = 1.0;
+        segment(a, b, 1.0 * scale, EDGE, &mut out);
+    }
+    let origin = view.to_box([0.0; 3]);
+    let inside = |v: f64| (-1.0..=1.0).contains(&v);
+    let step = steps(view);
+    if inside(origin[2]) {
+        for (axis, other) in [(0, 1), (1, 0)] {
+            let lo = view.center[axis] - view.half[axis];
+            let hi = view.center[axis] + view.half[axis];
+            for i in line_indices(lo, hi, step[axis]) {
+                let mut a = [0.0, 0.0, origin[2]];
+                a[axis] = (i as f64 * step[axis] - view.center[axis]) / view.half[axis];
+                let mut b = a;
+                a[other] = -1.0;
+                b[other] = 1.0;
+                segment(a, b, 1.0 * scale, GRID, &mut out);
+            }
+        }
+    }
+    for axis in 0..3 {
+        let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
+        if inside(origin[p]) && inside(origin[q]) {
+            let mut a = origin;
+            let mut b = origin;
+            a[axis] = -1.0;
+            b[axis] = 1.0;
+            segment(a, b, 1.5 * scale, AXIS, &mut out);
+        }
+    }
+    out
+}
+
+/// Numbers along each axis and the axes' names, as 2D triangles over the
+/// graph area. They are placed by projecting, so they are rebuilt whenever
+/// the camera turns.
+pub fn box_labels(view: &View3, scale: f32, text: &mut TextAtlas) -> Vec<Vertex> {
+    let mut out = Vec::new();
+    if !text.has_font() {
+        return out;
+    }
+    let origin = view.to_box([0.0; 3]);
+    let inside = |v: f64| (-1.0..=1.0).contains(&v);
+    let size = (LABEL_SIZE * scale).round();
+    let halo = LABEL_HALO * scale;
+    let step = steps(view);
+    let centre = |text: &mut TextAtlas, s: &str, size: f32, at: [f64; 2], out: &mut Vec<Vertex>| {
+        let w = text.measure(s, size);
+        let x = at[0] as f32 - w / 2.0;
+        let baseline = at[1] as f32 + size * 0.36;
+        text.draw(s, size, halo, x, baseline, LABEL, out);
+    };
+    for axis in 0..3 {
+        let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
+        // Along the axis when it is in the box, otherwise along the edge
+        // of the box nearest to where it would be.
+        let mut base = origin;
+        base[p] = base[p].clamp(-1.0, 1.0);
+        base[q] = base[q].clamp(-1.0, 1.0);
+        let lo = view.center[axis] - view.half[axis];
+        let hi = view.center[axis] + view.half[axis];
+        // Leave room at the ends for the axis's name.
+        for i in line_indices(lo, hi, step[axis]) {
+            if i == 0 && inside(origin[p]) && inside(origin[q]) {
+                continue;
+            }
+            let mut b = base;
+            b[axis] = (i as f64 * step[axis] - view.center[axis]) / view.half[axis];
+            if b[axis].abs() > 0.97 {
+                continue;
+            }
+            let (label, exponent) = axis_label(i, step[axis]);
+            let label = match exponent {
+                Some(e) => format!("{label}^{e}"),
+                None => label,
+            };
+            let at = view.project(b);
+            let offset = 10.0 * scale as f64;
+            centre(
+                text,
+                &label,
+                size,
+                [at[0] + offset, at[1] + offset],
+                &mut out,
+            );
+        }
+        let mut end = base;
+        end[axis] = 1.12;
+        let name = ["x", "y", "z"][axis];
+        centre(
+            text,
+            name,
+            (NAME_SIZE * scale).round(),
+            view.project(end),
+            &mut out,
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(m: &[[f32; 4]; 4], b: [f64; 3]) -> [f64; 4] {
+        m.map(|r| r[0] as f64 * b[0] + r[1] as f64 * b[1] + r[2] as f64 * b[2] + r[3] as f64)
+    }
+
+    #[test]
+    fn matrix_and_projection_agree() {
+        let mut v = View3::new(800.0, 600.0);
+        v.turn_px(37.0, -12.0);
+        let m = v.matrix();
+        for b in [[0.0, 0.0, 0.0], [1.0, -1.0, 1.0], [-1.0, 0.5, -1.0]] {
+            let c = clip(&m, b);
+            let px = [
+                (c[0] / c[3] + 1.0) / 2.0 * 800.0,
+                (1.0 - c[1] / c[3]) / 2.0 * 600.0,
+            ];
+            let p = v.project(b);
+            assert!((px[0] - p[0]).abs() < 1e-3 && (px[1] - p[1]).abs() < 1e-3);
+            let depth = c[2] / c[3];
+            assert!((0.0..=1.0).contains(&depth), "depth {depth} for {b:?}");
+        }
+        // The centre of the box is in the middle of the graph area.
+        assert_eq!(v.project([0.0; 3]), [400.0, 300.0]);
+    }
+
+    #[test]
+    fn default_view_has_x_toward_the_viewer_and_z_up() {
+        let v = View3::new(600.0, 600.0);
+        let [ox, oy] = v.project([0.0; 3]);
+        let x = v.project([1.0, 0.0, 0.0]);
+        let y = v.project([0.0, 1.0, 0.0]);
+        let z = v.project([0.0, 0.0, 1.0]);
+        assert!(x[0] < ox && x[1] > oy, "x comes down and to the left");
+        assert!(y[0] > ox, "y goes right");
+        assert!(z[1] < oy && (z[0] - ox).abs() < 1e-9, "z goes straight up");
+    }
+
+    #[test]
+    fn zoom_and_pan_change_the_range_not_the_box() {
+        let mut v = View3::new(600.0, 600.0);
+        v.zoom(2.0);
+        assert_eq!(v.half, [5.0; 3]);
+        // Dragging right moves the contents right: the centre moves the
+        // other way along screen right. A point at the depth of the box's
+        // centre keeps up with the mouse exactly.
+        let before = v.project(v.to_box([0.0, 0.0, 0.0]));
+        v.pan_px(30.0, 0.0);
+        let after = v.project(v.to_box([0.0, 0.0, 0.0]));
+        assert!(
+            (after[0] - before[0] - 30.0).abs() < 2.0,
+            "{before:?} {after:?}"
+        );
+    }
+
+    #[test]
+    fn surface_mesh_follows_the_function() {
+        let v = View3::new(600.0, 600.0);
+        let f = |x: f64, y: f64| x * y / 10.0;
+        let mesh = surface_mesh(&v, &f, [1.0; 4], 10);
+        assert_eq!(mesh.vertices.len(), 121);
+        assert_eq!(mesh.indices.len(), 10 * 10 * 6);
+        // The corner (10, 10) has z = 10, the top of the box.
+        let corner = mesh.vertices.last().unwrap();
+        assert_eq!(corner.pos, [1.0, 1.0, 1.0]);
+        // Normals point up and are unit length.
+        for p in &mesh.vertices {
+            let n = p.normal;
+            assert!(n[2] > 0.0);
+            assert!(((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) - 1.0).abs() < 1e-5);
+        }
+        // Holes where f is undefined: sqrt of a negative. The column of
+        // cells left of x = 0 is filled up to the edge of the hole.
+        let g = |x: f64, _: f64| x.sqrt();
+        let half = surface_mesh(&v, &g, [1.0; 4], 11);
+        let defined = half.vertices.iter().filter(|p| p.pos[0] >= 0.0).count();
+        // Each cell crossing the edge adds a point on its top and bottom.
+        assert_eq!(defined, 6 * 12 + 2 * 11);
+        let left = half.vertices.iter().map(|p| p.pos[0]).fold(1.0, f32::min);
+        assert!(left.abs() < 1e-3, "filled to x = 0: {left}");
+    }
+
+    #[test]
+    fn frame_has_edges_grid_and_axes() {
+        let v = View3::new(600.0, 600.0);
+        let lines = box_lines(&v, 1.0);
+        // 12 edges, 5 grid lines each way at step 5 (-10 to 10), 3 axes.
+        assert_eq!(lines.len(), (12 + 10 + 3) * 6);
+        let mut text = TextAtlas::system();
+        let labels = box_labels(&v, 1.0, &mut text);
+        assert!(!text.has_font() || !labels.is_empty());
+    }
+}
