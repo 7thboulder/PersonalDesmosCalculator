@@ -27,6 +27,23 @@ html, body {
   border-bottom: 1px solid #ccc;
 }
 #topbar .spacer { flex: 1; }
+#mode {
+  display: flex;
+  margin-left: 6px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  overflow: hidden;
+}
+#mode button {
+  border: 0;
+  padding: 4px 9px;
+  background: #fff;
+  color: #555;
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+#mode button + button { border-left: 1px solid #c4c4c4; }
+#mode button.on { background: #2f72b3; color: #fff; }
 button.icon {
   width: 32px;
   height: 32px;

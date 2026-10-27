@@ -15,7 +15,7 @@ graphcalc (Phase 1 preview)
 USAGE:
     graphcalc [FILE]                   open the calculator window, with a
                                        saved graph if one is given
-    graphcalc --render-png FILE [WxH] [LATEX...] [--select=N] [--hover=X,Y]
+    graphcalc --render-png FILE [WxH] [LATEX...] [--select=N] [--hover=X,Y] [--3d]
                                        graph the LaTeX rows (default y=sin x)
                                        offscreen to a PNG and exit
     graphcalc --bench [WxH] [FRAMES]   time a simulated slider drag (analyze,

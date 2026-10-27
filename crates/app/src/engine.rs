@@ -4,15 +4,17 @@
 //! window code so it is tested on every platform.
 
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
+use graph_core::three::{self, Mesh, View3};
 use graph_core::{
     Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points, Polygon,
+    TextAtlas, Vertex,
 };
 use graph_expr::format::{exact_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_cached, wgsl, Cache, ColumnInput, Compare, Interval, Program, RowAnalysis, RowInput,
-    RowKind,
+    analyze_mode, wgsl, Cache, ColumnInput, Compare, Interval, Mode, Program, RowAnalysis,
+    RowInput, RowKind,
 };
-use graph_render::{Shading, Test};
+use graph_render::{Frame3, Shading, Test};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -123,6 +125,14 @@ impl GraphRegion {
     }
 }
 
+/// One surface `z = f(x, y)` ready to draw in a 3D graph.
+pub struct GraphSurface {
+    pub program: Program,
+    pub color: [f32; 4],
+    /// As [`GraphCurve::key`].
+    pub key: u64,
+}
+
 /// A region's field, in the form graph-core traces.
 struct RegionField<'a>(&'a Program);
 
@@ -146,6 +156,11 @@ pub struct Engine {
     pub regions: Vec<GraphRegion>,
     pub points: Vec<GraphPoints>,
     pub polygons: Vec<GraphPolygon>,
+    pub surfaces: Vec<GraphSurface>,
+    /// Flat or 3D, as the panel last said.
+    pub mode: Mode,
+    /// Surface meshes for the current view, by surface and range.
+    meshes: Vec<(u64, Mesh)>,
     /// The LaTeX of every row, in order, as last received.
     pub latex: Vec<String>,
     /// The row selected in the panel, whose curves show points of interest.
@@ -188,7 +203,7 @@ impl Engine {
                 }),
             })
             .collect();
-        let results = analyze_cached(&inputs, &mut self.cache);
+        let results = analyze_mode(&inputs, &mut self.cache, self.mode);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
         self.generation += 1;
@@ -204,6 +219,7 @@ impl Engine {
         self.regions.clear();
         self.points.clear();
         self.polygons.clear();
+        self.surfaces.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -248,6 +264,13 @@ impl Engine {
                     color,
                     width,
                     style,
+                });
+            }
+            for surface in &result.surfaces {
+                self.surfaces.push(GraphSurface {
+                    program: surface.program.clone(),
+                    key: surface.program.fingerprint(),
+                    color,
                 });
             }
             for polygon in &result.polygons {
@@ -391,6 +414,64 @@ impl Engine {
             + self.regions.len()
             + self.points.len()
             + self.polygons.len()
+            + self.surfaces.len()
+    }
+
+    /// Calls `draw` with a 3D frame of `view` and the 2D overlay (the
+    /// box's numbers) to draw over it. Surface meshes are kept while the
+    /// surface and the box's range stay the same, so turning the box
+    /// costs nothing here.
+    pub fn with_frame_3d<R>(
+        &mut self,
+        view: &View3,
+        scale: f32,
+        text: &mut TextAtlas,
+        draw: impl FnOnce(&Frame3, &[Vertex], &TextAtlas) -> R,
+    ) -> R {
+        let range = view
+            .center
+            .iter()
+            .chain(&view.half)
+            .fold(0, |k, v| mix(k, v.to_bits()));
+        let keys: Vec<u64> = self
+            .surfaces
+            .iter()
+            .map(|s| {
+                let color = s.color.iter().fold(0, |k, c| mix(k, c.to_bits() as u64));
+                mix(mix(s.key, color), range)
+            })
+            .collect();
+        let mut kept: Vec<(u64, Mesh)> = Vec::with_capacity(keys.len());
+        for (s, &key) in self.surfaces.iter().zip(&keys) {
+            let mesh = match self.meshes.iter().position(|(k, _)| *k == key) {
+                Some(i) => self.meshes.swap_remove(i).1,
+                None => {
+                    let f = |x: f64, y: f64| s.program.eval2(x, y);
+                    three::surface_mesh(view, &f, s.color, three::SURFACE_SAMPLES)
+                }
+            };
+            kept.push((key, mesh));
+        }
+        self.meshes = kept;
+        let meshes: Vec<&Mesh> = self.meshes.iter().map(|(_, m)| m).collect();
+        let lines = three::box_lines(view, scale);
+        let overlay = three::box_labels(view, scale, text);
+        let step = three::steps(view);
+        let grid = [
+            (step[0] / view.half[0]) as f32,
+            (step[1] / view.half[1]) as f32,
+            (-view.center[0] / view.half[0]) as f32,
+            (-view.center[1] / view.half[1]) as f32,
+        ];
+        let frame = Frame3 {
+            matrix: view.matrix(),
+            toward: view.toward().map(|v| v as f32),
+            grid,
+            surfaces: &meshes,
+            surfaces_key: keys.iter().fold(keys.len() as u64, |k, &v| mix(k, v)),
+            lines: &lines,
+        };
+        draw(&frame, &overlay, text)
     }
 
     /// What the GPU draws for this frame: the fill inside every inequality
@@ -733,6 +814,36 @@ mod tests {
             assert_eq!(plot.parametrics.len(), 2);
             assert_eq!(plot.points[0].points.len(), 2);
         });
+    }
+
+    #[test]
+    fn three_d_rows_become_surfaces_with_kept_meshes() {
+        let mut engine = Engine {
+            mode: Mode::ThreeD,
+            ..Engine::default()
+        };
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "z=x+y", "color": "#2d70b3"},
+            {"id": 2, "latex": "y=x"},
+        ]));
+        assert_eq!(engine.surfaces.len(), 1);
+        assert_eq!(engine.curves.len(), 0, "flat curves are not drawn in 3D");
+        assert_eq!(reply[0]["graphed"], true);
+        assert!(reply[1]["error"].is_string());
+        let mut view = View3::new(400.0, 300.0);
+        let mut text = TextAtlas::empty();
+        let key = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| {
+            assert_eq!(f.surfaces.len(), 1);
+            assert!(!f.lines.is_empty());
+            f.surfaces_key
+        });
+        // Turning the box keeps the mesh; zooming makes a new one.
+        view.turn_px(40.0, 0.0);
+        let turned = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.surfaces_key);
+        assert_eq!(turned, key);
+        view.zoom(2.0);
+        let zoomed = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.surfaces_key);
+        assert_ne!(zoomed, key);
     }
 
     #[test]

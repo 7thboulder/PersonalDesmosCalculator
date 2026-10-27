@@ -1589,8 +1589,26 @@
     sendRows();
   }
 
+  // ---- 2D or 3D ----------------------------------------------------------------
+
+  var modeButtons = document.querySelectorAll('#mode button');
+  function showMode(threeD) {
+    modeButtons.forEach(function (b) {
+      b.classList.toggle('on', (b.dataset.mode === '3d') === threeD);
+    });
+  }
+  modeButtons.forEach(function (b) {
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    b.addEventListener('click', function () {
+      showMode(b.dataset.mode === '3d');
+      send({ type: 'mode', mode: b.dataset.mode });
+    });
+  });
+
   // Called by Rust through evaluate_script.
   window.engine = {
+    // The graph became 2D or 3D, from the switch, a file or a new graph.
+    mode: showMode,
     // While desmos.com is asked for a pasted link.
     fetching: function (on) {
       toast.textContent = 'Getting the graph from desmos.com\u2026';

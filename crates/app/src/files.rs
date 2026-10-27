@@ -6,7 +6,7 @@
 // Only the Windows window saves and opens outside tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use graph_core::Viewport;
+use graph_core::{View3, Viewport};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -20,8 +20,10 @@ pub struct Document {
     pub path: Option<PathBuf>,
     /// The rows as last saved or opened, in comparable form.
     saved: String,
-    /// The rows as the panel last sent them.
+    /// The rows as the panel last sent them, and the mode.
     current: String,
+    rows: String,
+    three_d: bool,
     /// The next rows to arrive are the freshly loaded graph, not an edit.
     loading: bool,
 }
@@ -47,11 +49,22 @@ fn strip_ids(rows: &Value) -> Value {
 impl Document {
     /// The panel sent its rows.
     pub fn rows_changed(&mut self, rows: &Value) {
-        self.current = strip_ids(rows).to_string();
+        self.rows = strip_ids(rows).to_string();
+        self.refresh();
         if self.loading {
             self.loading = false;
             self.saved = self.current.clone();
         }
+    }
+
+    /// The graph was switched between 2D and 3D, which is a change too.
+    pub fn mode_changed(&mut self, three_d: bool) {
+        self.three_d = three_d;
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        self.current = format!("{}{}", self.rows, if self.three_d { " 3d" } else { "" });
     }
 
     pub fn dirty(&self) -> bool {
@@ -87,8 +100,8 @@ impl Document {
 }
 
 /// A graph file's contents.
-pub fn to_file(rows: &Value, vp: &Viewport) -> String {
-    let file = json!({
+pub fn to_file(rows: &Value, vp: &Viewport, space: &Space) -> String {
+    let mut file = json!({
         "format": FORMAT,
         "version": VERSION,
         "viewport": {
@@ -97,7 +110,87 @@ pub fn to_file(rows: &Value, vp: &Viewport) -> String {
         },
         "rows": strip_ids(rows),
     });
+    if space.three_d {
+        file["mode"] = json!("3d");
+    }
+    if let Some(b) = &space.view {
+        file["box"] = json!({
+            "center": b.center,
+            "half": b.half,
+            "yaw": b.yaw,
+            "pitch": b.pitch,
+        });
+    }
     serde_json::to_string_pretty(&file).unwrap_or_default()
+}
+
+/// Whether a graph is 3D, and how its 3D box was last shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Space {
+    pub three_d: bool,
+    pub view: Option<BoxView>,
+}
+
+/// A saved 3D view: the box's range and the camera's angles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxView {
+    pub center: [f64; 3],
+    pub half: [f64; 3],
+    pub yaw: f64,
+    pub pitch: f64,
+}
+
+impl BoxView {
+    pub fn of(v: &View3) -> Self {
+        Self {
+            center: v.center,
+            half: v.half,
+            yaw: v.yaw,
+            pitch: v.pitch,
+        }
+    }
+
+    pub fn apply(&self, v: &mut View3) {
+        v.center = self.center;
+        v.half = self.half;
+        v.yaw = self.yaw;
+        v.pitch = self.pitch;
+    }
+}
+
+/// The mode and 3D view of a graph file; a Desmos graph is 2D.
+pub fn space_of(text: &str) -> Space {
+    let Ok(file) = serde_json::from_str::<Value>(text) else {
+        return Space::default();
+    };
+    if file["format"] != FORMAT {
+        return Space::default();
+    }
+    let b = &file["box"];
+    let three = |v: &Value| -> Option<[f64; 3]> {
+        let a = [v[0].as_f64()?, v[1].as_f64()?, v[2].as_f64()?];
+        a.iter().all(|x| x.is_finite()).then_some(a)
+    };
+    let view = match (
+        three(&b["center"]),
+        three(&b["half"]),
+        b["yaw"].as_f64(),
+        b["pitch"].as_f64(),
+    ) {
+        (Some(center), Some(half), Some(yaw), Some(pitch)) if half.iter().all(|h| *h > 0.0) => {
+            Some(BoxView {
+                center,
+                half,
+                yaw,
+                pitch,
+            })
+        }
+        _ => None,
+    };
+    Space {
+        three_d: file["mode"] == "3d",
+        view,
+    }
 }
 
 /// A saved view: the world point at the centre and the width shown.
@@ -346,8 +439,8 @@ pub fn autosave_path() -> Option<PathBuf> {
 
 /// The autosave: the graph as a file would hold it, plus which file it
 /// belongs to and what that file last held.
-pub fn autosave_contents(doc: &Document, rows: &Value, vp: &Viewport) -> String {
-    let graph: Value = serde_json::from_str(&to_file(rows, vp)).unwrap_or(Value::Null);
+pub fn autosave_contents(doc: &Document, rows: &Value, vp: &Viewport, space: &Space) -> String {
+    let graph: Value = serde_json::from_str(&to_file(rows, vp, space)).unwrap_or(Value::Null);
     json!({
         "path": doc.path,
         "saved": doc.saved,
@@ -371,6 +464,7 @@ pub fn write_autosave(path: &Path, contents: &str) -> Result<(), String> {
 pub struct Restored {
     pub rows: Value,
     pub view: Option<View>,
+    pub space: Space,
     pub path: Option<PathBuf>,
     saved: String,
 }
@@ -386,10 +480,12 @@ impl Restored {
 
 pub fn read_autosave(text: &str) -> Option<Restored> {
     let a: Value = serde_json::from_str(text).ok()?;
-    let (rows, view) = from_file(&a["graph"].to_string()).ok()?;
+    let graph = a["graph"].to_string();
+    let (rows, view) = from_file(&graph).ok()?;
     Some(Restored {
         rows,
         view,
+        space: space_of(&graph),
         path: a["path"].as_str().map(PathBuf::from),
         saved: a["saved"].as_str().unwrap_or("").to_owned(),
     })
@@ -420,8 +516,9 @@ mod tests {
         let mut vp = Viewport::new(1000.0, 600.0);
         vp.center = [3.0, -1.0];
         vp.units_per_px = 0.05;
-        let text = to_file(&rows(), &vp);
+        let text = to_file(&rows(), &vp, &Space::default());
         let (back, view) = from_file(&text).unwrap();
+        assert_eq!(space_of(&text), Space::default());
         assert_eq!(back, strip_ids(&rows()));
         assert!(back[0].get("id").is_none());
 
@@ -476,15 +573,32 @@ mod tests {
         let mut edited = rows();
         edited[0]["latex"] = json!("a=7");
         doc.rows_changed(&edited);
-        let text = autosave_contents(&doc, &edited, &vp);
+        let mut view3 = View3::new(800.0, 600.0);
+        view3.turn_px(50.0, 20.0);
+        view3.zoom(2.0);
+        let space = Space {
+            three_d: true,
+            view: Some(BoxView::of(&view3)),
+        };
+        let text = autosave_contents(&doc, &edited, &vp, &space);
 
         let restored = read_autosave(&text).unwrap();
         assert_eq!(restored.rows[0]["latex"], "a=7");
+        assert_eq!(restored.space, space, "the mode and the box come back");
         assert_eq!(restored.path.as_deref(), Some(Path::new("g.gcalc")));
         let mut again = Document::default();
         restored.resume(&mut again);
         again.rows_changed(&restored.rows);
         assert!(again.dirty(), "the unsaved edit is still unsaved");
+
+        // Switching to 3D and back is a change, then not one.
+        let mut doc = Document::default();
+        doc.loading(None);
+        doc.rows_changed(&rows());
+        doc.mode_changed(true);
+        assert!(doc.dirty());
+        doc.mode_changed(false);
+        assert!(!doc.dirty());
         assert_eq!(with_extension(PathBuf::from("a")), PathBuf::from("a.gcalc"));
     }
 

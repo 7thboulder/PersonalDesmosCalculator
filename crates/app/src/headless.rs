@@ -1,8 +1,11 @@
 use crate::engine::Engine;
 use crate::interact::Interaction;
 use graph_core::scene::DESMOS_COLORS;
-use graph_core::{build_scene, build_scene_cached, LineCache, TextAtlas, Viewport};
-use graph_render::{new_instance, render_offscreen, Area, Gpu, GraphRenderer, ShadingRenderer};
+use graph_core::{build_scene, build_scene_cached, LineCache, TextAtlas, View3, Viewport};
+use graph_expr::Mode;
+use graph_render::{
+    new_instance, render_offscreen, render_offscreen_3d, Area, Gpu, GraphRenderer, ShadingRenderer,
+};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -30,6 +33,15 @@ fn rows(latex: &[String]) -> serde_json::Value {
 ///
 /// `--select=N` among the rows selects row N (from 0), so its points of
 /// interest show, and `--hover=X,Y` puts the mouse at that world point.
+fn write_png(path: &str, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    writer.write_image_data(pixels).map_err(|e| e.to_string())
+}
+
 pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Result<(), String> {
     let gpu = Gpu::new(&new_instance(), None)?;
     let vp = Viewport::new(width as f64, height as f64);
@@ -55,7 +67,11 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     } else {
         latex
     };
+    let three_d = flag("--3d").is_some();
     let mut engine = Engine::default();
+    if three_d {
+        engine.mode = Mode::ThreeD;
+    }
     let results = engine.update(&rows(latex));
     for (l, r) in latex.iter().zip(results.as_array().into_iter().flatten()) {
         if let Some(e) = r["error"].as_str() {
@@ -63,6 +79,22 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         }
     }
     let mut text = TextAtlas::system();
+    if three_d {
+        let view = View3::new(width as f64, height as f64);
+        let start = Instant::now();
+        let mut build = Duration::ZERO;
+        let pixels = engine.with_frame_3d(&view, 1.0, &mut text, |frame, overlay, text| {
+            build = start.elapsed();
+            render_offscreen_3d(&gpu, width, height, frame, overlay, text)
+        });
+        write_png(path, width, height, &pixels)?;
+        println!(
+            "wrote {path} ({width}x{height}) on {}: surfaces built in {:.2} ms",
+            gpu.describe(),
+            build.as_secs_f64() * 1000.0
+        );
+        return Ok(());
+    }
 
     let start = Instant::now();
     engine.selected = select;
@@ -76,14 +108,7 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
     let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings);
 
-    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
-    writer
-        .write_image_data(&pixels)
-        .map_err(|e| e.to_string())?;
+    write_png(path, width, height, &pixels)?;
 
     println!(
         "wrote {path} ({width}x{height}) on {}: {} vertices built in {:.2} ms",

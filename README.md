@@ -5,7 +5,7 @@ its math and drawing with the machine's own CPU and GPU instead of a browser.
 Private, personal-use project. The full plan lives in the
 [plan doc](https://claude.ai/artifact/DZCzUyaNRYjCzz5fdBDS7n).
 
-**Status: Phase 3 merged; Phase 4 (speed and polish) under way.** The window opens with a Desmos-style expression
+**Status: Phases 1 to 4 merged; 3D graphing under way.** The window opens with a Desmos-style expression
 list on the left (the same MathQuill editor Desmos uses) and a GPU-drawn graph
 on the right. What you type is graphed as you type it:
 
@@ -28,6 +28,12 @@ on the right. What you type is graphed as you type it:
   (type `sum` or `prod`, as in Desmos), and integrals such as
   `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Derivatives are
   exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
+- 3D graphs: the **2D / 3D** switch at the top of the list turns the graph
+  into Desmos 3D's box. `z = f(x, y)` (or a bare expression in x and y) is
+  drawn as a lit surface, trimmed to the box, with r and θ measured around
+  the z axis. Drag to turn the box, Shift+drag to slide it, and scroll to
+  zoom. Each graph is either 2D or 3D, as in Desmos, and its file remembers
+  which. Points, curves and other surfaces in 3D are still to come.
 - Tables (+ then **table**): each column after the first is plotted against
   it, a column named `y_1` defines that list for other rows, and a column
   headed by a formula such as `x_1^2` fills itself in. Enter moves down,
@@ -133,6 +139,7 @@ from a command prompt and note whether that looks better.
 cargo test --workspace                          # runs everywhere, GPU test skips if no adapter
 cargo build --release -p app                    # target/release/graphcalc(.exe)
 graphcalc --render-png out.png 1200x800 'y=x^2' # offscreen render of LaTeX rows, no window needed
+graphcalc --render-png out.png 900x700 --3d 'z=x^2-y^2'   # the same for a 3D graph
 graphcalc --bench                               # slider-drag frame time against the 60 fps budget
 graphcalc --bench-implicit                      # the same budget over eleven implicit and shaded relations
 echo '[{"id":1,"latex":"1+1"}]' | graphcalc --analyze   # the engine's reply to panel rows

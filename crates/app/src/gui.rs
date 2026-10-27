@@ -3,10 +3,11 @@
 //! This is the layout wry's own wgpu example uses on Windows.
 
 use crate::engine::Engine;
-use crate::files::{self, Document};
+use crate::files::{self, BoxView, Document, Space};
 use crate::interact::{Effect, Interaction};
-use graph_core::{build_scene_cached, LineCache, TextAtlas, Viewport};
-use graph_render::{new_instance, Area, Gpu, GraphRenderer, ShadingRenderer};
+use graph_core::{build_scene_cached, LineCache, TextAtlas, View3, Viewport};
+use graph_expr::Mode;
+use graph_render::{new_instance, Area, Gpu, GraphRenderer, Renderer3, ShadingRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -81,8 +82,11 @@ struct Running {
     gpu: Gpu,
     renderer: GraphRenderer,
     shader: ShadingRenderer,
+    renderer3: Renderer3,
     webview: Option<WebView>,
     viewport: Viewport,
+    /// The 3D box, used when the graph is 3D.
+    view3: View3,
     cursor: Option<PhysicalPosition<f64>>,
     dragging: bool,
     panel_ready: bool,
@@ -245,6 +249,7 @@ impl Running {
         surface.configure(&gpu.device, &config);
         let renderer = GraphRenderer::new(&gpu, config.format);
         let shader = ShadingRenderer::new(&gpu);
+        let renderer3 = renderer.renderer_3d(&gpu);
 
         let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
@@ -275,8 +280,10 @@ impl Running {
             gpu,
             renderer,
             shader,
+            renderer3,
             webview,
             viewport: Viewport::new(1.0, 1.0),
+            view3: View3::new(1.0, 1.0),
             cursor: None,
             dragging: false,
             panel_ready: false,
@@ -298,6 +305,7 @@ impl Running {
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
+        state.view3 = View3::new(area.width as f64, area.height as f64);
         state.window.request_redraw();
         Ok(state)
     }
@@ -337,7 +345,44 @@ impl Running {
         }
         let area = self.graph_area();
         self.viewport.resize(area.width as f64, area.height as f64);
+        self.view3.resize(area.width as f64, area.height as f64);
         self.window.request_redraw();
+    }
+
+    fn three_d(&self) -> bool {
+        self.engine.mode == Mode::ThreeD
+    }
+
+    /// The graph's mode and 3D view, for saving.
+    fn space(&self) -> Space {
+        Space {
+            three_d: self.three_d(),
+            view: Some(BoxView::of(&self.view3)),
+        }
+    }
+
+    /// Switches between a flat graph and a 3D one. The rows stay as they
+    /// are and are read again for the new mode.
+    fn set_mode(&mut self, three_d: bool) {
+        self.engine.mode = if three_d { Mode::ThreeD } else { Mode::Flat };
+        self.doc.mode_changed(three_d);
+        self.update_title();
+        self.run_script(&format!("window.engine.mode({three_d})"));
+        if self.rows_received {
+            let results = self.engine.update(&self.rows);
+            self.run_script(&format!("window.engine.analysis({results})"));
+        }
+        self.window.request_redraw();
+    }
+
+    /// Takes the mode and 3D view of a graph being opened.
+    fn apply_space(&mut self, space: Space) {
+        let area = self.graph_area();
+        self.view3 = View3::new(area.width as f64, area.height as f64);
+        if let Some(view) = space.view {
+            view.apply(&mut self.view3);
+        }
+        self.set_mode(space.three_d);
     }
 
     fn cursor_moved(&mut self, position: PhysicalPosition<f64>) {
@@ -346,6 +391,19 @@ impl Running {
         let Some((x, y)) = self.cursor_in_graph() else {
             return;
         };
+        if self.three_d() {
+            // Dragging turns the box; with Shift held it slides.
+            if let (true, Some(previous)) = (self.dragging, previous) {
+                let (dx, dy) = (position.x - previous.x, position.y - previous.y);
+                if self.modifiers.shift_key() {
+                    self.view3.pan_px(dx, dy);
+                } else {
+                    self.view3.turn_px(dx, dy);
+                }
+                self.window.request_redraw();
+            }
+            return;
+        }
         let effect = self.interact.moved(&self.engine, &self.viewport, [x, y]);
         let pointer = self
             .interact
@@ -379,6 +437,10 @@ impl Running {
         // does in Desmos.
         if let Some(webview) = &self.webview {
             let _ = webview.focus_parent();
+        }
+        if self.three_d() {
+            self.dragging = true;
+            return;
         }
         self.interact.scale = self.window.scale_factor();
         let effect = self.interact.press(&self.engine, &self.viewport, [x, y]);
@@ -415,6 +477,11 @@ impl Running {
     }
 
     fn zoom(&mut self, factor: f64) {
+        if self.three_d() {
+            self.view3.zoom(factor);
+            self.window.request_redraw();
+            return;
+        }
         let area = self.graph_area();
         // Zoom around the cursor, or the centre when it is over the panel.
         let (x, y) = self
@@ -437,6 +504,29 @@ impl Running {
         };
         let start = Instant::now();
         let scale = self.window.scale_factor() as f32;
+        if self.three_d() {
+            let view = frame.texture.create_view(&Default::default());
+            let size = (self.config.width, self.config.height);
+            let area = self.graph_area();
+            let (gpu, renderer, renderer3) = (&self.gpu, &mut self.renderer, &mut self.renderer3);
+            let mut scene_time = Duration::ZERO;
+            let vertices = self.engine.with_frame_3d(
+                &self.view3,
+                scale,
+                &mut self.text,
+                |frame, overlay, text| {
+                    scene_time = start.elapsed();
+                    renderer.draw_3d(gpu, &view, size, area, frame, overlay, text, renderer3);
+                    frame
+                        .surfaces
+                        .iter()
+                        .map(|m| m.indices.len())
+                        .sum::<usize>()
+                },
+            );
+            self.present(frame, start, scene_time, vertices);
+            return;
+        }
         self.interact.scale = scale as f64;
         let marks = self.interact.marks(&self.engine, &self.viewport);
         let (viewport, text, lines) = (&self.viewport, &mut self.text, &mut self.lines);
@@ -464,6 +554,17 @@ impl Running {
             &shadings,
             &mut self.shader,
         );
+        self.present(frame, start, scene_time, scene.vertices.len());
+    }
+
+    /// Shows a drawn frame and, now and then, its timings in the panel.
+    fn present(
+        &mut self,
+        frame: wgpu::SurfaceTexture,
+        start: Instant,
+        scene_time: Duration,
+        vertices: usize,
+    ) {
         self.window.pre_present_notify();
         self.gpu.queue.present(frame);
         self.frames += 1;
@@ -477,7 +578,7 @@ impl Running {
                 "window.engine.stats({:.3}, {:.3}, {})",
                 scene_time.as_secs_f64() * 1000.0,
                 start.elapsed().as_secs_f64() * 1000.0,
-                scene.vertices.len()
+                vertices
             ));
         }
     }
@@ -520,6 +621,15 @@ impl Running {
                 let text = value["text"].as_str().unwrap_or_default().to_owned();
                 self.paste(&text);
             }
+            Some("mode") => {
+                let three_d = value["mode"] == "3d";
+                if three_d != self.three_d() {
+                    self.set_mode(three_d);
+                    if !self.smoke_test && self.autosave_due.is_none() {
+                        self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
+                    }
+                }
+            }
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
@@ -554,6 +664,11 @@ impl Running {
                 self.doc.loading(None);
                 let area = self.graph_area();
                 self.viewport = Viewport::new(area.width as f64, area.height as f64);
+                // A new graph keeps the mode, with the box as it starts.
+                self.apply_space(Space {
+                    three_d: self.three_d(),
+                    view: None,
+                });
                 self.run_script("window.engine.load([])");
             }
             "open" => {
@@ -596,7 +711,7 @@ impl Running {
     }
 
     fn save_to(&mut self, path: PathBuf) {
-        let text = files::to_file(&self.rows, &self.viewport);
+        let text = files::to_file(&self.rows, &self.viewport, &self.space());
         match std::fs::write(&path, text) {
             Ok(()) => {
                 self.doc.saved_to(path);
@@ -609,14 +724,15 @@ impl Running {
     fn open_path(&mut self, path: PathBuf) {
         let opened = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| files::open_any(&text));
+            .and_then(|text| Ok((files::open_any(&text)?, files::space_of(&text))));
         match opened {
-            Ok((rows, view, imported)) => {
+            Ok(((rows, view, imported), space)) => {
                 // An imported Desmos graph saves to a new graph file.
                 self.doc.loading((!imported).then_some(path));
                 if let Some(view) = view {
                     view.apply(&mut self.viewport);
                 }
+                self.apply_space(space);
                 self.run_script(&format!("window.engine.load({rows})"));
             }
             Err(e) => show_error(&format!("Could not open {}.\n\n{e}", path.display())),
@@ -665,6 +781,7 @@ impl Running {
                 if let Some(view) = view {
                     view.apply(&mut self.viewport);
                 }
+                self.apply_space(Space::default());
                 self.run_script(&format!("window.engine.load({rows})"));
                 self.update_title();
             }
@@ -687,6 +804,7 @@ impl Running {
         if let Some(view) = restored.view {
             view.apply(&mut self.viewport);
         }
+        self.apply_space(restored.space);
         self.run_script(&format!("window.engine.load({})", restored.rows));
     }
 
@@ -698,7 +816,8 @@ impl Running {
         let Some(path) = files::autosave_path() else {
             return;
         };
-        let contents = files::autosave_contents(&self.doc, &self.rows, &self.viewport);
+        let contents =
+            files::autosave_contents(&self.doc, &self.rows, &self.viewport, &self.space());
         // Losing the autosave is not worth interrupting anyone over.
         let _ = files::write_autosave(&path, &contents);
     }

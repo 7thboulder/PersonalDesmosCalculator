@@ -6,7 +6,9 @@ use graph_core::{Scene, TextAtlas, Vertex};
 use wgpu::util::DeviceExt;
 
 mod shade;
+mod three;
 pub use shade::{Shading, ShadingRenderer, Test, MAX_CONSTANTS};
+pub use three::{Frame3, Renderer3};
 
 const SHADER: &str = r#"
 struct Uniforms {
@@ -303,7 +305,37 @@ impl GraphRenderer {
         vertices: &[Vertex],
         text: &TextAtlas,
     ) {
-        self.draw_parts(gpu, target, target_size, area, vertices, text, &[], None);
+        self.draw_parts(gpu, target, target_size, area, vertices, text, Middle::None);
+    }
+
+    /// Draws a 3D frame: the box and its surfaces with depth, then
+    /// `overlay` (the box's numbers, in graph-area pixels) on top.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_3d(
+        &mut self,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        target_size: (u32, u32),
+        area: Area,
+        frame: &Frame3,
+        overlay: &[Vertex],
+        text: &TextAtlas,
+        renderer: &mut Renderer3,
+    ) {
+        self.draw_parts(
+            gpu,
+            target,
+            target_size,
+            area,
+            overlay,
+            text,
+            Middle::Three(frame, renderer),
+        );
+    }
+
+    /// A 3D renderer that draws into the same targets as this one.
+    pub fn renderer_3d(&self, gpu: &Gpu) -> Renderer3 {
+        Renderer3::new(gpu, self.format, self.samples)
     }
 
     /// Draws one frame: the scene's background, then each shaded region on
@@ -327,8 +359,7 @@ impl GraphRenderer {
             area,
             &scene.vertices,
             text,
-            shadings,
-            Some((scene.shade_after, shader)),
+            Middle::Shade(scene.shade_after, shadings, shader),
         );
     }
 
@@ -341,8 +372,7 @@ impl GraphRenderer {
         area: Area,
         vertices: &[Vertex],
         text: &TextAtlas,
-        shadings: &[Shading],
-        split: Option<(usize, &mut ShadingRenderer)>,
+        middle: Middle,
     ) {
         let (device, queue) = (&gpu.device, &gpu.queue);
         if text.generation != self.atlas_generation {
@@ -405,9 +435,11 @@ impl GraphRenderer {
         if aw == 0 || ah == 0 {
             return;
         }
-        let (shade_after, shader) = match split {
-            Some((at, shader)) => (at.min(vertices.len()), Some(shader)),
-            None => (vertices.len(), None),
+        let linearize = self.format.is_srgb();
+        let shade_after = match &middle {
+            Middle::Shade(at, ..) => (*at).min(vertices.len()),
+            Middle::Three(..) => 0,
+            Middle::None => vertices.len(),
         };
         let mut encoder = device.create_command_encoder(&Default::default());
         // Up to three passes over the same attachment: only the first
@@ -464,12 +496,56 @@ impl GraphRenderer {
             }};
         }
         draw_scene_part!(0..shade_after as u32);
-        if let Some(shader) = shader {
-            if !shadings.is_empty() {
+        match middle {
+            Middle::Shade(_, shadings, shader) if !shadings.is_empty() => {
                 shader.prepare(gpu, self.format, self.samples, shadings);
                 let mut rp = begin_pass!();
                 shader.draw(&mut rp, shadings);
             }
+            Middle::Three(frame, renderer) => {
+                renderer.prepare(gpu, frame, target_size, area, linearize);
+                // Its own pass, the only one with a depth buffer.
+                let load = if first {
+                    wgpu::LoadOp::Clear(wgpu::Color::WHITE)
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                first = false;
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("3d pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: renderer.depth_view(),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                rp.set_viewport(
+                    ax as f32,
+                    ay as f32,
+                    area.width as f32,
+                    area.height as f32,
+                    0.0,
+                    1.0,
+                );
+                rp.set_scissor_rect(ax, ay, aw, ah);
+                renderer.draw(&mut rp, frame);
+            }
+            _ => {}
         }
         draw_scene_part!(shade_after as u32..count as u32);
         if first {
@@ -481,6 +557,14 @@ impl GraphRenderer {
     }
 }
 
+/// What a frame draws between the scene's background and its foreground.
+enum Middle<'a, 'b> {
+    None,
+    /// Shaded regions, after this many of the scene's vertices.
+    Shade(usize, &'a [Shading], &'b mut ShadingRenderer),
+    Three(&'a Frame3<'a>, &'b mut Renderer3),
+}
+
 /// Renders a scene without a window and returns tightly packed RGBA8 pixels.
 /// Used by the `--render-png` self-test and by CI.
 pub fn render_offscreen(
@@ -490,6 +574,51 @@ pub fn render_offscreen(
     scene: &Scene,
     text: &TextAtlas,
     shadings: &[Shading],
+) -> Vec<u8> {
+    offscreen(gpu, width, height, |renderer, view, area| {
+        let mut shader = ShadingRenderer::new(gpu);
+        renderer.draw_scene(
+            gpu,
+            view,
+            (width, height),
+            area,
+            scene,
+            text,
+            shadings,
+            &mut shader,
+        );
+    })
+}
+
+/// As `render_offscreen`, for a 3D frame with `overlay` drawn over it.
+pub fn render_offscreen_3d(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frame: &Frame3,
+    overlay: &[Vertex],
+    text: &TextAtlas,
+) -> Vec<u8> {
+    offscreen(gpu, width, height, |renderer, view, area| {
+        let mut three = renderer.renderer_3d(gpu);
+        renderer.draw_3d(
+            gpu,
+            view,
+            (width, height),
+            area,
+            frame,
+            overlay,
+            text,
+            &mut three,
+        );
+    })
+}
+
+fn offscreen(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    draw: impl FnOnce(&mut GraphRenderer, &wgpu::TextureView, Area),
 ) -> Vec<u8> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = GraphRenderer::new(gpu, format);
@@ -514,17 +643,7 @@ pub fn render_offscreen(
         width,
         height,
     };
-    let mut shader = ShadingRenderer::new(gpu);
-    renderer.draw_scene(
-        gpu,
-        &view,
-        (width, height),
-        area,
-        scene,
-        text,
-        shadings,
-        &mut shader,
-    );
+    draw(&mut renderer, &view, area);
 
     let padded_row = (width * 4).div_ceil(256) * 256;
     let readback = gpu
@@ -601,6 +720,39 @@ mod tests {
         let below = at(37, 157);
         assert!(above[2] > above[0] + 20, "shaded above: {above:?}");
         assert!(below[2] <= below[0], "nothing shaded below: {below:?}");
+    }
+
+    #[test]
+    fn surface_fills_the_middle_of_the_box() {
+        let Ok(gpu) = Gpu::new(&new_instance(), None) else {
+            return;
+        };
+        use graph_core::three::{box_lines, surface_mesh, View3};
+        let (w, h) = (240, 200);
+        let view = View3::new(w as f64, h as f64);
+        // z = 2, a flat sheet a little above the middle, in blue.
+        let blue = [0.176, 0.439, 0.702, 1.0];
+        let mesh = surface_mesh(&view, &|_, _| 2.0, blue, 8);
+        let lines = box_lines(&view, 1.0);
+        let frame = Frame3 {
+            matrix: view.matrix(),
+            toward: view.toward().map(|v| v as f32),
+            grid: [0.5, 0.5, 0.0, 0.0],
+            surfaces: &[&mesh],
+            surfaces_key: 1,
+            lines: &lines,
+        };
+        let text = graph_core::TextAtlas::empty();
+        let px = render_offscreen_3d(&gpu, w, h, &frame, &[], &text);
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        assert_eq!(at(2, 2), &[255, 255, 255, 255], "paper outside the box");
+        let [cx, cy] = view.project(view.to_box([3.0, 3.0, 2.0]));
+        let c = at(cx as u32, cy as u32);
+        assert!(c[2] > c[0] + 40, "the sheet is blue where it is: {c:?}");
+        // Below the box nothing is drawn.
+        let [bx, by] = view.project([0.0, 0.0, -1.0]);
+        let below = at(bx as u32, by as u32 + 12);
+        assert!(below[0] > 200, "white under the box: {below:?}");
     }
 
     #[test]
