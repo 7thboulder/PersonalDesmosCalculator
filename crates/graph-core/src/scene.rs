@@ -1,6 +1,6 @@
 use crate::grid::{grid_spacing, line_indices};
 use crate::implicit::{trace_implicit, Field};
-use crate::ode::{slope_marks, solution};
+use crate::ode::{field_marks, solutions, Equation};
 use crate::sample::{sample_curve, sample_parametric, Axis};
 use crate::tess::{
     disc, fill_polygon, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex,
@@ -131,11 +131,12 @@ pub struct Polygon<'a> {
     pub style: LineStyle,
 }
 
-/// A differential equation y' = f(x, y): its slope field over the view,
-/// and the solution through each seed.
+/// A differential equation: its slope or direction field over the view,
+/// and the solutions from each start ([x, y] then any initial
+/// derivatives).
 pub struct SlopeField<'a> {
-    pub slope: &'a (dyn Fn(f64, f64) -> f64 + Sync),
-    pub seeds: &'a [[f64; 2]],
+    pub equation: Equation<'a>,
+    pub starts: &'a [Vec<f64>],
     pub color: [f32; 4],
     /// The solution curves' thickness in logical pixels.
     pub width: f32,
@@ -567,7 +568,7 @@ fn draw_marks(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<Verte
         let s = vp.to_screen(p[0], p[1]);
         [s[0] as f32, s[1] as f32]
     };
-    for [p, q] in slope_marks(field.slope, vp, scale as f64) {
+    for [p, q] in field_marks(&field.equation, vp, scale as f64) {
         stroke_polyline(&[to_f32(p), to_f32(q)], FIELD_WIDTH * scale, faint, out);
     }
 }
@@ -576,12 +577,12 @@ fn draw_solutions(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<V
     // Each solution is integrated on its own thread.
     let lines: Vec<Vec<[f64; 2]>> = std::thread::scope(|s| {
         let jobs: Vec<_> = field
-            .seeds
+            .starts
             .iter()
-            .map(|&seed| s.spawn(move || solution(field.slope, seed, vp)))
+            .map(|start| s.spawn(move || solutions(&field.equation, start, vp)))
             .collect();
         jobs.into_iter()
-            .map(|j| j.join().unwrap_or_default())
+            .flat_map(|j| j.join().unwrap_or_default())
             .collect()
     });
     for line in &lines {
@@ -1015,10 +1016,13 @@ mod tests {
     #[test]
     fn slope_fields_and_solutions_reach_the_scene() {
         let vp = Viewport::new(600.0, 600.0);
-        let slope = |x: f64, y: f64| x - y;
+        let slope = |x: f64, s: &[f64]| x - s[0];
         let field = SlopeField {
-            slope: &slope,
-            seeds: &[[0.0, 1.0]],
+            equation: Equation::Explicit {
+                order: 1,
+                f: &slope,
+            },
+            starts: &[vec![0.0, 1.0]],
             color: DESMOS_COLORS[0],
             width: DEFAULT_CURVE_WIDTH,
             style: LineStyle::Solid,

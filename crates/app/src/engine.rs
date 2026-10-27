@@ -6,12 +6,12 @@
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
 use graph_core::three::{self, Mesh, View3};
 use graph_core::{
-    Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points, Polygon,
-    SlopeField, TextAtlas, Vertex,
+    Axis, Curve, Equation, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points,
+    Polygon, SlopeField, TextAtlas, Vertex,
 };
 use graph_expr::format::{exact_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_mode, wgsl, Cache, ColumnInput, Compare, Interval, Mode, Program, RowAnalysis,
+    analyze_mode, wgsl, Cache, ColumnInput, Compare, Interval, Mode, Ode, Program, RowAnalysis,
     RowInput, RowKind,
 };
 use graph_render::{Frame3, Shading, Test};
@@ -96,11 +96,12 @@ impl GraphPoints {
     }
 }
 
-/// A differential equation y' = f(x, y) ready to draw: its slope field
-/// and the solution through each initial point.
+/// A differential equation ready to draw: its slope or direction field
+/// and the solutions from each start.
 pub struct GraphOde {
-    pub slope: Program,
-    pub seeds: Vec<[f64; 2]>,
+    pub ode: Ode,
+    /// x and y, then y' to y⁽ⁿ⁻¹⁾ for an equation of order n.
+    pub starts: Vec<Vec<f64>>,
     pub color: [f32; 4],
     pub width: f32,
     pub style: LineStyle,
@@ -275,6 +276,12 @@ impl Engine {
                         .collect()
                 }),
                 seeds: r["seeds"].as_str().map(str::to_owned),
+                derivs: r["derivs"]
+                    .as_array()
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .map(|d| d.as_str().unwrap_or("").to_owned())
+                    .collect(),
             })
             .collect();
         let results = analyze_mode(&inputs, &mut self.cache, self.mode);
@@ -317,11 +324,15 @@ impl Engine {
                     style,
                 });
             }
-            let seeds: Vec<[f64; 2]> = result.seeds.iter().map(|s| s.at).collect();
-            for slope in &result.odes {
+            let starts: Vec<Vec<f64>> = result
+                .seeds
+                .iter()
+                .map(|s| s.at.iter().chain(&s.derivs).copied().collect())
+                .collect();
+            for ode in &result.odes {
                 self.odes.push(GraphOde {
-                    slope: slope.clone(),
-                    seeds: seeds.clone(),
+                    ode: ode.clone(),
+                    starts: starts.clone(),
                     color,
                     width,
                     style,
@@ -574,18 +585,14 @@ impl Engine {
                 style: p.style,
             })
             .collect();
-        let slopes: Vec<_> = self
-            .odes
-            .iter()
-            .map(|o| move |x: f64, y: f64| o.slope.eval2(x, y))
-            .collect();
+        let fns: Vec<OdeFns> = self.odes.iter().map(|o| OdeFns::of(&o.ode)).collect();
         let fields: Vec<SlopeField> = self
             .odes
             .iter()
-            .zip(&slopes)
-            .map(|(o, slope)| SlopeField {
-                slope,
-                seeds: &o.seeds,
+            .zip(&fns)
+            .map(|(o, fns)| SlopeField {
+                equation: fns.equation(&o.ode),
+                starts: &o.starts,
                 color: o.color,
                 width: o.width,
                 style: o.style,
@@ -754,6 +761,49 @@ impl Engine {
     }
 }
 
+type Fn1<'a> = Box<dyn Fn(f64, &[f64]) -> f64 + Sync + 'a>;
+type Fn3<'a> = Box<dyn Fn(f64, f64, f64) -> f64 + Sync + 'a>;
+
+/// A differential equation's programs as the functions graph-core calls.
+enum OdeFns<'a> {
+    One(Fn1<'a>),
+    Two(Fn3<'a>, Fn3<'a>),
+}
+
+impl<'a> OdeFns<'a> {
+    fn of(ode: &'a Ode) -> Self {
+        match ode {
+            Ode::Explicit { f, .. } | Ode::Implicit { f, .. } => {
+                OdeFns::One(Box::new(move |x, ys| f.eval_n(x, ys)))
+            }
+            // A system's programs read t as z.
+            Ode::System { f, g } => OdeFns::Two(
+                Box::new(move |t, x, y| f.eval3(x, y, t)),
+                Box::new(move |t, x, y| g.eval3(x, y, t)),
+            ),
+        }
+    }
+
+    fn equation(&'a self, ode: &Ode) -> Equation<'a> {
+        match (self, ode) {
+            (OdeFns::One(f), Ode::Explicit { order, .. }) => Equation::Explicit {
+                order: *order,
+                f: f.as_ref(),
+            },
+            (OdeFns::One(f), Ode::Implicit { order, .. }) => Equation::Implicit {
+                order: *order,
+                f: f.as_ref(),
+            },
+            (OdeFns::Two(f, g), Ode::System { f: pf, g: pg }) => Equation::System {
+                f: f.as_ref(),
+                g: g.as_ref(),
+                autonomous: !(pf.uses_z() || pg.uses_z()),
+            },
+            _ => unreachable!("made by OdeFns::of"),
+        }
+    }
+}
+
 fn style_color(row: &Value) -> [f32; 4] {
     parse_color(
         row["color"].as_str().unwrap_or("#c74440"),
@@ -849,7 +899,11 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "points": !c.points.is_empty(),
         })).collect::<Vec<_>>(),
         // A differential equation shows its initial points under it.
-        "ode": r.ode.then(|| json!({"error": r.seeds_error})),
+        "ode": r.ode.map(|order| json!({
+            "order": order,
+            "error": r.seeds_error,
+            "derivsError": r.derivs_error,
+        })),
         "parameter": r.parameter.as_ref().map(|p| json!({
             "name": p.name,
             "latex": name_latex(p.name),

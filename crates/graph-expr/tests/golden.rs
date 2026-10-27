@@ -2,7 +2,7 @@
 //! result Desmos gives. This is the Phase 1 gate for matching Desmos syntax.
 
 use graph_expr::{
-    analyze, analyze_cached, Axis, Cache, Compare, RowAnalysis, RowInput, RowKind, Value,
+    analyze, analyze_cached, Axis, Cache, Compare, Ode, RowAnalysis, RowInput, RowKind, Value,
 };
 
 fn rows(latex: &[&str]) -> Vec<RowAnalysis> {
@@ -1083,6 +1083,10 @@ fn three_d_equations_and_uv_surfaces() {
 }
 
 fn ode(latex: &[&str], seeds: &str) -> RowAnalysis {
+    ode_with(latex, seeds, &[])
+}
+
+fn ode_with(latex: &[&str], seeds: &str, derivs: &[&str]) -> RowAnalysis {
     let mut input: Vec<RowInput> = latex
         .iter()
         .enumerate()
@@ -1093,6 +1097,7 @@ fn ode(latex: &[&str], seeds: &str) -> RowAnalysis {
         })
         .collect();
     input.last_mut().unwrap().seeds = Some(seeds.into());
+    input.last_mut().unwrap().derivs = derivs.iter().map(|d| d.to_string()).collect();
     analyze(&input).pop().unwrap()
 }
 
@@ -1102,8 +1107,11 @@ fn differential_equations_draw_slope_fields_through_initial_points() {
     assert_eq!(r.kind, RowKind::Curve);
     assert_eq!(r.error, None);
     assert!(r.graphed());
-    assert_eq!(r.odes.len(), 1);
-    assert!(close(r.odes[0].eval2(3.0, 1.0), 5.0));
+    assert_eq!(r.ode, Some(1));
+    let Ode::Explicit { order: 1, f } = &r.odes[0] else {
+        panic!("{:?}", r.odes)
+    };
+    assert!(close(f.eval_n(3.0, &[1.0]), 5.0));
     assert_eq!(r.seeds.len(), 1);
     assert_eq!(r.seeds[0].at, [0.0, 1.0]);
     assert!(
@@ -1141,4 +1149,72 @@ fn differential_equations_draw_slope_fields_through_initial_points() {
     assert_eq!(r.missing, vec!["m".to_string()]);
     assert!(r.odes.is_empty());
     assert!(one("y'=\\left(1,2\\right)").error.is_some());
+}
+
+#[test]
+fn higher_order_implicit_and_system_equations() {
+    // y'' = -k y' - y with y'(x₀) for each start from its own box.
+    let r = ode_with(
+        &["k=0.5", "y''=-ky'-y"],
+        "\\left[\\left(0,1\\right),\\left(1,2\\right)\\right]",
+        &["\\left[3,4\\right]"],
+    );
+    assert_eq!(r.error, None);
+    assert_eq!(r.ode, Some(2));
+    let Ode::Explicit { order: 2, f } = &r.odes[0] else {
+        panic!("{:?}", r.odes)
+    };
+    // At y = 1, y' = 2: -0.5·2 - 1.
+    assert!(close(f.eval_n(0.0, &[1.0, 2.0]), -2.0));
+    assert_eq!(r.seeds[0].derivs, vec![3.0]);
+    assert_eq!(r.seeds[1].derivs, vec![4.0]);
+    // Left out, the initial slope is 0; one number serves every start.
+    let r = ode_with(&["\\frac{d^3y}{dx^3}=y"], "\\left(0,1\\right)", &["", "2"]);
+    assert_eq!(r.ode, Some(3));
+    assert_eq!(r.seeds[0].derivs, vec![0.0, 2.0]);
+    let r = ode_with(&["y''=y"], "\\left(0,1\\right)", &["\\left(1,2\\right)"]);
+    assert!(r.derivs_error.is_some());
+
+    // Not solved for y': drawn by solving F(x, y, y') = 0.
+    for latex in ["\\left(y'\\right)^2+y^2=1", "xy'+y=0", "y'=y'^3+x"] {
+        let r = ode(&[latex], "\\left(0,0\\right)");
+        assert_eq!(r.error, None, "{latex}");
+        assert!(
+            matches!(r.odes[0], Ode::Implicit { order: 1, .. }),
+            "{latex}"
+        );
+    }
+    let r = one("y''+y=0");
+    assert!(
+        matches!(&r.odes[0], Ode::Implicit { order: 2, f } if close(f.eval_n(0.0, &[1.0, 5.0, -1.0]), 0.0))
+    );
+
+    // Systems, in t, x and y.
+    for latex in [
+        "x'=y,y'=-x",
+        "\\left(x',y'\\right)=\\left(y,-x\\right)",
+        "\\frac{dx}{dt}=y,\\frac{dy}{dt}=-x",
+    ] {
+        let r = one(latex);
+        assert_eq!(r.error, None, "{latex}");
+        let Ode::System { f, g } = &r.odes[0] else {
+            panic!("{latex}: {:?}", r.odes)
+        };
+        assert!(close(f.eval3(1.0, 2.0, 0.0), 2.0) && close(g.eval3(1.0, 2.0, 0.0), -1.0));
+        assert!(!f.uses_z(), "autonomous");
+        assert_eq!(r.ode, Some(1));
+    }
+    let r = one("x'=t,y'=1");
+    let Ode::System { f, .. } = &r.odes[0] else {
+        panic!()
+    };
+    assert!(f.uses_z(), "reads t");
+
+    // Mistakes.
+    assert!(one("x'=y").error.is_some());
+    assert!(one("y'>x").error.is_some());
+    assert!(one("y'''''''=y").error.is_some(), "order 7 is too high");
+    assert!(one("x'=y',y'=x").error.is_some());
+    let r = rows(&["a=y'"]).remove(0);
+    assert!(r.missing.is_empty(), "y' is never offered as a slider");
 }

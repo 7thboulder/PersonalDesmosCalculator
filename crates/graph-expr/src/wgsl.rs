@@ -64,7 +64,7 @@ pub fn body(program: &Program) -> Option<Shader> {
             Op::Arg(Arg::X) => stack.push("x".into()),
             Op::Arg(Arg::Y) => stack.push("y".into()),
             // Integrals are evaluated on the CPU.
-            Op::Arg(Arg::Local(_) | Arg::Z) | Op::Integral { .. } => return None,
+            Op::Arg(Arg::Local(_) | Arg::Z | Arg::Extra(_)) | Op::Integral { .. } => return None,
             Op::Neg => {
                 let a = stack.pop()?;
                 push(format!("-({a})"), &mut stack, &mut lines);

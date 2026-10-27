@@ -521,7 +521,11 @@ button.icon:disabled { color: #bbb; cursor: default; }
   padding: 0 2px;
 }
 .row .seeds .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
-.row .seeds.bad .bound { border-bottom-color: #e0832e; }
+.row .seeds.bad .seeds-field { border-bottom-color: #e0832e; }
+.row .seeds { flex-wrap: wrap; }
+.row .derivs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: 8px; }
+.row .derivs .bound { min-width: 28px; }
+.row .derivs.bad .bound { border-bottom-color: #e0832e; }
 
 /* ---- Points and lines toggles ---- */
 #style-menu .toggles { display: none; gap: 12px; margin: 6px 0 2px; }
