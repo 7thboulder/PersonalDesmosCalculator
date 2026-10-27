@@ -107,6 +107,14 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         if let Some(saved) = opened.as_ref().and_then(|(_, s)| s.view) {
             saved.apply(&mut view);
         }
+        // --camera=YAW,PITCH (radians) turns the box.
+        if let Some((yaw, pitch)) = flag("--camera=").and_then(|c| {
+            let (a, b) = c.split_once(',')?;
+            Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
+        }) {
+            view.yaw = yaw;
+            view.pitch = pitch;
+        }
         let start = Instant::now();
         let mut build = Duration::ZERO;
         let pixels = engine.with_frame_3d(&view, 1.0, &mut text, |frame, overlay, text| {

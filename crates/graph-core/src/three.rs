@@ -56,7 +56,7 @@ impl View3 {
     pub fn new(width_px: f64, height_px: f64) -> Self {
         Self {
             center: [0.0; 3],
-            half: [10.0; 3],
+            half: [5.0; 3],
             yaw: DEFAULT_YAW,
             pitch: DEFAULT_PITCH,
             width_px,
@@ -1022,13 +1022,20 @@ pub fn box_labels(view: &View3, scale: f32, text: &mut TextAtlas) -> Vec<Vertex>
 mod tests {
     use super::*;
 
+    /// A view of ±10 on each axis, which these tests were written for.
+    fn ten(width_px: f64, height_px: f64) -> View3 {
+        let mut v = View3::new(width_px, height_px);
+        v.half = [10.0; 3];
+        v
+    }
+
     fn clip(m: &[[f32; 4]; 4], b: [f64; 3]) -> [f64; 4] {
         m.map(|r| r[0] as f64 * b[0] + r[1] as f64 * b[1] + r[2] as f64 * b[2] + r[3] as f64)
     }
 
     #[test]
     fn matrix_and_projection_agree() {
-        let mut v = View3::new(800.0, 600.0);
+        let mut v = ten(800.0, 600.0);
         v.turn_px(37.0, -12.0);
         let m = v.matrix();
         for b in [[0.0, 0.0, 0.0], [1.0, -1.0, 1.0], [-1.0, 0.5, -1.0]] {
@@ -1048,7 +1055,7 @@ mod tests {
 
     #[test]
     fn default_view_has_x_toward_the_viewer_and_z_up() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let [ox, oy] = v.project([0.0; 3]);
         let x = v.project([1.0, 0.0, 0.0]);
         let y = v.project([0.0, 1.0, 0.0]);
@@ -1060,7 +1067,7 @@ mod tests {
 
     #[test]
     fn zoom_and_pan_change_the_range_not_the_box() {
-        let mut v = View3::new(600.0, 600.0);
+        let mut v = ten(600.0, 600.0);
         v.zoom(2.0);
         assert_eq!(v.half, [5.0; 3]);
         // Dragging right moves the contents right: the centre moves the
@@ -1077,7 +1084,7 @@ mod tests {
 
     #[test]
     fn surface_mesh_follows_the_function() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let f = |x: f64, y: f64| x * y / 10.0;
         let mesh = surface_mesh(&v, &f, [1.0; 4], 10);
         assert_eq!(mesh.vertices.len(), 121);
@@ -1104,7 +1111,7 @@ mod tests {
 
     #[test]
     fn points_and_curves_stay_in_the_box() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let mut out = Vec::new();
         points_3d(
             &v,
@@ -1136,7 +1143,7 @@ mod tests {
 
     #[test]
     fn implicit_sphere_lies_on_its_radius() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let sphere = |x: f64, y: f64, z: f64| x * x + y * y + z * z - 25.0;
         let mesh = implicit_mesh(&v, &sphere, [1.0; 4], 24);
         assert!(mesh.indices.len() > 300, "{} indices", mesh.indices.len());
@@ -1157,7 +1164,7 @@ mod tests {
 
     #[test]
     fn solid_below_a_plane_is_closed_by_the_walls() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let below = |_: f64, _: f64, z: f64| z - 2.0;
         let mesh = solid_mesh(&v, &below, [1.0; 4], 20);
         let on_top = |p: &Vertex3| (p.pos[2] - 0.2).abs() < 0.02;
@@ -1178,7 +1185,7 @@ mod tests {
 
     #[test]
     fn polygon_fill_is_a_fan_facing_its_normal() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let square = [
             [0.0, 0.0, 5.0],
             [5.0, 0.0, 5.0],
@@ -1196,7 +1203,7 @@ mod tests {
 
     #[test]
     fn box_mesh_is_cut_to_the_view() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let m = box_mesh(
             &v,
             [[0.0, 5.0], [-20.0, 5.0], [0.0, f64::INFINITY]],
@@ -1218,7 +1225,7 @@ mod tests {
 
     #[test]
     fn parametric_cylinder_wraps_around() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let tau = std::f64::consts::TAU;
         let f = |u: f64, w: f64| [5.0 * (tau * u).cos(), 5.0 * (tau * u).sin(), 10.0 * w - 5.0];
         let mesh = parametric_mesh(&v, &f, (0.0, 1.0), (0.0, 1.0), [1.0; 4], 12);
@@ -1233,7 +1240,7 @@ mod tests {
 
     #[test]
     fn frame_has_edges_grid_and_axes() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let lines = box_lines(&v, 1.0);
         // 12 edges, 5 grid lines each way at step 5 (-10 to 10), 3 axes.
         assert_eq!(lines.len(), (12 + 10 + 3) * 6);
