@@ -12,6 +12,7 @@ use crate::builtins::Builtin;
 use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
 use crate::parser::parse;
+use crate::units;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -267,6 +268,8 @@ pub struct RowAnalysis {
     pub fractals: Vec<Fractal>,
     /// Lines through points in order, such as a cobweb diagram.
     pub paths: Vec<Vec<[f64; 2]>>,
+    /// The unit the value is shown in, as LaTeX, when it has one.
+    pub unit: Option<String>,
     /// For a differential equation `y' = f(x, y)`: the slope, one program
     /// per list element, reading x as `Arg::X` and y as `Arg::Y`.
     pub odes: Vec<Program>,
@@ -322,6 +325,7 @@ impl RowAnalysis {
             fit: None,
             fractals: Vec::new(),
             paths: Vec::new(),
+            unit: None,
             odes: Vec::new(),
             ode: false,
             seeds: Vec::new(),
@@ -986,9 +990,27 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
 
 /// As `analyze_cached`, for a graph in the given mode.
 pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<RowAnalysis> {
-    let parsed: Vec<Option<Result<Statement, String>>> = rows
+    let written: Vec<Option<Result<Statement, String>>> = rows
         .iter()
-        .map(|r| (r.table.is_none() && !r.latex.trim().is_empty()).then(|| parse(&r.latex)))
+        .map(|r| {
+            (r.table.is_none() && !r.latex.trim().is_empty())
+                .then(|| crate::parser::parse_with_units(&r.latex))
+        })
+        .collect();
+    // Units are checked as written, then become plain SI numbers.
+    let shown: Vec<Result<Option<units::Shown>, String>> = {
+        let defs = units::Defs::new(written.iter().flatten().flatten());
+        written
+            .iter()
+            .map(|w| match w {
+                Some(Ok(statement)) => units::row_units(statement, &defs),
+                _ => Ok(None),
+            })
+            .collect()
+    };
+    let parsed: Vec<Option<Result<Statement, String>>> = written
+        .into_iter()
+        .map(|w| w.map(|r| r.map(units::lower_statement)))
         .collect();
     let mut tables: Vec<Option<Table>> = rows
         .iter()
@@ -1115,7 +1137,8 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         .zip(parsed)
         .zip(defs)
         .zip(tables)
-        .map(|(((row, parsed), def), table)| {
+        .zip(shown)
+        .map(|((((row, parsed), def), table), shown)| {
             let mut point = None;
             let mut out = match (parsed, def) {
                 _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
@@ -1148,6 +1171,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             if out.error.is_none() && out.points.len() == 1 {
                 out.drag = point.and_then(|e| env.drag_of(&e));
             }
+            show_units(&mut out, shown);
             match mode {
                 Mode::ThreeD => into_3d(&mut out),
                 Mode::Flat => flat(&mut out),
@@ -1158,6 +1182,28 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
     env.new.funcs = std::mem::take(&mut env.funcs);
     *cache = std::mem::take(&mut env.new);
     results
+}
+
+/// Shows a row's answer in its units, or says why its units don't agree.
+fn show_units(row: &mut RowAnalysis, shown: Result<Option<units::Shown>, String>) {
+    match shown {
+        Err(e) => {
+            if row.error.is_none() {
+                row.error = Some(e);
+            }
+            row.value = None;
+        }
+        Ok(Some(shown)) => {
+            let scale = |v: &mut f64| *v /= shown.factor;
+            match &mut row.value {
+                Some(Value::Number(v)) => scale(v),
+                Some(Value::Numbers(vs)) => vs.iter_mut().for_each(scale),
+                _ => return,
+            }
+            row.unit = Some(shown.latex);
+        }
+        Ok(None) => {}
+    }
 }
 
 /// In a 3D graph, flat points and parametric curves sit on the xy plane,
@@ -3433,6 +3479,9 @@ impl Env {
         }
         match e {
             Expr::Num(v) => Val::num(Low::Const(*v)),
+            // Rows are read with units already lowered; these are for safety.
+            Expr::Unit(q) => Val::num(Low::Const(q.factor)),
+            Expr::Convert(a, _) => go!(a),
             Expr::Var(name) => self.resolve_name(name, bindings, free, problems, visiting),
             Expr::Neg(a) => {
                 let a = go!(a);
