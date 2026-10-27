@@ -34,6 +34,7 @@
   <button data-file="save">Save<span class="key">Ctrl+S</span></button>
   <button data-file="saveAs">Save as&hellip;<span class="key">Ctrl+Shift+S</span></button>
   <button data-file="import">Import from Desmos&hellip;</button>
+  <button data-file="exportDesmos">Export to Desmos&hellip;</button>
   <button data-file="help">Functions and shortcuts<span class="key">Ctrl+/</span></button>
 </div>
 <div id="import" class="overlay">
@@ -43,6 +44,17 @@
       gives in Desmos's browser console. Ctrl+V anywhere in the app does the same.</p>
     <textarea spellcheck="false" placeholder="https://www.desmos.com/calculator/..."></textarea>
     <div class="buttons"><button class="cancel">Cancel</button><button class="go">Import</button></div>
+  </div>
+</div>
+<div id="export" class="overlay">
+  <div class="box">
+    <h2>Export to Desmos</h2>
+    <p>Copy this, open <b class="site">desmos.com/calculator</b>, press F12 for the browser
+      console, paste it there and press Enter. (Chrome asks you to type <code>allow pasting</code>
+      the first time.)</p>
+    <textarea spellcheck="false" readonly></textarea>
+    <ul class="warnings"></ul>
+    <div class="buttons"><button class="cancel">Close</button><button class="go">Copy</button></div>
   </div>
 </div>
 <div id="toast"></div>

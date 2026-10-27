@@ -8,7 +8,7 @@ use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE, MAJOR_SPACING_L
 use graph_core::three::{self, Mesh, View3};
 use graph_core::{
     Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points, Polygon,
-    TextAtlas, Vertex, Viewport,
+    SlopeField, TextAtlas, Vertex, Viewport,
 };
 use graph_expr::format::{exact_latex, result_latex, value_latex};
 use graph_expr::{
@@ -71,6 +71,10 @@ pub struct GraphPoints {
     pub line: Option<(f32, LineStyle)>,
     /// The slider variables dragging the point moves, for `(a, b)`.
     pub drag: Option<[Option<String>; 2]>,
+    /// For a differential equation's initial point written as plain
+    /// numbers: its place among the row's initial points, which dragging
+    /// it rewrites.
+    pub seed: Option<usize>,
 }
 
 impl GraphPoints {
@@ -88,8 +92,19 @@ impl GraphPoints {
                 .unwrap_or(false)
                 .then(|| (style_width(style), style_line(style))),
             drag: None,
+            seed: None,
         }
     }
+}
+
+/// A differential equation y' = f(x, y) ready to draw: its slope field
+/// and the solution through each initial point.
+pub struct GraphOde {
+    pub slope: Program,
+    pub seeds: Vec<[f64; 2]>,
+    pub color: [f32; 4],
+    pub width: f32,
+    pub style: LineStyle,
 }
 
 /// One polygon ready to draw.
@@ -253,6 +268,7 @@ pub struct Engine {
     pub complex: Vec<GraphComplex>,
     pub points: Vec<GraphPoints>,
     pub polygons: Vec<GraphPolygon>,
+    pub odes: Vec<GraphOde>,
     pub surfaces: Vec<GraphSurface>,
     pub points3: Vec<GraphPoints3>,
     pub curves3: Vec<GraphCurve3>,
@@ -304,6 +320,7 @@ impl Engine {
                         })
                         .collect()
                 }),
+                seeds: r["seeds"].as_str().map(str::to_owned),
             })
             .collect();
         let results = analyze_mode(&inputs, &mut self.cache, self.mode);
@@ -323,6 +340,7 @@ impl Engine {
         self.complex.clear();
         self.points.clear();
         self.polygons.clear();
+        self.odes.clear();
         self.surfaces.clear();
         self.points3.clear();
         self.curves3.clear();
@@ -345,6 +363,25 @@ impl Engine {
                     width,
                     style,
                 });
+            }
+            let seeds: Vec<[f64; 2]> = result.seeds.iter().map(|s| s.at).collect();
+            for slope in &result.odes {
+                self.odes.push(GraphOde {
+                    slope: slope.clone(),
+                    seeds: seeds.clone(),
+                    color,
+                    width,
+                    style,
+                });
+            }
+            // Each initial point is a dot of its own, so it can be dragged.
+            for (i, seed) in result.seeds.iter().enumerate() {
+                let mut dot = GraphPoints::styled(result.id, vec![seed.at], row);
+                dot.dots = true;
+                dot.line = None;
+                dot.drag = seed.drag.clone();
+                dot.seed = result.seeds_fixed.then_some(i);
+                self.points.push(dot);
             }
             let solid_fill = row["fillOpacity"]
                 .as_f64()
@@ -640,12 +677,30 @@ impl Engine {
                 style: p.style,
             })
             .collect();
+        let slopes: Vec<_> = self
+            .odes
+            .iter()
+            .map(|o| move |x: f64, y: f64| o.slope.eval2(x, y))
+            .collect();
+        let fields: Vec<SlopeField> = self
+            .odes
+            .iter()
+            .zip(&slopes)
+            .map(|(o, slope)| SlopeField {
+                slope,
+                seeds: &o.seeds,
+                color: o.color,
+                width: o.width,
+                style: o.style,
+            })
+            .collect();
         draw(&Plot {
             curves: &curves,
             parametrics: &parametrics,
             implicits: &implicits,
             polygons: &polygons,
             points: &points,
+            fields: &fields,
             marks,
         })
     }
@@ -703,6 +758,7 @@ impl Engine {
             + self.complex.len()
             + self.points.len()
             + self.polygons.len()
+            + self.odes.len()
             + self.surfaces.len()
             + self.points3.len()
             + self.curves3.len()
@@ -943,6 +999,7 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         // A complex plot's style menu offers Colors or Grid.
         "complex": !r.complex.is_empty(),
         "lines": !(r.curves.is_empty()
+            && r.odes.is_empty()
             && r.parametrics.is_empty()
             && r.regions.is_empty()
             && r.curves3.is_empty()),
@@ -956,6 +1013,8 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "cellErrors": c.cell_errors,
             "points": !c.points.is_empty(),
         })).collect::<Vec<_>>(),
+        // A differential equation shows its initial points under it.
+        "ode": r.ode.then(|| json!({"error": r.seeds_error})),
         "parameter": r.parameter.as_ref().map(|p| json!({
             "name": p.name,
             "latex": name_latex(p.name),
