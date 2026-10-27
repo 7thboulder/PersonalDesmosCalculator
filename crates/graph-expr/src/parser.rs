@@ -7,6 +7,11 @@ use crate::builtins::{self, Builtin};
 use crate::lexer::{tokenize, Tok};
 
 pub fn parse(latex: &str) -> Result<Statement, String> {
+    parse_with_units(latex).map(crate::units::lower_statement)
+}
+
+/// As `parse`, keeping units and conversions as written, for checking them.
+pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
     let toks = tokenize(latex)?;
     let mut p = Parser {
         toks,
@@ -25,6 +30,18 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
             }
             statement = Statement::Expr(Expr::Actions(actions));
         }
+    }
+    // `5 m/s · 3 h \text{in km}` shows the answer in km.
+    if let Some(Tok::UnitTarget(text)) = p.peek().cloned() {
+        p.pos += 1;
+        let target = Box::new(crate::units::parse_unit(&text)?);
+        statement = match statement {
+            Statement::Expr(e) => Statement::Expr(Expr::Convert(Box::new(e), target)),
+            Statement::Relation(lhs, Relation::Eq, rhs) => {
+                Statement::Relation(lhs, Relation::Eq, Expr::Convert(Box::new(rhs), target))
+            }
+            _ => return Err("Only a value can be converted, like 5 km in mi".into()),
+        };
     }
     match p.peek() {
         None => Ok(statement),
@@ -62,6 +79,8 @@ fn describe(tok: &Tok) -> String {
         Tok::Letter(l) => format!("'{l}'"),
         Tok::OpName(n) => format!("'{n}'"),
         Tok::Unsupported(n) => format!("'\\{n}'"),
+        Tok::Unit(t) => format!("'{t}'"),
+        Tok::UnitTarget(t) => format!("'in {t}': a conversion goes at the end, like 5 km in mi"),
         other => format!("{other:?}").to_lowercase(),
     }
 }
@@ -221,6 +240,7 @@ impl Parser {
                 | Tok::Sum
                 | Tok::Prod
                 | Tok::Int
+                | Tok::Unit(_)
                 | Tok::Unsupported(_),
             ) => true,
             Some(Tok::Pipe) => self.pipe_depth == 0,
@@ -319,6 +339,7 @@ impl Parser {
         let tok = self.next().ok_or("Incomplete expression")?;
         match tok {
             Tok::Num(v) => Ok(Expr::Num(v)),
+            Tok::Unit(text) => Ok(Expr::Unit(Box::new(crate::units::parse_unit(&text)?))),
             Tok::Letter(letter) => {
                 let name = self.subscripted(letter)?;
                 let mut primes = 0;
