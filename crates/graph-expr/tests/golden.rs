@@ -1020,7 +1020,18 @@ fn three_d_equations_and_uv_surfaces() {
     let s = &r[5].param_surfaces[0];
     assert!(close(s.z.eval2(0.5, 0.25), 0.125));
     assert_eq!((s.u, s.v), ((0.0, 1.0), (0.0, 1.0)));
-    assert!(r[6].error.is_some() && !r[6].graphed(), "no 3D shading yet");
+    let solid = &r[6].implicits3[0];
+    assert_eq!(solid.shade, Some(Compare::Lt), "an inequality is a solid");
+    assert!(close(solid.program.eval3(0.0, 0.0, 0.0), -25.0));
+    let r = rows_3d(&["z>x", "-1\\le z<1", "x^2>4"]);
+    assert_eq!(r[0].implicits3[0].shade, Some(Compare::Gt));
+    assert!(close(r[0].implicits3[0].program.eval3(1.0, 0.0, 3.0), 2.0));
+    // A chain is inside where its largest gap is negative.
+    let slab = &r[1].implicits3[0];
+    assert_eq!(slab.shade, Some(Compare::Le));
+    assert!(slab.program.eval3(5.0, 5.0, 0.0) < 0.0);
+    assert!(slab.program.eval3(5.0, 5.0, 2.0) > 0.0);
+    assert!(r[2].graphed() && r[2].error.is_none(), "{:?}", r[2]);
     // A row that defines u fixes it, and the surface is traced by v alone.
     let r = rows_3d(&["u=2", "\\left(u,v,1\\right)"]);
     assert_eq!(r[0].slider, Some(2.0));

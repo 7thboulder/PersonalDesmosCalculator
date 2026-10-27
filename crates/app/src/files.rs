@@ -160,6 +160,9 @@ impl BoxView {
 
 /// The mode and 3D view of a graph file; a Desmos graph is 2D.
 pub fn space_of(text: &str) -> Space {
+    if let Some(state) = desmos_state(text) {
+        return desmos_space(&state);
+    }
     let Ok(file) = serde_json::from_str::<Value>(text) else {
         return Space::default();
     };
@@ -191,6 +194,34 @@ pub fn space_of(text: &str) -> Space {
         three_d: file["mode"] == "3d",
         view,
     }
+}
+
+/// Whether a Desmos graph is from Desmos 3D, and its box. Desmos 3D marks
+/// its graphs with `threeDMode` and gives the viewport a z range.
+fn desmos_space(state: &Value) -> Space {
+    let g = &state["graph"];
+    let v = &g["viewport"];
+    let three_d = g["threeDMode"].as_bool().unwrap_or(false)
+        || (v["zmin"].is_number() && v["zmax"].is_number())
+        || state["product"].as_str().is_some_and(|p| p.contains("3d"));
+    let range = |lo: &str, hi: &str| -> Option<(f64, f64)> {
+        let (a, b) = (v[lo].as_f64()?, v[hi].as_f64()?);
+        (b > a && (b - a).is_finite()).then_some((a, b))
+    };
+    let view = match (
+        range("xmin", "xmax"),
+        range("ymin", "ymax"),
+        range("zmin", "zmax"),
+    ) {
+        (Some(x), Some(y), Some(z)) if three_d => {
+            let mut box3 = View3::new(1.0, 1.0);
+            box3.center = [(x.0 + x.1) / 2.0, (y.0 + y.1) / 2.0, (z.0 + z.1) / 2.0];
+            box3.half = [(x.1 - x.0) / 2.0, (y.1 - y.0) / 2.0, (z.1 - z.0) / 2.0];
+            Some(BoxView::of(&box3))
+        }
+        _ => None,
+    };
+    Space { three_d, view }
 }
 
 /// A saved view: the world point at the centre and the width shown.
@@ -261,10 +292,14 @@ pub fn desmos_state(text: &str) -> Option<Value> {
 }
 
 /// The URL to ask desmos.com for, when the text is a link to a saved graph
-/// such as `https://www.desmos.com/calculator/iotrkvyz1u`.
+/// such as `https://www.desmos.com/calculator/iotrkvyz1u` or
+/// `https://www.desmos.com/3d/abc123`.
 pub fn desmos_link(text: &str) -> Option<String> {
     let text = text.trim();
-    let rest = &text[text.find("desmos.com/calculator/")? + "desmos.com/calculator/".len()..];
+    let (kind, at) = ["calculator", "3d"]
+        .into_iter()
+        .find_map(|kind| Some((kind, text.find(&format!("desmos.com/{kind}/"))?)))?;
+    let rest = &text[at + "desmos.com/".len() + kind.len() + 1..];
     let hash: String = rest
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric())
@@ -276,7 +311,7 @@ pub fn desmos_link(text: &str) -> Option<String> {
         .unwrap_or(prefix);
     let plain = host.is_empty() || host == "www.";
     (!hash.is_empty() && plain && !text.contains(char::is_whitespace))
-        .then(|| format!("https://www.desmos.com/calculator/{hash}"))
+        .then(|| format!("https://www.desmos.com/{kind}/{hash}"))
 }
 
 /// A number written as plain latex, such as `-2.5` (what Desmos stores for
@@ -623,6 +658,10 @@ mod tests {
             desmos_link("https://evil.example/desmos.com/calculator/abc"),
             None
         );
+        assert_eq!(
+            desmos_link("https://www.desmos.com/3d/abc123"),
+            Some("https://www.desmos.com/3d/abc123".to_string())
+        );
         let state = r#"{"version":11,"expressions":{"list":[{"type":"expression","id":"1","latex":"y=x"}]}}"#;
         assert!(desmos_state(state).is_some());
         let reply = format!(r#"{{"title":"t","hash":"abc","state":{state}}}"#);
@@ -630,6 +669,30 @@ mod tests {
         assert!(imported);
         assert_eq!(rows[0]["latex"], "y=x");
         assert!(desmos_state("y=x").is_none());
+    }
+
+    #[test]
+    fn desmos_3d_states_open_in_3d() {
+        let state = json!({
+            "version": 11,
+            "graph": {
+                "threeDMode": true,
+                "viewport": {"xmin": -5, "xmax": 5, "ymin": -5, "ymax": 5, "zmin": 0, "zmax": 20},
+            },
+            "expressions": {"list": [{"type": "expression", "id": "1", "latex": "z=x^2+y^2"}]}
+        })
+        .to_string();
+        let space = space_of(&state);
+        assert!(space.three_d);
+        let view = space.view.unwrap();
+        assert_eq!(
+            (view.center, view.half),
+            ([0.0, 0.0, 10.0], [5.0, 5.0, 10.0])
+        );
+        assert_eq!(open_any(&state).unwrap().0[0]["latex"], "z=x^2+y^2");
+        // A 2D graph stays 2D.
+        let flat = r#"{"graph":{"viewport":{"xmin":-1,"xmax":1,"ymin":-1,"ymax":1}},"expressions":{"list":[]}}"#;
+        assert!(!space_of(flat).three_d);
     }
 
     #[test]

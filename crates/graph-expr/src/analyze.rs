@@ -95,6 +95,10 @@ pub struct Curve3 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Implicit3 {
     pub program: Program,
+    /// For an inequality, how the program compares with zero inside the
+    /// shaded solid: `x^2 + y^2 + z^2 < 25` is the program
+    /// `x^2 + y^2 + z^2 - 25` with `Lt`.
+    pub shade: Option<Compare>,
 }
 
 /// A surface traced by u and v: `(u, v, u v)`. All three programs read u
@@ -1631,10 +1635,21 @@ impl Env {
             Statement::Expr(e) if self.uses_uv(e) => self.param_surface_row(id, e),
             Statement::Expr(e) if spatial(e) && !self.is_parametric(e) => self.surface_row(id, e),
             Statement::Expr(e) => self.expression_row(input, e),
-            _ => RowAnalysis {
-                kind: RowKind::NotYet,
-                ..RowAnalysis::error(id, "3D graphs can't shade inequalities yet")
-            },
+            Statement::Relation(lhs, rel, rhs) => {
+                let compare = match rel {
+                    Relation::Lt => Compare::Lt,
+                    Relation::Le => Compare::Le,
+                    Relation::Gt => Compare::Gt,
+                    _ => Compare::Ge,
+                };
+                let row = self.region_row(id, lhs, rhs, compare);
+                solids(row)
+            }
+            Statement::Chain(condition) => {
+                let row = self.chain_row(id, condition);
+                solids(row)
+            }
+            Statement::Regression(..) => unreachable!("regressions have their own rows"),
         }
     }
 
@@ -1699,7 +1714,10 @@ impl Env {
             let Item::Num(low) = item else { continue };
             match Program::compile(low) {
                 Ok(program) if !program.uses_arg() => constant = program.constant(),
-                Ok(program) => row.implicits3.push(Implicit3 { program }),
+                Ok(program) => row.implicits3.push(Implicit3 {
+                    program,
+                    shade: None,
+                }),
                 Err(e) => row.error = Some(e),
             }
         }
@@ -1971,8 +1989,8 @@ impl Env {
     /// is the left minus the right.
     fn region_row(&mut self, id: u64, lhs: &Expr, rhs: &Expr, compare: Compare) -> RowAnalysis {
         let mut problems = Problems::default();
-        let left = self.lower_plane(lhs, &mut problems);
-        let right = self.lower_plane(rhs, &mut problems);
+        let left = self.lower_side(lhs, &mut problems);
+        let right = self.lower_side(rhs, &mut problems);
         let difference = self.broadcast(&[left, right], &mut problems, |items| {
             match (items[0], items[1]) {
                 (Item::Num(a), Item::Num(b)) => {
@@ -2007,7 +2025,7 @@ impl Env {
         let operands: Vec<Val> = c
             .operands
             .iter()
-            .map(|e| self.lower_plane(e, &mut problems))
+            .map(|e| self.lower_side(e, &mut problems))
             .collect();
         let gaps: Vec<Val> = operands
             .windows(2)
@@ -2071,6 +2089,15 @@ impl Env {
 
     /// Lowers one side of a relation over the plane: x and y, plus r and θ
     /// measured from the origin.
+    /// One side of an inequality: in the plane, or in space in a 3D graph.
+    fn lower_side(&mut self, e: &Expr, problems: &mut Problems) -> Val {
+        if self.mode == Mode::ThreeD {
+            self.lower_space(e, problems)
+        } else {
+            self.lower_plane(e, problems)
+        }
+    }
+
     fn lower_plane(&mut self, e: &Expr, problems: &mut Problems) -> Val {
         let x = || Low::Arg(Arg::X);
         let y = || Low::Arg(Arg::Y);
@@ -4424,4 +4451,16 @@ fn gauss(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
 
 fn slider_names(missing: &[String]) -> Vec<String> {
     missing.iter().filter(|m| definable(m)).cloned().collect()
+}
+
+/// Turns the shaded regions of an inequality analysed in space into
+/// translucent solids.
+fn solids(mut row: RowAnalysis) -> RowAnalysis {
+    for region in std::mem::take(&mut row.regions) {
+        row.implicits3.push(Implicit3 {
+            program: region.program,
+            shade: Some(region.compare),
+        });
+    }
+    row
 }

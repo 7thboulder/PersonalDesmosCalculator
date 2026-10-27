@@ -158,18 +158,30 @@ pub struct Frame3<'a> {
     /// Changes whenever `surfaces` do, so unchanged ones are not uploaded
     /// again while the box turns.
     pub surfaces_key: u64,
+    /// The box's lines, which change as it turns.
     pub lines: &'a [LineVertex],
+    /// Points and curves, which stay put while the box turns.
+    pub marks: &'a [LineVertex],
+    /// Changes whenever `marks` do, as `surfaces_key`.
+    pub marks_key: u64,
 }
 
 pub struct Renderer3 {
     surface_pipeline: wgpu::RenderPipeline,
+    /// Translucent surfaces (shaded solids): drawn last, without hiding
+    /// what is behind them.
+    see_through_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     vertices: Grown,
     indices: Grown,
     lines: Grown,
+    marks: Grown,
+    marks_uploaded: Option<u64>,
     index_count: u32,
+    /// Where the translucent surfaces' indices start.
+    opaque_count: u32,
     uploaded: Option<u64>,
     depth: Option<(wgpu::TextureView, u32, u32)>,
     samples: u32,
@@ -240,7 +252,7 @@ impl Renderer3 {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let pipeline = |label, vs, fs, buffer: wgpu::VertexBufferLayout| {
+        let pipeline = |label, vs, fs, buffer: wgpu::VertexBufferLayout, write_depth: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
@@ -263,7 +275,7 @@ impl Renderer3 {
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
+                    depth_write_enabled: Some(write_depth),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
                     bias: Default::default(),
@@ -276,15 +288,26 @@ impl Renderer3 {
                 cache: None,
             })
         };
+        const SURFACE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
+        let surface_layout = || wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex3>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &SURFACE_ATTRIBUTES,
+        };
         let surface_pipeline = pipeline(
             "3d surfaces",
             "surface_vs",
             "surface_fs",
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex3>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4],
-            },
+            surface_layout(),
+            true,
+        );
+        let see_through_pipeline = pipeline(
+            "3d see-through surfaces",
+            "surface_vs",
+            "surface_fs",
+            surface_layout(),
+            false,
         );
         let line_pipeline = pipeline(
             "3d lines",
@@ -298,6 +321,7 @@ impl Renderer3 {
                     4 => Float32x4, 5 => Float32, 6 => Float32
                 ],
             },
+            true,
         );
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("3d uniforms"),
@@ -315,13 +339,17 @@ impl Renderer3 {
         });
         Self {
             surface_pipeline,
+            see_through_pipeline,
             line_pipeline,
             uniforms,
             bind_group,
             vertices: Grown::new(device, "3d vertices", wgpu::BufferUsages::VERTEX),
             indices: Grown::new(device, "3d indices", wgpu::BufferUsages::INDEX),
             lines: Grown::new(device, "3d lines", wgpu::BufferUsages::VERTEX),
+            marks: Grown::new(device, "3d marks", wgpu::BufferUsages::VERTEX),
+            marks_uploaded: None,
             index_count: 0,
+            opaque_count: 0,
             uploaded: None,
             depth: None,
             samples,
@@ -341,16 +369,31 @@ impl Renderer3 {
             self.uploaded = Some(frame.surfaces_key);
             let mut vertices: Vec<Vertex3> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
-            for mesh in frame.surfaces {
-                let base = vertices.len() as u32;
-                vertices.extend_from_slice(&mesh.vertices);
-                indices.extend(mesh.indices.iter().map(|i| i + base));
+            let see_through = |m: &Mesh| m.vertices.first().is_some_and(|v| v.color[3] < 0.999);
+            // Opaque surfaces first, then the translucent ones.
+            for translucent in [false, true] {
+                if translucent {
+                    self.opaque_count = indices.len() as u32;
+                }
+                for mesh in frame
+                    .surfaces
+                    .iter()
+                    .filter(|m| see_through(m) == translucent)
+                {
+                    let base = vertices.len() as u32;
+                    vertices.extend_from_slice(&mesh.vertices);
+                    indices.extend(mesh.indices.iter().map(|i| i + base));
+                }
             }
             self.vertices.write(gpu, bytemuck::cast_slice(&vertices));
             self.indices.write(gpu, bytemuck::cast_slice(&indices));
             self.index_count = indices.len() as u32;
         }
         self.lines.write(gpu, bytemuck::cast_slice(frame.lines));
+        if self.marks_uploaded != Some(frame.marks_key) {
+            self.marks_uploaded = Some(frame.marks_key);
+            self.marks.write(gpu, bytemuck::cast_slice(frame.marks));
+        }
         let t = frame.toward;
         let uniforms = Uniforms {
             m: frame.matrix,
@@ -391,16 +434,27 @@ impl Renderer3 {
 
     pub(crate) fn draw(&self, rp: &mut wgpu::RenderPass<'_>, frame: &Frame3) {
         rp.set_bind_group(0, &self.bind_group, &[]);
-        if self.index_count > 0 {
+        if self.opaque_count > 0 {
             rp.set_pipeline(&self.surface_pipeline);
             rp.set_vertex_buffer(0, self.vertices.buffer.slice(..));
             rp.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
-            rp.draw_indexed(0..self.index_count, 0, 0..1);
+            rp.draw_indexed(0..self.opaque_count, 0, 0..1);
         }
-        if !frame.lines.is_empty() {
-            rp.set_pipeline(&self.line_pipeline);
-            rp.set_vertex_buffer(0, self.lines.buffer.slice(..));
-            rp.draw(0..frame.lines.len() as u32, 0..1);
+        for (buffer, count) in [
+            (&self.lines, frame.lines.len()),
+            (&self.marks, frame.marks.len()),
+        ] {
+            if count > 0 {
+                rp.set_pipeline(&self.line_pipeline);
+                rp.set_vertex_buffer(0, buffer.buffer.slice(..));
+                rp.draw(0..count as u32, 0..1);
+            }
+        }
+        if self.index_count > self.opaque_count {
+            rp.set_pipeline(&self.see_through_pipeline);
+            rp.set_vertex_buffer(0, self.vertices.buffer.slice(..));
+            rp.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
+            rp.draw_indexed(self.opaque_count..self.index_count, 0, 0..1);
         }
     }
 }

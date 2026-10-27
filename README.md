@@ -40,7 +40,9 @@ on the right. What you type is graphed as you type it:
   equal, with ρ (distance from the origin) and φ (angle from +z) as in
   Desmos 3D, so `ρ = 5` is a sphere and `r = 3` a cylinder. A point that
   reads u and v, such as `(cos 2πu, sin 2πu, v)`, is a surface over
-  0 ≤ u, v ≤ 1. Shaded inequalities are still to come.
+  0 ≤ u, v ≤ 1. An inequality such as `x^2 + y^2 + z^2 < 25` or
+  `-1 < z < 1` is a see-through solid, closed off by the box's walls where
+  it meets them.
 - Notes (+ then **note**, Ctrl+Alt+O, or typing `"` in an empty row): a row
   of plain text between expressions. Shift+Enter breaks the line; Enter
   starts a new expression below.
@@ -82,9 +84,9 @@ on the right. What you type is graphed as you type it:
   defined elsewhere, shows the values and R², draws the fitted curve, and
   stores the residuals as `e_1` (then `e_2`, ...). The fitted names can be
   used in other rows. Any model works, such as `y_1 \sim a e^{k x_1}`.
-- Opening a Desmos graph: paste its desmos.com/calculator link anywhere in
-  the app (Ctrl+V), or use ☰ then **Import from Desmos**, and the app fetches
-  it. Pasting the text `JSON.stringify(Calc.getState())` gives in Desmos's
+- Opening a Desmos graph: paste its desmos.com/calculator or desmos.com/3d
+  link anywhere in the app (Ctrl+V), or use ☰ then **Import from Desmos**,
+  and the app fetches it (a Desmos 3D graph opens as a 3D graph). Pasting the text `JSON.stringify(Calc.getState())` gives in Desmos's
   browser console works too, as does opening it saved as a `.json` or `.txt`
   file with Ctrl+O.
   Expressions, tables, notes, sliders, styles, the ticker and the view come
@@ -152,6 +154,7 @@ graphcalc --render-png out.png 1200x800 'y=x^2' # offscreen render of LaTeX rows
 graphcalc --render-png out.png 900x700 --3d 'z=x^2-y^2'   # the same for a 3D graph
 graphcalc --bench                               # slider-drag frame time against the 60 fps budget
 graphcalc --bench-implicit                      # the same budget over eleven implicit and shaded relations
+graphcalc --bench-suite-3d                      # time the 3D graphs in bench/3d (beside bench/desmos-3d-bench.js)
 echo '[{"id":1,"latex":"1+1"}]' | graphcalc --analyze   # the engine's reply to panel rows
 graphcalc --dump-panel-html panel.html          # the panel page, for testing in a browser
 cargo check -p app --target x86_64-pc-windows-msvc   # type-check the window code from Linux or macOS

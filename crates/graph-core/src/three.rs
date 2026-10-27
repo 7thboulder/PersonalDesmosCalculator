@@ -8,6 +8,8 @@ use crate::scene::axis_label;
 use crate::tess::Vertex;
 use crate::text::TextAtlas;
 use bytemuck::{Pod, Zeroable};
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
 /// How far the camera sits from the centre of the box, in box units. Far
 /// enough that the perspective is gentle.
@@ -352,6 +354,102 @@ fn sample_grid(values: &mut [f64], side: usize, f: &(dyn Fn(usize, usize, usize)
     });
 }
 
+/// The outside of the solid where `f(x, y, z) < 0` within the box: the
+/// surface `f = 0` closed off by the box's walls where the solid meets
+/// them, as Desmos 3D shades an inequality.
+pub fn solid_mesh(
+    view: &View3,
+    f: &(dyn Fn(f64, f64, f64) -> f64 + Sync),
+    color: [f32; 4],
+    n: usize,
+) -> Mesh {
+    let mut mesh = implicit_mesh(view, f, color, n);
+    let n = n.max(2);
+    let side = n + 1;
+    let coord = |i: usize| -1.0 + 2.0 * i as f64 / n as f64;
+    // Each wall: the axis it is across, and which end.
+    for axis in 0..3 {
+        for end in [-1.0, 1.0] {
+            let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+            let at = |i: usize, j: usize| {
+                let mut p = [0.0; 3];
+                p[axis] = end;
+                p[a] = coord(i);
+                p[b] = coord(j);
+                p
+            };
+            let graph = |p: [f64; 3]| [0, 1, 2].map(|d| view.center[d] + p[d] * view.half[d]);
+            let mut values = vec![f64::NAN; side * side];
+            for j in 0..side {
+                for i in 0..side {
+                    let [x, y, z] = graph(at(i, j));
+                    values[j * side + i] = f(x, y, z);
+                }
+            }
+            let mut normal = [0f32; 3];
+            normal[axis] = end as f32;
+            for j in 0..n {
+                for i in 0..n {
+                    let corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+                    let v = corners.map(|(ci, cj)| values[cj * side + ci]);
+                    if v.iter().any(|x| !x.is_finite()) || v.iter().all(|&x| x >= 0.0) {
+                        continue;
+                    }
+                    // The part of the cell inside the solid, corner by
+                    // corner around it.
+                    let mut polygon: Vec<[f64; 3]> = Vec::with_capacity(6);
+                    for k in 0..4 {
+                        let (p, q) = (corners[k], corners[(k + 1) % 4]);
+                        let (vp, vq) = (v[k], v[(k + 1) % 4]);
+                        let (pp, pq) = (at(p.0, p.1), at(q.0, q.1));
+                        if vp < 0.0 {
+                            polygon.push(pp);
+                        }
+                        if (vp < 0.0) != (vq < 0.0) {
+                            let t = vp / (vp - vq);
+                            polygon.push([0, 1, 2].map(|d| pp[d] + (pq[d] - pp[d]) * t));
+                        }
+                    }
+                    let base = mesh.vertices.len() as u32;
+                    mesh.vertices.extend(polygon.iter().map(|p| Vertex3 {
+                        pos: p.map(|c| c as f32),
+                        normal,
+                        color,
+                    }));
+                    for k in 1..polygon.len().saturating_sub(1) as u32 {
+                        mesh.indices.extend([base, base + k, base + k + 1]);
+                    }
+                }
+            }
+        }
+    }
+    mesh
+}
+
+/// A quick hash for grid edges, which are already well spread.
+#[derive(Default)]
+struct EdgeHasher(u64);
+
+impl std::hash::Hasher for EdgeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(u64::from(*b));
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(29) ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
 /// The surface where `f(x, y, z) = 0` inside the box, found by marching
 /// tetrahedra over a grid of `n` cells a side. Points where f is undefined
 /// break the surface there.
@@ -408,57 +506,94 @@ pub fn implicit_mesh(
         [0, 4, 5, 7],
         [0, 5, 1, 7],
     ];
-    let mut mesh = Mesh::default();
-    for k in 0..n {
-        for j in 0..n {
-            for i in 0..n {
-                let grid = CORNERS.map(|c| [i + c[0], j + c[1], k + c[2]]);
-                let v = grid.map(|g| at(g[0], g[1], g[2]));
-                if v.iter().any(|x| !x.is_finite()) {
-                    continue;
-                }
-                if v.iter().all(|&x| x < 0.0) || v.iter().all(|&x| x >= 0.0) {
-                    continue;
-                }
-                for tet in TETS {
-                    let inside: Vec<usize> = tet.iter().copied().filter(|&c| v[c] < 0.0).collect();
-                    let outside: Vec<usize> =
-                        tet.iter().copied().filter(|&c| v[c] >= 0.0).collect();
-                    // Where the field crosses zero along the edge a-b.
-                    let mut cross = |a: usize, b: usize| -> u32 {
-                        let t = v[a] / (v[a] - v[b]);
-                        let (ga, gb) = (grid[a], grid[b]);
-                        let pos = [0, 1, 2]
-                            .map(|d| (coord(ga[d]) + (coord(gb[d]) - coord(ga[d])) * t) as f32);
-                        let (na, nb) = (gradient(ga), gradient(gb));
-                        let mut normal = [0, 1, 2].map(|d| na[d] + (nb[d] - na[d]) * t);
-                        let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
-                        if len.is_finite() && len > 0.0 {
-                            normal = normal.map(|c| c / len);
-                        } else {
-                            normal = [0.0, 0.0, 1.0];
+    // Slabs of k on separate threads, joined in order.
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get());
+    let per = n.div_ceil(threads.clamp(1, 16));
+    let slab = |ks: std::ops::Range<usize>| {
+        let mut mesh = Mesh::default();
+        // Each crossing's vertex, by the grid edge it is on, so the
+        // tetrahedra around an edge share it.
+        let mut made: HashMap<(usize, usize), u32, BuildHasherDefault<EdgeHasher>> =
+            HashMap::default();
+        for k in ks {
+            for j in 0..n {
+                for i in 0..n {
+                    let grid = CORNERS.map(|c| [i + c[0], j + c[1], k + c[2]]);
+                    let v = grid.map(|g| at(g[0], g[1], g[2]));
+                    if v.iter().any(|x| !x.is_finite()) {
+                        continue;
+                    }
+                    if v.iter().all(|&x| x < 0.0) || v.iter().all(|&x| x >= 0.0) {
+                        continue;
+                    }
+                    for tet in TETS {
+                        // The tetrahedron's corners, inside ones first.
+                        let mut order = tet;
+                        order.sort_by_key(|&c| v[c] >= 0.0);
+                        let count = order.iter().filter(|&&c| v[c] < 0.0).count();
+                        let (inside, outside) = order.split_at(count);
+                        // Where the field crosses zero along the edge a-b.
+                        let mut cross = |a: usize, b: usize| -> u32 {
+                            let (ga, gb) = (grid[a], grid[b]);
+                            let index = |g: [usize; 3]| (g[2] * side + g[1]) * side + g[0];
+                            let edge = (index(ga).min(index(gb)), index(ga).max(index(gb)));
+                            if let Some(&known) = made.get(&edge) {
+                                return known;
+                            }
+                            let t = v[a] / (v[a] - v[b]);
+                            let pos = [0, 1, 2]
+                                .map(|d| (coord(ga[d]) + (coord(gb[d]) - coord(ga[d])) * t) as f32);
+                            let (na, nb) = (gradient(ga), gradient(gb));
+                            let mut normal = [0, 1, 2].map(|d| na[d] + (nb[d] - na[d]) * t);
+                            let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+                            if len.is_finite() && len > 0.0 {
+                                normal = normal.map(|c| c / len);
+                            } else {
+                                normal = [0.0, 0.0, 1.0];
+                            }
+                            mesh.vertices.push(Vertex3 {
+                                pos,
+                                normal: normal.map(|c| c as f32),
+                                color,
+                            });
+                            let new = mesh.vertices.len() as u32 - 1;
+                            made.insert(edge, new);
+                            new
+                        };
+                        match (inside, outside) {
+                            ([a], [b, c, d]) | ([b, c, d], [a]) => {
+                                let t = [cross(*a, *b), cross(*a, *c), cross(*a, *d)];
+                                mesh.indices.extend(t);
+                            }
+                            ([a, b], [c, d]) => {
+                                let q =
+                                    [cross(*a, *c), cross(*a, *d), cross(*b, *d), cross(*b, *c)];
+                                mesh.indices.extend([q[0], q[1], q[2], q[0], q[2], q[3]]);
+                            }
+                            _ => {}
                         }
-                        mesh.vertices.push(Vertex3 {
-                            pos,
-                            normal: normal.map(|c| c as f32),
-                            color,
-                        });
-                        mesh.vertices.len() as u32 - 1
-                    };
-                    match (inside.as_slice(), outside.as_slice()) {
-                        ([a], [b, c, d]) | ([b, c, d], [a]) => {
-                            let t = [cross(*a, *b), cross(*a, *c), cross(*a, *d)];
-                            mesh.indices.extend(t);
-                        }
-                        ([a, b], [c, d]) => {
-                            let q = [cross(*a, *c), cross(*a, *d), cross(*b, *d), cross(*b, *c)];
-                            mesh.indices.extend([q[0], q[1], q[2], q[0], q[2], q[3]]);
-                        }
-                        _ => {}
                     }
                 }
             }
         }
+        mesh
+    };
+    let parts: Vec<Mesh> = std::thread::scope(|scope| {
+        let slab = &slab;
+        let handles: Vec<_> = (0..n)
+            .step_by(per)
+            .map(|k0| scope.spawn(move || slab(k0..(k0 + per).min(n))))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("mesh thread"))
+            .collect()
+    });
+    let mut mesh = Mesh::default();
+    for part in parts {
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.extend(part.vertices);
+        mesh.indices.extend(part.indices.iter().map(|i| i + base));
     }
     mesh
 }
@@ -929,6 +1064,27 @@ mod tests {
                 .sum::<f32>();
             assert!(along.abs() > 0.95, "normal {:?} at {:?}", p.normal, p.pos);
         }
+    }
+
+    #[test]
+    fn solid_below_a_plane_is_closed_by_the_walls() {
+        let v = View3::new(600.0, 600.0);
+        let below = |_: f64, _: f64, z: f64| z - 2.0;
+        let mesh = solid_mesh(&v, &below, [1.0; 4], 20);
+        let on_top = |p: &Vertex3| (p.pos[2] - 0.2).abs() < 0.02;
+        let on_wall = |p: &Vertex3| p.pos.iter().any(|c| (c.abs() - 1.0).abs() < 0.01);
+        assert!(
+            mesh.vertices.iter().any(on_top),
+            "the plane z = 2 is its top"
+        );
+        assert!(
+            mesh.vertices.iter().all(|p| on_top(p) || on_wall(p)),
+            "everything else lies on the walls"
+        );
+        assert!(
+            mesh.vertices.iter().any(|p| p.pos[2] < -0.98),
+            "the floor closes it"
+        );
     }
 
     #[test]

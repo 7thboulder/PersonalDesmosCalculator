@@ -1,0 +1,49 @@
+{
+ "version": 11,
+ "randomSeed": "0",
+ "graph": {
+  "threeDMode": true,
+  "viewport": {
+   "xmin": -10,
+   "xmax": 10,
+   "ymin": -10,
+   "ymax": 10,
+   "zmin": -10,
+   "zmax": 10
+  }
+ },
+ "expressions": {
+  "list": [
+   {
+    "type": "expression",
+    "id": "a",
+    "color": "#c74440",
+    "latex": "a=1",
+    "slider": {
+     "hardMin": true,
+     "hardMax": true,
+     "min": "0",
+     "max": "3"
+    }
+   },
+   {
+    "type": "expression",
+    "id": "2",
+    "color": "#2d70b3",
+    "latex": "L=\\left[1...30\\right]"
+   },
+   {
+    "type": "expression",
+    "id": "3",
+    "color": "#388c46",
+    "latex": "\\left(\\frac{L}{3}\\cos\\left(6t+aL\\right),\\frac{L}{3}\\sin\\left(6t+aL\\right),10t-5\\right)"
+   },
+   {
+    "type": "expression",
+    "id": "4",
+    "color": "#6042a6",
+    "latex": "\\left(\\frac{L}{3}\\cos\\left(aL\\right),\\frac{L}{3}\\sin\\left(aL\\right),\\frac{L}{3}-5\\right)"
+   }
+  ]
+ }
+}
