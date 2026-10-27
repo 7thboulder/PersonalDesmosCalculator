@@ -125,7 +125,8 @@ impl GraphRegion {
     }
 }
 
-/// How opaque a shaded solid is, as a share of its row's opacity.
+/// How opaque a shaded solid is by default, as a share of its row's
+/// opacity. Its row's Fill slider changes it.
 const SOLID_OPACITY: f32 = 0.4;
 
 /// What a surface in a 3D graph is.
@@ -298,6 +299,9 @@ impl Engine {
                     style,
                 });
             }
+            let solid_fill = row["fillOpacity"]
+                .as_f64()
+                .map_or(SOLID_OPACITY, |f| f.clamp(0.0, 1.0) as f32);
             for p in &result.parametrics {
                 self.parametrics.push(GraphParametric {
                     row: result.id,
@@ -345,7 +349,7 @@ impl Engine {
                         GraphSurface {
                             shape: Shape::Solid { program, above },
                             key: mix(surface.program.fingerprint(), 3 + above as u64),
-                            color: [color[0], color[1], color[2], color[3] * SOLID_OPACITY],
+                            color: [color[0], color[1], color[2], color[3] * solid_fill],
                         }
                     }
                 });
@@ -390,7 +394,7 @@ impl Engine {
                 self.surfaces.push(GraphSurface {
                     shape: Shape::Box(*b),
                     key: b.iter().flatten().fold(6, |k, c| mix(k, c.to_bits())),
-                    color: [color[0], color[1], color[2], color[3] * SOLID_OPACITY],
+                    color: [color[0], color[1], color[2], color[3] * solid_fill],
                 });
             }
             for corners in &result.polygons3 {
@@ -764,7 +768,11 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
         "points": !(r.points.is_empty() && r.points3.is_empty()),
-        "polygons": !(r.polygons.is_empty() && r.polygons3.is_empty()),
+        // Whether the row has a fill, for the Fill slider.
+        "polygons": !(r.polygons.is_empty()
+            && r.polygons3.is_empty()
+            && r.boxes3.is_empty()
+            && r.implicits3.iter().all(|s| s.shade.is_none())),
         "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
             "row": defined.get(name.as_str())?,
             "latex": exact_latex(v),
@@ -1055,6 +1063,21 @@ mod tests {
         view.zoom(2.0);
         let zoomed = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.surfaces_key);
         assert_ne!(zoomed, key);
+    }
+
+    #[test]
+    fn solids_have_a_fill_slider_that_reaches_solid() {
+        let mut engine = Engine {
+            mode: Mode::ThreeD,
+            ..Engine::default()
+        };
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "x^2+y^2+z^2<4", "color": "#2d70b3"},
+            {"id": 2, "latex": "0\\le z\\le 1", "color": "#2d70b3", "fillOpacity": 1},
+        ]));
+        assert_eq!(reply[0]["polygons"], true, "a solid shows the Fill slider");
+        assert_eq!(engine.surfaces[0].color[3], SOLID_OPACITY);
+        assert_eq!(engine.surfaces[1].color[3], 1.0, "Fill at 1 is solid");
     }
 
     #[test]
