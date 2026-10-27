@@ -942,7 +942,12 @@ fn three_d_surfaces() {
     assert_eq!(r[5].surfaces.len(), 2, "one surface per list element");
     assert_eq!(r[6].value, Some(Value::Number(2.0)));
     assert_eq!(r[7].missing, vec!["b".to_string()]);
-    for i in [8, 9, 10] {
+    assert_eq!(
+        r[9].points3,
+        vec![[1.0, 2.0, 0.0]],
+        "a flat point sits on z = 0"
+    );
+    for i in [8, 10] {
         assert!(
             r[i].error.is_some() && !r[i].graphed(),
             "row {i}: {:?}",
@@ -951,4 +956,38 @@ fn three_d_surfaces() {
     }
     // In 2D the same z = … defines a variable.
     assert_eq!(rows(&["z=3"])[0].kind, RowKind::Variable("z".into()));
+}
+
+#[test]
+fn three_d_points_and_curves() {
+    let r = rows_3d(&[
+        "\\left(1,2,3\\right)",
+        "p=\\left(1,-2,a\\right)",
+        "a=4",
+        "p.z+p.x",
+        "\\left[\\left(1,0,0\\right),\\left(0,1,0\\right)\\right]+\\left(0,0,1\\right)",
+        "\\left(\\cos t,\\sin t,t\\right)",
+        "\\left(\\cos t,\\sin t\\right)",
+        "2p",
+    ]);
+    assert_eq!(r[0].points3, vec![[1.0, 2.0, 3.0]]);
+    assert_eq!(r[0].value, None, "points are drawn, not echoed");
+    assert_eq!(r[1].points3, vec![[1.0, -2.0, 4.0]]);
+    assert_eq!(r[3].value, Some(Value::Number(5.0)));
+    assert_eq!(r[4].points3, vec![[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]);
+    let c = &r[5].curves3[0];
+    assert!(close(c.z.eval(2.0), 2.0) && close(c.x.eval(0.0), 1.0));
+    assert_eq!(r[5].parameter.as_ref().unwrap().name, "t");
+    assert_eq!(
+        r[6].curves3[0].z.eval(1.0),
+        0.0,
+        "a flat curve sits on z = 0"
+    );
+    assert_eq!(r[7].points3, vec![[2.0, -4.0, 8.0]]);
+
+    // A flat graph can't draw them.
+    let flat = rows(&["\\left(1,2,3\\right)", "\\left(\\cos t,\\sin t,t\\right)"]);
+    for row in &flat {
+        assert!(row.error.is_some() && !row.graphed(), "{row:?}");
+    }
 }

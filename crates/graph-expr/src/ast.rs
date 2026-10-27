@@ -18,6 +18,8 @@ pub enum Expr {
     Factorial(Box<Expr>),
     /// `(a, b)`: a point, or a parametric curve when it reads `t`.
     Point(Box<Expr>, Box<Expr>),
+    /// `(a, b, c)`: a point in 3D, or a 3D curve when it reads `t`.
+    Point3(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[1, 2, 3]`.
     List(Vec<Expr>),
     /// `[1...10]` or `[1, 3, ..., 11]`: the start, an optional second
@@ -30,7 +32,7 @@ pub enum Expr {
     /// second part is the condition as `{L > 0: 1}`, so it is 1 where the
     /// element stays and undefined where it goes.
     Filter(Box<Expr>, Box<Expr>),
-    /// `p.x` and `p.y`.
+    /// `p.x`, `p.y` and `p.z`.
     Coord(Box<Expr>, Coord),
     /// `[n^2 for n = [1...5]]`: the body and each variable with its list.
     Comprehension(Box<Expr>, Vec<(String, Expr)>),
@@ -98,6 +100,7 @@ pub enum Repeat {
 pub enum Coord {
     X,
     Y,
+    Z,
 }
 
 /// A comparison, possibly chained as in `0 < x < 2`: `operands` has one
@@ -159,6 +162,11 @@ impl Expr {
                 b.visit_names(f);
             }
             Expr::List(items) => items.iter().for_each(|a| a.visit_names(f)),
+            Expr::Point3(a, b, c) => {
+                a.visit_names(f);
+                b.visit_names(f);
+                c.visit_names(f);
+            }
             Expr::Range(a, b, c) => {
                 a.visit_names(f);
                 if let Some(b) = b {
@@ -240,6 +248,11 @@ impl Expr {
             | Expr::Actions(items)
             | Expr::Apply(_, items)
             | Expr::Prime(_, _, items) => items.iter().for_each(|a| a.walk(f)),
+            Expr::Point3(a, b, c) => {
+                a.walk(f);
+                b.walk(f);
+                c.walk(f);
+            }
             Expr::Range(a, b, c) => {
                 a.walk(f);
                 if let Some(b) = b {

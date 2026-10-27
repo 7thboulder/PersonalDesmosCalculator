@@ -33,7 +33,10 @@ on the right. What you type is graphed as you type it:
   drawn as a lit surface, trimmed to the box, with r and θ measured around
   the z axis. Drag to turn the box, Shift+drag to slide it, and scroll to
   zoom. Each graph is either 2D or 3D, as in Desmos, and its file remembers
-  which. Points, curves and other surfaces in 3D are still to come.
+  which. Points `(1, 2, 3)` (and lists of them, with `p.z`) are drawn as
+  dots and `(cos t, sin t, t)` as a curve; flat points and parametric
+  curves sit on the z = 0 plane. Implicit and parametric surfaces are still
+  to come.
 - Notes (+ then **note**, Ctrl+Alt+O, or typing `"` in an empty row): a row
   of plain text between expressions. Shift+Enter breaks the line; Enter
   starts a new expression below.

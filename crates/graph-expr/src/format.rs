@@ -54,6 +54,8 @@ pub fn result_latex(v: &crate::Value) -> String {
         Value::Point(a, b) => point([*a, *b]),
         Value::Numbers(ns) => list(ns.len(), &mut ns.iter().map(|n| value_latex(*n))),
         Value::Points(ps) => list(ps.len(), &mut ps.iter().map(|p| point(*p))),
+        Value::Point3(p) => point3(p, &value_latex),
+        Value::Points3(ps) => list(ps.len(), &mut ps.iter().map(|p| point3(p, &value_latex))),
         Value::Polygon(p) => polygon(p, &point),
         Value::Polygons(ps) => list(ps.len(), &mut ps.iter().map(|p| polygon(p, &point))),
         Value::Complex(a, b) => complex(*a, *b, &value_latex),
@@ -62,6 +64,16 @@ pub fn result_latex(v: &crate::Value) -> String {
             &mut zs.iter().map(|z| complex(z[0], z[1], &value_latex)),
         ),
     }
+}
+
+/// `(1,2,3)`, with each coordinate written by `number`.
+fn point3(p: &[f64; 3], number: &dyn Fn(f64) -> String) -> String {
+    format!(
+        "\\left({},{},{}\\right)",
+        number(p[0]),
+        number(p[1]),
+        number(p[2])
+    )
 }
 
 /// `3+2i`, `-i`, `0.5-1.25i`, with each part written by `number`.
@@ -141,6 +153,8 @@ pub fn exact_latex(v: &crate::Value) -> String {
         Value::Point(a, b) => point([*a, *b]),
         Value::Numbers(ns) => list(ns.iter().map(|n| exact_number(*n)).collect()),
         Value::Points(ps) => list(ps.iter().map(|p| point(*p)).collect()),
+        Value::Point3(p) => point3(p, &exact_number),
+        Value::Points3(ps) => list(ps.iter().map(|p| point3(p, &exact_number)).collect()),
         Value::Polygon(p) => polygon(p),
         Value::Polygons(ps) => list(ps.iter().map(polygon).collect()),
         Value::Complex(a, b) => complex(*a, *b, &exact_number),

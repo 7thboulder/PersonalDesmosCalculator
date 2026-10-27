@@ -133,6 +133,23 @@ pub struct GraphSurface {
     pub key: u64,
 }
 
+/// A row's points in a 3D graph.
+pub struct GraphPoints3 {
+    pub points: Vec<[f64; 3]>,
+    pub color: [f32; 4],
+    pub size: f32,
+}
+
+/// A curve in a 3D graph, traced by t.
+pub struct GraphCurve3 {
+    pub x: Program,
+    pub y: Program,
+    pub z: Program,
+    pub domain: (f64, f64),
+    pub color: [f32; 4],
+    pub width: f32,
+}
+
 /// A region's field, in the form graph-core traces.
 struct RegionField<'a>(&'a Program);
 
@@ -157,6 +174,8 @@ pub struct Engine {
     pub points: Vec<GraphPoints>,
     pub polygons: Vec<GraphPolygon>,
     pub surfaces: Vec<GraphSurface>,
+    pub points3: Vec<GraphPoints3>,
+    pub curves3: Vec<GraphCurve3>,
     /// Flat or 3D, as the panel last said.
     pub mode: Mode,
     /// Surface meshes for the current view, by surface and range.
@@ -220,6 +239,8 @@ impl Engine {
         self.points.clear();
         self.polygons.clear();
         self.surfaces.clear();
+        self.points3.clear();
+        self.curves3.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -271,6 +292,23 @@ impl Engine {
                     program: surface.program.clone(),
                     key: surface.program.fingerprint(),
                     color,
+                });
+            }
+            if !result.points3.is_empty() {
+                self.points3.push(GraphPoints3 {
+                    points: result.points3.clone(),
+                    color,
+                    size: point_size(row),
+                });
+            }
+            for c in &result.curves3 {
+                self.curves3.push(GraphCurve3 {
+                    x: c.x.clone(),
+                    y: c.y.clone(),
+                    z: c.z.clone(),
+                    domain: c.domain,
+                    color,
+                    width,
                 });
             }
             for polygon in &result.polygons {
@@ -415,6 +453,8 @@ impl Engine {
             + self.points.len()
             + self.polygons.len()
             + self.surfaces.len()
+            + self.points3.len()
+            + self.curves3.len()
     }
 
     /// Calls `draw` with a 3D frame of `view` and the 2D overlay (the
@@ -454,7 +494,22 @@ impl Engine {
         }
         self.meshes = kept;
         let meshes: Vec<&Mesh> = self.meshes.iter().map(|(_, m)| m).collect();
-        let lines = three::box_lines(view, scale);
+        let mut lines = three::box_lines(view, scale);
+        for c in &self.curves3 {
+            three::curve_3d(
+                view,
+                &|t| c.x.eval(t),
+                &|t| c.y.eval(t),
+                &|t| c.z.eval(t),
+                c.domain,
+                c.width * scale,
+                c.color,
+                &mut lines,
+            );
+        }
+        for p in &self.points3 {
+            three::points_3d(view, &p.points, p.size * scale, p.color, &mut lines);
+        }
         let overlay = three::box_labels(view, scale, text);
         let step = three::steps(view);
         let grid = [
@@ -581,13 +636,16 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "slider": r.slider.filter(|v| v.is_finite()),
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
-        "points": !r.points.is_empty(),
+        "points": !(r.points.is_empty() && r.points3.is_empty()),
         "polygons": !r.polygons.is_empty(),
         "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
             "row": defined.get(name.as_str())?,
             "latex": exact_latex(v),
         }))).collect::<Vec<_>>(),
-        "lines": !(r.curves.is_empty() && r.parametrics.is_empty() && r.regions.is_empty()),
+        "lines": !(r.curves.is_empty()
+            && r.parametrics.is_empty()
+            && r.regions.is_empty()
+            && r.curves3.is_empty()),
         "columns": r.columns.iter().map(|c| json!({
             "error": c.error,
             "missing": c.missing,
@@ -837,6 +895,26 @@ mod tests {
             assert!(!f.lines.is_empty());
             f.surfaces_key
         });
+        // Points and curves go into the frame's lines.
+        let mut with_more = Engine {
+            mode: Mode::ThreeD,
+            ..Engine::default()
+        };
+        let reply = with_more.update(&json!([
+            {"id": 1, "latex": "\\left(1,2,3\\right)", "pointSize": 12},
+            {"id": 2, "latex": "\\left(\\cos t,\\sin t,t\\right)"},
+        ]));
+        assert_eq!(reply[0]["points"], true);
+        assert_eq!(reply[1]["lines"], true);
+        assert_eq!(with_more.points3[0].size, 12.0);
+        assert_eq!(with_more.curves3.len(), 1);
+        let bare = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.lines.len());
+        let more = with_more.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.lines.len());
+        assert!(
+            more > bare + 6,
+            "{more} lines with a point and a curve, {bare} without"
+        );
+
         // Turning the box keeps the mesh; zooming makes a new one.
         view.turn_px(40.0, 0.0);
         let turned = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.surfaces_key);
