@@ -23,6 +23,9 @@ pub struct RowInput {
     /// The LaTeX of a parametric or polar row's domain bounds, when the
     /// person has edited them; otherwise Desmos's defaults apply.
     pub domain: Option<[String; 2]>,
+    /// The LaTeX of a differential equation's initial points, such as
+    /// `(0, 1)` or `[(0, 1), (a, b)]`.
+    pub seeds: Option<String>,
     /// Set when the row is a table instead of an expression.
     pub table: Option<Vec<ColumnInput>>,
 }
@@ -111,6 +114,15 @@ pub struct ParamSurface {
     pub z: Program,
     pub u: (f64, f64),
     pub v: (f64, f64),
+}
+
+/// A point a differential equation's solution passes through.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seed {
+    pub at: [f64; 2],
+    /// For a point written with slider variables, as in `(a, b)`: the
+    /// variable each coordinate drags.
+    pub drag: Option<[Option<String>; 2]>,
 }
 
 /// How a relation compares its two sides.
@@ -251,6 +263,18 @@ pub struct RowAnalysis {
     pub fit: Option<Fit>,
     /// The unit the value is shown in, as LaTeX, when it has one.
     pub unit: Option<String>,
+    /// For a differential equation `y' = f(x, y)`: the slope, one program
+    /// per list element, reading x as `Arg::X` and y as `Arg::Y`.
+    pub odes: Vec<Program>,
+    /// Set for a differential equation, whose initial points the panel
+    /// shows under it.
+    pub ode: bool,
+    /// Where its solution curves start, with what is wrong with them.
+    pub seeds: Vec<Seed>,
+    pub seeds_error: Option<String>,
+    /// Whether every initial point is written as plain numbers, so
+    /// dragging one can rewrite them.
+    pub seeds_fixed: bool,
 }
 
 /// What a regression found.
@@ -293,6 +317,11 @@ impl RowAnalysis {
             drag: None,
             fit: None,
             unit: None,
+            odes: Vec::new(),
+            ode: false,
+            seeds: Vec::new(),
+            seeds_error: None,
+            seeds_fixed: false,
         }
     }
 
@@ -335,6 +364,7 @@ impl RowAnalysis {
             && self.polygons.is_empty()
             && self.polygons3.is_empty()
             && self.boxes3.is_empty()
+            && self.odes.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
 }
@@ -1189,6 +1219,7 @@ fn into_3d(row: &mut RowAnalysis) {
     }
     row.drag = None;
     let flat = !(row.curves.is_empty()
+        && row.odes.is_empty()
         && row.regions.is_empty()
         && row.polygons.is_empty()
         && row.columns.iter().all(|c| c.points.is_empty()));
@@ -1196,6 +1227,9 @@ fn into_3d(row: &mut RowAnalysis) {
         return;
     }
     row.curves.clear();
+    row.odes.clear();
+    row.ode = false;
+    row.seeds.clear();
     row.regions.clear();
     row.polygons.clear();
     row.parameter = None;
@@ -1722,7 +1756,75 @@ impl Env {
             Statement::Chain(condition) => self.chain_row(id, condition),
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
             Statement::Expr(e) => self.expression_row(input, e),
+            Statement::Ode(rhs) => self.ode_row(input, rhs),
         }
+    }
+
+    /// `y' = f(x, y)`: a slope field, with a solution through each of the
+    /// row's initial points.
+    fn ode_row(&mut self, input: &RowInput, rhs: &Expr) -> RowAnalysis {
+        let mut row = RowAnalysis::new(input.id, RowKind::Curve);
+        row.ode = true;
+        let mut problems = Problems::default();
+        let val = self.lower_plane(rhs, &mut problems);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_none() && val.has_points() {
+            row.error = Some("y' can't equal a point".into());
+        }
+        if row.error.is_none() {
+            row.odes = compile_all(&val, &mut row.error, |program| program);
+        }
+        let latex = input.seeds.as_deref().unwrap_or("").trim();
+        if latex.is_empty() {
+            row.seeds_fixed = true;
+            return row;
+        }
+        let seeds = match parse(latex) {
+            Ok(Statement::Expr(e)) => e,
+            Ok(_) => {
+                row.seeds_error = Some(SEEDS_HINT.into());
+                return row;
+            }
+            Err(e) => {
+                row.seeds_error = Some(e);
+                return row;
+            }
+        };
+        let mut problems = Problems::default();
+        let val = self.lower(&seeds, &HashMap::new(), NO_FREE, &mut problems);
+        for name in slider_names(&problems.missing) {
+            if !row.missing.contains(&name) {
+                row.missing.push(name);
+            }
+        }
+        if let Some(e) = problems.first_message() {
+            row.seeds_error = Some(e);
+            return row;
+        }
+        let at: Vec<[f64; 2]> = match val.constant() {
+            Some(Value::Point(x, y)) => vec![[x, y]],
+            Some(Value::Points(ps)) => ps,
+            Some(Value::Numbers(ns)) if ns.is_empty() => Vec::new(),
+            _ => {
+                row.seeds_error = Some(SEEDS_HINT.into());
+                return row;
+            }
+        };
+        let drags: Vec<Option<[Option<String>; 2]>> = match &seeds {
+            Expr::List(items) if items.len() == at.len() => {
+                items.iter().map(|e| self.drag_of(e)).collect()
+            }
+            e if at.len() == 1 => vec![self.drag_of(e)],
+            _ => vec![None; at.len()],
+        };
+        row.seeds_fixed = is_literal(&seeds);
+        row.seeds = at
+            .into_iter()
+            .zip(drags)
+            .map(|(at, drag)| Seed { at, drag })
+            .collect();
+        row
     }
 
     /// A row of a 3D graph that defines nothing: `z = f(x, y)` (either way
@@ -1759,6 +1861,7 @@ impl Env {
                 self.solid_row(id, &condition)
             }
             Statement::Chain(condition) => self.solid_row(id, condition),
+            Statement::Ode(_) => RowAnalysis::error(id, "Slope fields are drawn in 2D graphs"),
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
         }
     }
@@ -4554,6 +4657,8 @@ fn is_literal(e: &Expr) -> bool {
 fn is_var(e: &Expr, name: &str) -> bool {
     matches!(e, Expr::Var(n) if n == name)
 }
+
+const SEEDS_HINT: &str = "Initial points are written like (0, 1) or [(0, 1), (2, -1)]";
 
 /// Undefined names that Desmos would offer as sliders.
 /// The values of `n` parameters that make the residuals smallest in the

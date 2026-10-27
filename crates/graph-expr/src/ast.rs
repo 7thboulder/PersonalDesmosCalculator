@@ -142,6 +142,10 @@ pub enum Statement {
     /// `y_1 \sim m x_1 + b`: fit the undefined names on the right so the
     /// two sides agree as closely as they can.
     Regression(Expr, Expr),
+    /// `y' = f(x, y)` or `\frac{dy}{dx} = f(x, y)`: a differential
+    /// equation, drawn as a slope field with solutions through chosen
+    /// points.
+    Ode(Expr),
 }
 
 impl Expr {
