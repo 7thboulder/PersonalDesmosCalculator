@@ -13,6 +13,7 @@ use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
 use crate::matrix::{self, Matrix, Stroke};
 use crate::parser::parse;
+use crate::units;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -120,6 +121,15 @@ pub struct ParamSurface {
     pub z: Program,
     pub u: (f64, f64),
     pub v: (f64, f64),
+}
+
+/// A complex function `w = f(z)` over the plane, with z = x + iy: the
+/// real and imaginary parts of w, each reading x as `Arg::X` and y as
+/// `Arg::Y`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplexPlot {
+    pub re: Program,
+    pub im: Program,
 }
 
 /// A point a differential equation's solution passes through.
@@ -255,6 +265,8 @@ pub struct RowAnalysis {
     /// by constants: the low and high end on each axis (infinite where
     /// unbounded).
     pub boxes3: Vec<[[f64; 2]; 3]>,
+    /// Complex functions of z to color the plane by, one per list element.
+    pub complex: Vec<ComplexPlot>,
     /// For an action row: what each variable becomes when it runs, worked
     /// out from the current values.
     pub updates: Vec<(String, Value)>,
@@ -272,6 +284,8 @@ pub struct RowAnalysis {
     /// Lines and shapes a matrix draws: its transformation view, or its
     /// eigenvectors.
     pub picture: Vec<Stroke>,
+    /// The unit the value is shown in, as LaTeX, when it has one.
+    pub unit: Option<String>,
     /// For a differential equation `y' = f(x, y)`: the slope, one program
     /// per list element, reading x as `Arg::X` and y as `Arg::Y`.
     pub odes: Vec<Program>,
@@ -320,6 +334,7 @@ impl RowAnalysis {
             polygons: Vec::new(),
             polygons3: Vec::new(),
             boxes3: Vec::new(),
+            complex: Vec::new(),
             updates: Vec::new(),
             parameter: None,
             columns: Vec::new(),
@@ -327,6 +342,7 @@ impl RowAnalysis {
             fit: None,
             matrix: None,
             picture: Vec::new(),
+            unit: None,
             odes: Vec::new(),
             ode: false,
             seeds: Vec::new(),
@@ -375,6 +391,7 @@ impl RowAnalysis {
             && self.polygons3.is_empty()
             && self.boxes3.is_empty()
             && self.picture.is_empty()
+            && self.complex.is_empty()
             && self.odes.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
@@ -786,6 +803,99 @@ fn complex_exp(a: Low, b: Low) -> Item {
     )
 }
 
+/// Whether `complex_call` knows the function.
+fn has_complex_form(f: Builtin) -> bool {
+    use Builtin::*;
+    matches!(
+        f,
+        Abs | Exp | Sqrt | Sin | Cos | Tan | Csc | Sec | Cot | Sinh | Cosh | Tanh | Ln | Log
+    )
+}
+
+/// A built-in function of the complex number a + bi, for the functions
+/// that have a complex form.
+fn complex_call(f: Builtin, a: Low, b: Low) -> Option<Result<Item, String>> {
+    use Builtin::*;
+    let (sin, cos, sinh, cosh) = (
+        || call1(Sin, a.clone()),
+        || call1(Cos, a.clone()),
+        || call1(Sinh, b.clone()),
+        || call1(Cosh, b.clone()),
+    );
+    let mul = |x: Low, y: Low| bin(BinOp::Mul, x, y);
+    let one = (Low::Const(1.0), Low::Const(0.0));
+    let ratio = |n: Item, d: Item| complex_op(BinOp::Div, n.parts()?, d.parts()?).ok();
+    let sine = || Item::complex(mul(sin(), cosh()), mul(cos(), sinh()));
+    let cosine = || {
+        Item::complex(
+            mul(cos(), cosh()),
+            shallow(Low::Neg(Box::new(mul(sin(), sinh())))),
+        )
+    };
+    // sinh(a + bi) = -i sin(i(a + bi)) = sinh a cos b + i cosh a sin b.
+    let hyper = |cosine: bool| {
+        let (sa, ca) = (call1(Sinh, a.clone()), call1(Cosh, a.clone()));
+        let (sb, cb) = (call1(Sin, b.clone()), call1(Cos, b.clone()));
+        if cosine {
+            Item::complex(mul(ca, cb), mul(sa, sb))
+        } else {
+            Item::complex(mul(sa, cb), mul(ca, sb))
+        }
+    };
+    let ln = || {
+        let modulus = call1(
+            Sqrt,
+            bin(
+                BinOp::Add,
+                mul(a.clone(), a.clone()),
+                mul(b.clone(), b.clone()),
+            ),
+        );
+        (
+            call1(Ln, modulus),
+            shallow(Low::Call(Arctan, vec![b.clone(), a.clone()])),
+        )
+    };
+    let inverse = |w: Item| complex_op(BinOp::Div, one.clone(), w.parts()?).ok();
+    Some(Ok(match f {
+        Abs => Item::Num(call1(
+            Sqrt,
+            bin(
+                BinOp::Add,
+                mul(a.clone(), a.clone()),
+                mul(b.clone(), b.clone()),
+            ),
+        )),
+        Exp => complex_exp(a, b),
+        Sqrt => {
+            return Some(complex_op(
+                BinOp::Pow,
+                (a, b),
+                (Low::Const(0.5), Low::Const(0.0)),
+            ))
+        }
+        Sin => sine(),
+        Cos => cosine(),
+        Tan => ratio(sine(), cosine())?,
+        Csc => inverse(sine())?,
+        Sec => inverse(cosine())?,
+        Cot => ratio(cosine(), sine())?,
+        Sinh => hyper(false),
+        Cosh => hyper(true),
+        Tanh => ratio(hyper(false), hyper(true))?,
+        Ln => {
+            let (re, im) = ln();
+            Item::complex(re, im)
+        }
+        Log => {
+            let (re, im) = ln();
+            let ten = Low::Const(std::f64::consts::LN_10);
+            Item::complex(bin(BinOp::Div, re, ten.clone()), bin(BinOp::Div, im, ten))
+        }
+        _ => return None,
+    }))
+}
+
 /// The arithmetic of complex numbers, on real and imaginary parts.
 fn complex_op(op: BinOp, (a, b): (Low, Low), (c, d): (Low, Low)) -> Result<Item, String> {
     let (add, sub, mul, div) = (
@@ -912,7 +1022,8 @@ fn scalar_item(item: &Item) -> Option<Scalar> {
 }
 
 /// A built-in function of plain numbers, as `Env::call` works it out: real
-/// arguments directly, and a complex one for abs, exp and sqrt.
+/// arguments directly, and a complex one for the functions that have a
+/// complex form.
 pub(crate) fn scalar_call(f: Builtin, parts: &[Scalar]) -> Option<Scalar> {
     if f == Builtin::Length || parts.is_empty() {
         return None;
@@ -922,19 +1033,7 @@ pub(crate) fn scalar_call(f: Builtin, parts: &[Scalar]) -> Option<Scalar> {
         let [(a, b)] = parts[..] else {
             return None;
         };
-        return scalar_item(&match f {
-            Builtin::Abs => Item::Num(call1(
-                Builtin::Sqrt,
-                bin(
-                    BinOp::Add,
-                    bin(BinOp::Mul, k(a), k(a)),
-                    bin(BinOp::Mul, k(b), k(b)),
-                ),
-            )),
-            Builtin::Exp => complex_exp(k(a), k(b)),
-            Builtin::Sqrt => complex_op(BinOp::Pow, (k(a), k(b)), (k(0.5), k(0.0))).ok()?,
-            _ => return None,
-        });
+        return scalar_item(&complex_call(f, k(a), k(b))?.ok()?);
     }
     if let [(a, _)] = parts {
         return Some((f.eval(&[*a]), 0.0));
@@ -990,12 +1089,27 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
 
 /// As `analyze_cached`, for a graph in the given mode.
 pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<RowAnalysis> {
-    let mut parsed: Vec<Option<Result<Statement, String>>> = rows
+    let written: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| {
             (r.table.is_none() && r.matrix.is_none() && !r.latex.trim().is_empty())
-                .then(|| parse(&r.latex))
+                .then(|| crate::parser::parse_with_units(&r.latex))
         })
+        .collect();
+    // Units are checked as written, then become plain SI numbers.
+    let shown: Vec<Result<Option<units::Shown>, String>> = {
+        let defs = units::Defs::new(written.iter().flatten().flatten());
+        written
+            .iter()
+            .map(|w| match w {
+                Some(Ok(statement)) => units::row_units(statement, &defs),
+                _ => Ok(None),
+            })
+            .collect()
+    };
+    let mut parsed: Vec<Option<Result<Statement, String>>> = written
+        .into_iter()
+        .map(|w| w.map(|r| r.map(units::lower_statement)))
         .collect();
     let grids: Vec<Option<Result<matrix::Grid, String>>> = rows
         .iter()
@@ -1212,7 +1326,8 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         .zip(parsed)
         .zip(defs)
         .zip(tables)
-        .map(|(((row, parsed), def), table)| {
+        .zip(shown)
+        .map(|((((row, parsed), def), table), shown)| {
             let mut point = None;
             if let Some(done) = finished.remove(&row.id) {
                 return done;
@@ -1248,6 +1363,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             if out.error.is_none() && out.points.len() == 1 {
                 out.drag = point.and_then(|e| env.drag_of(&e));
             }
+            show_units(&mut out, shown);
             match mode {
                 Mode::ThreeD => into_3d(&mut out),
                 Mode::Flat => flat(&mut out),
@@ -1258,6 +1374,28 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
     env.new.funcs = std::mem::take(&mut env.funcs);
     *cache = std::mem::take(&mut env.new);
     results
+}
+
+/// Shows a row's answer in its units, or says why its units don't agree.
+fn show_units(row: &mut RowAnalysis, shown: Result<Option<units::Shown>, String>) {
+    match shown {
+        Err(e) => {
+            if row.error.is_none() {
+                row.error = Some(e);
+            }
+            row.value = None;
+        }
+        Ok(Some(shown)) => {
+            let scale = |v: &mut f64| *v /= shown.factor;
+            match &mut row.value {
+                Some(Value::Number(v)) => scale(v),
+                Some(Value::Numbers(vs)) => vs.iter_mut().for_each(scale),
+                _ => return,
+            }
+            row.unit = Some(shown.latex);
+        }
+        Ok(None) => {}
+    }
 }
 
 /// In a 3D graph, flat points and parametric curves sit on the xy plane,
@@ -2191,6 +2329,11 @@ impl Env {
     /// parametric curve in t, or a value.
     fn expression_row(&mut self, input: &RowInput, e: &Expr) -> RowAnalysis {
         let id = input.id;
+        if self.mode == Mode::Flat && e.mentions("z") && !self.vars.contains_key("z") {
+            if let Some(row) = self.complex_row(id, e) {
+                return row;
+            }
+        }
         // First see what the expression is and which graph variables it
         // reads, with t free unless a row defines it.
         let t_free = !self.vars.contains_key("t");
@@ -2215,6 +2358,52 @@ impl Env {
             return self.curve_row(id, e, Axis::X);
         }
         self.value_row(id, e)
+    }
+
+    /// A bare expression in z, such as `z^2 + 1`, colors the plane by its
+    /// value at z = x + iy. `None` when z turns out not to be free, as in
+    /// `[z^2 for z = [1...3]]`, so the row is read as usual.
+    fn complex_row(&mut self, id: u64, e: &Expr) -> Option<RowAnalysis> {
+        let z = Val {
+            items: vec![Item::Complex(Low::Arg(Arg::X), Low::Arg(Arg::Y))],
+            list: false,
+        };
+        let bindings: HashMap<String, Val> = [("z".to_owned(), z)].into_iter().collect();
+        let mut problems = Problems::default();
+        let val = self.lower(e, &bindings, &[("x", Arg::X), ("y", Arg::Y)], &mut problems);
+        let reads_z = val.items.iter().any(|i| match i {
+            Item::Num(l) => l.uses_arg(),
+            Item::Complex(a, b) | Item::Point(a, b) => a.uses_arg() || b.uses_arg(),
+            _ => false,
+        });
+        if !reads_z && problems.errors.is_empty() {
+            return None;
+        }
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_none() && (problems.uses("x") || problems.uses("y")) {
+            row.error = Some("A complex plot reads only z; write x + iy as z".into());
+        }
+        if row.error.is_some() {
+            return Some(row);
+        }
+        for item in &val.items {
+            let Some((re, im)) = item.parts() else {
+                row.error = Some("A complex plot needs a number, not a point".into());
+                row.complex.clear();
+                break;
+            };
+            match (Program::compile(&re), Program::compile(&im)) {
+                (Ok(re), Ok(im)) => row.complex.push(ComplexPlot { re, im }),
+                (Err(e), _) | (_, Err(e)) => {
+                    row.error = Some(e);
+                    row.complex.clear();
+                    break;
+                }
+            }
+        }
+        Some(row)
     }
 
     fn curve_row(&mut self, id: u64, expr: &Expr, axis: Axis) -> RowAnalysis {
@@ -3623,6 +3812,9 @@ impl Env {
         }
         match e {
             Expr::Num(v) => Val::num(Low::Const(*v)),
+            // Rows are read with units already lowered; these are for safety.
+            Expr::Unit(q) => Val::num(Low::Const(q.factor)),
+            Expr::Convert(a, _) => go!(a),
             Expr::Var(name) => self.resolve_name(name, bindings, free, problems, visiting),
             Expr::Neg(a) => {
                 let a = go!(a);
@@ -4608,21 +4800,10 @@ impl Env {
                 list: false,
             };
         }
-        if complex && matches!(f, Builtin::Abs | Builtin::Exp | Builtin::Sqrt) {
+        if complex && args.len() == 1 && has_complex_form(f) {
             return self.broadcast(&args, problems, |items| {
                 let (a, b) = items[0].parts().ok_or_else(point_error)?;
-                Ok(match f {
-                    Builtin::Abs => Item::Num(call1(
-                        Builtin::Sqrt,
-                        bin(
-                            BinOp::Add,
-                            bin(BinOp::Mul, a.clone(), a),
-                            bin(BinOp::Mul, b.clone(), b),
-                        ),
-                    )),
-                    Builtin::Exp => complex_exp(a, b),
-                    _ => complex_op(BinOp::Pow, (a, b), (Low::Const(0.5), Low::Const(0.0)))?,
-                })
+                complex_call(f, a, b).expect("has a complex form")
             });
         }
         if complex {

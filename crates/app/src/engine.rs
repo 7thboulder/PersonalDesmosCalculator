@@ -3,11 +3,12 @@
 //! reply the panel shows (errors, values, slider offers). Kept free of
 //! window code so it is tested on every platform.
 
-use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE};
+use graph_core::grid::{grid_spacing, line_indices};
+use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE, MAJOR_SPACING_LOGICAL};
 use graph_core::three::{self, Mesh, View3};
 use graph_core::{
     Axis, Curve, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points, Polygon,
-    SlopeField, TextAtlas, Vertex,
+    SlopeField, TextAtlas, Vertex, Viewport,
 };
 use graph_expr::format::{exact_latex, matrix_entry_latex, result_latex, value_latex};
 use graph_expr::{
@@ -140,6 +141,50 @@ impl GraphRegion {
     }
 }
 
+/// A complex function `f(z)` ready to draw: as domain coloring on the GPU,
+/// or as the image of the view's grid lines under f.
+pub struct GraphComplex {
+    pub re: Program,
+    pub im: Program,
+    /// The function as WGSL, when the GPU can evaluate it. Without it the
+    /// grid is drawn instead.
+    pub shader: Option<wgsl::Shader>,
+    /// The row's Grid choice in its style menu.
+    pub grid: bool,
+    /// How opaque the coloring is.
+    pub opacity: f32,
+    pub color: [f32; 4],
+    pub width: f32,
+    pub style: LineStyle,
+    /// As [`GraphCurve::key`].
+    pub key: u64,
+}
+
+impl GraphComplex {
+    fn colors(&self) -> bool {
+        !self.grid && self.shader.is_some()
+    }
+}
+
+/// How much of a row's opacity its complex coloring gets, so the grid
+/// shows faintly through it.
+const COLORING_OPACITY: f32 = 0.88;
+
+/// How much of the faded lines a warped grid's horizontal lines get, so
+/// they read apart from the vertical ones.
+const GRID_IM_ALPHA: f32 = 0.45;
+
+/// One grid line of the view, carried through a complex function.
+struct GridLine<'a> {
+    of: &'a GraphComplex,
+    /// A line of constant real part (x = `at`), or else of imaginary part.
+    vertical: bool,
+    at: f64,
+    /// The other coordinate's range along the line.
+    domain: (f64, f64),
+    key: u64,
+}
+
 /// How opaque a shaded solid is by default, as a share of its row's
 /// opacity. Its row's Fill slider changes it.
 const SOLID_OPACITY: f32 = 0.4;
@@ -220,6 +265,7 @@ pub struct Engine {
     pub curves: Vec<GraphCurve>,
     pub parametrics: Vec<GraphParametric>,
     pub regions: Vec<GraphRegion>,
+    pub complex: Vec<GraphComplex>,
     pub points: Vec<GraphPoints>,
     pub polygons: Vec<GraphPolygon>,
     pub odes: Vec<GraphOde>,
@@ -304,6 +350,7 @@ impl Engine {
         self.curves.clear();
         self.parametrics.clear();
         self.regions.clear();
+        self.complex.clear();
         self.points.clear();
         self.polygons.clear();
         self.odes.clear();
@@ -374,6 +421,21 @@ impl Engine {
                     program: region.program.clone(),
                     key: region.program.fingerprint(),
                     compare: region.compare,
+                    color,
+                    width,
+                    style,
+                });
+            }
+            for c in &result.complex {
+                self.complex.push(GraphComplex {
+                    shader: wgsl::complex_body(&c.re, &c.im),
+                    re: c.re.clone(),
+                    im: c.im.clone(),
+                    grid: row["complex"].as_str() == Some("grid"),
+                    opacity: row["opacity"]
+                        .as_f64()
+                        .map_or(1.0, |o| o.clamp(0.0, 1.0) as f32),
+                    key: mix(c.re.fingerprint(), c.im.fingerprint()),
                     color,
                     width,
                     style,
@@ -556,13 +618,20 @@ impl Engine {
         }
     }
 
-    /// Calls `draw` with everything to plot, in the form graph-core takes.
-    pub fn with_plot<R>(&self, draw: impl FnOnce(&Plot) -> R) -> R {
-        self.with_plot_marks(&[], draw)
+    /// Calls `draw` with everything to plot in `vp`, in the form graph-core
+    /// takes. `scale` is the display's DPI scale.
+    pub fn with_plot<R>(&self, vp: &Viewport, scale: f32, draw: impl FnOnce(&Plot) -> R) -> R {
+        self.with_plot_marks(vp, scale, &[], draw)
     }
 
     /// As `with_plot`, with marks (points of interest, a trace point) on top.
-    pub fn with_plot_marks<R>(&self, marks: &[Mark], draw: impl FnOnce(&Plot) -> R) -> R {
+    pub fn with_plot_marks<R>(
+        &self,
+        vp: &Viewport,
+        scale: f32,
+        marks: &[Mark],
+        draw: impl FnOnce(&Plot) -> R,
+    ) -> R {
         let fns: Vec<_> = self
             .curves
             .iter()
@@ -586,7 +655,26 @@ impl Engine {
             .iter()
             .map(|p| (move |t: f64| p.x.eval(t), move |t: f64| p.y.eval(t)))
             .collect();
-        let parametrics: Vec<Parametric> = self
+        let grids = self.grid_lines(vp, scale);
+        let warps: Vec<_> = grids
+            .iter()
+            .map(|g| {
+                let (c, vertical) = (g.at, g.vertical);
+                let at = move |t: f64| if vertical { (c, t) } else { (t, c) };
+                let (re, im) = (&g.of.re, &g.of.im);
+                (
+                    move |t: f64| {
+                        let (x, y) = at(t);
+                        re.eval2(x, y)
+                    },
+                    move |t: f64| {
+                        let (x, y) = at(t);
+                        im.eval2(x, y)
+                    },
+                )
+            })
+            .collect();
+        let mut parametrics: Vec<Parametric> = self
             .parametrics
             .iter()
             .zip(&sweeps)
@@ -600,6 +688,21 @@ impl Engine {
                 key: Some(p.key),
             })
             .collect();
+        parametrics.extend(grids.iter().zip(&warps).map(|(g, (x, y))| {
+            let mut color = g.of.color;
+            if !g.vertical {
+                color[3] *= GRID_IM_ALPHA;
+            }
+            Parametric {
+                x,
+                y,
+                domain: g.domain,
+                color,
+                width: g.of.width,
+                style: g.of.style,
+                key: Some(g.key),
+            }
+        }));
         // Only the boundaries the GPU cannot draw are traced here.
         let traced: Vec<&GraphRegion> = self
             .regions
@@ -669,12 +772,57 @@ impl Engine {
         })
     }
 
+    /// The grid lines of the view that complex rows drawn as grids carry
+    /// through their functions: the view's minor lines of constant real
+    /// and imaginary part, each over a stretch a little past the view, in
+    /// steps so panning reuses the lines already drawn.
+    fn grid_lines(&self, vp: &Viewport, scale: f32) -> Vec<GridLine<'_>> {
+        let warped: Vec<&GraphComplex> = self.complex.iter().filter(|c| !c.colors()).collect();
+        if warped.is_empty() {
+            return Vec::new();
+        }
+        let spacing = grid_spacing(vp.units_per_px, MAJOR_SPACING_LOGICAL * scale as f64).minor;
+        let (xs, ys) = (vp.x_range(), vp.y_range());
+        // The lines run a view's width past each side, rounded out to whole
+        // multiples of a larger step.
+        let stretch = |(lo, hi): (f64, f64)| {
+            let step = spacing * 20.0;
+            let span = hi - lo;
+            (
+                ((lo - span) / step).floor() * step,
+                ((hi + span) / step).ceil() * step,
+            )
+        };
+        let (x_domain, y_domain) = (stretch(xs), stretch(ys));
+        let mut lines = Vec::new();
+        for of in warped {
+            for (vertical, (lo, hi), domain) in [(true, xs, y_domain), (false, ys, x_domain)] {
+                for i in line_indices(lo, hi, spacing) {
+                    let at = i as f64 * spacing;
+                    let key = mix(
+                        mix(of.key, at.to_bits() ^ vertical as u64),
+                        mix(domain.0.to_bits(), domain.1.to_bits()),
+                    );
+                    lines.push(GridLine {
+                        of,
+                        vertical,
+                        at,
+                        domain,
+                        key,
+                    });
+                }
+            }
+        }
+        lines
+    }
+
     /// How many things are drawn, for the smoke test's report.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn drawn(&self) -> usize {
         self.curves.len()
             + self.parametrics.len()
             + self.regions.len()
+            + self.complex.len()
             + self.points.len()
             + self.polygons.len()
             + self.odes.len()
@@ -788,36 +936,51 @@ impl Engine {
     /// `origin` is the world position of the target's pixel (0, 0), and
     /// `scale` the display's DPI scale.
     pub fn shadings(&self, origin: [f64; 2], units_per_px: f64, scale: f32) -> Vec<Shading> {
-        self.regions
-            .iter()
-            .filter_map(|r| {
-                let test = match r.compare {
-                    Compare::Lt => Some(Test::Less),
-                    Compare::Le => Some(Test::LessOrEqual),
-                    Compare::Gt => Some(Test::Greater),
-                    Compare::Ge => Some(Test::GreaterOrEqual),
-                    Compare::Eq => None,
-                };
-                let line_px = if r.boundary_on_gpu() {
-                    r.width * scale
-                } else {
-                    0.0
-                };
-                if test.is_none() && line_px == 0.0 {
-                    return None; // Nothing here for the GPU to do.
-                }
-                Some(Shading {
-                    body: r.shader.as_ref()?.body.clone(),
-                    constants: r.shader.as_ref()?.constants.clone(),
-                    test,
-                    color: r.color,
-                    fill_opacity: SHADE_OPACITY,
-                    line_px,
-                    origin: [origin[0] as f32, origin[1] as f32],
-                    units_per_px: units_per_px as f32,
-                })
+        let origin = [origin[0] as f32, origin[1] as f32];
+        // Complex colorings go first, so inequalities shade over them.
+        let colorings = self.complex.iter().filter(|c| c.colors()).filter_map(|c| {
+            let shader = c.shader.as_ref()?;
+            Some(Shading {
+                body: shader.body.clone(),
+                constants: shader.constants.clone(),
+                test: None,
+                color: c.color,
+                fill_opacity: c.opacity * COLORING_OPACITY,
+                line_px: 0.0,
+                origin,
+                units_per_px: units_per_px as f32,
+                complex: true,
             })
-            .collect()
+        });
+        let regions = self.regions.iter().filter_map(|r| {
+            let test = match r.compare {
+                Compare::Lt => Some(Test::Less),
+                Compare::Le => Some(Test::LessOrEqual),
+                Compare::Gt => Some(Test::Greater),
+                Compare::Ge => Some(Test::GreaterOrEqual),
+                Compare::Eq => None,
+            };
+            let line_px = if r.boundary_on_gpu() {
+                r.width * scale
+            } else {
+                0.0
+            };
+            if test.is_none() && line_px == 0.0 {
+                return None; // Nothing here for the GPU to do.
+            }
+            Some(Shading {
+                body: r.shader.as_ref()?.body.clone(),
+                constants: r.shader.as_ref()?.constants.clone(),
+                test,
+                color: r.color,
+                fill_opacity: SHADE_OPACITY,
+                line_px,
+                origin,
+                units_per_px: units_per_px as f32,
+                complex: false,
+            })
+        });
+        colorings.chain(regions).collect()
     }
 }
 
@@ -874,7 +1037,10 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "kind": kind,
         "name": name,
         "error": r.error,
-        "value": r.value.as_ref().map(result_latex),
+        "value": r.value.as_ref().map(|v| match &r.unit {
+            Some(unit) => format!("{}\\ {unit}", result_latex(v)),
+            None => result_latex(v),
+        }),
         // A regression's parameters and R², as Desmos lists them under it.
         "fit": r.fit.as_ref().map(|f| {
             let mut parts: Vec<String> = f
@@ -900,6 +1066,8 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "row": defined.get(name.as_str())?,
             "latex": exact_latex(v),
         }))).collect::<Vec<_>>(),
+        // A complex plot's style menu offers Colors or Grid.
+        "complex": !r.complex.is_empty(),
         "lines": !(r.curves.is_empty()
             && r.odes.is_empty()
             && r.parametrics.is_empty()
@@ -1070,7 +1238,52 @@ mod tests {
         assert_eq!(reply[2]["graphed"], true, "hidden rows still analyze");
         assert_eq!(reply[3]["missing"][0]["name"], "m");
         assert_eq!(reply[4]["value"], "2");
-        engine.with_plot(|plot| assert_eq!((plot.curves[0].f)(1.5), 3.0));
+        engine.with_plot(&Viewport::new(800.0, 600.0), 1.0, |plot| {
+            assert_eq!((plot.curves[0].f)(1.5), 3.0)
+        });
+    }
+
+    #[test]
+    fn complex_rows_color_the_plane_or_warp_the_grid() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "z^2", "color": "#c74440"},
+            {"id": 2, "latex": "y>x", "color": "#2d70b3"},
+        ]));
+        assert_eq!(reply[0]["complex"], true);
+        assert_eq!(reply[0]["graphed"], true);
+        // The coloring goes first, so the inequality shades over it.
+        let shadings = engine.shadings([-10.0, 10.0], 0.02, 1.0);
+        assert_eq!(shadings.len(), 2);
+        assert!(shadings[0].complex && !shadings[1].complex);
+        assert!(shadings[0].body.contains("vec2<f32>"));
+        let vp = Viewport::new(1000.0, 1000.0);
+        engine.with_plot(&vp, 1.0, |plot| assert!(plot.parametrics.is_empty()));
+
+        // As a grid, the view's lines are drawn through z^2 instead.
+        engine.update(&json!([
+            {"id": 1, "latex": "z^2", "color": "#c74440", "complex": "grid"},
+        ]));
+        assert!(engine.shadings([-10.0, 10.0], 0.02, 1.0).is_empty());
+        engine.with_plot(&vp, 1.0, |plot| {
+            // -10 to 10 each way at the minor spacing, 0.5.
+            assert_eq!(plot.parametrics.len(), 2 * 41);
+            // The line Re z = 1 at Im z = 2: (1 + 2i)^2 = -3 + 4i.
+            let line = plot
+                .parametrics
+                .iter()
+                .find(|p| ((p.x)(1.0), (p.y)(1.0)) == (0.0, 2.0))
+                .expect("the line through 1");
+            assert_eq!(((line.x)(2.0), (line.y)(2.0)), (-3.0, 4.0));
+        });
+
+        // Without a GPU form, a coloring falls back to the grid.
+        engine.update(
+            &json!([{"id": 1, "latex": "z+\\left(\\operatorname{real}\\left(z\\right)\\right)!"}]),
+        );
+        assert!(engine.complex[0].shader.is_none());
+        assert!(engine.shadings([-10.0, 10.0], 0.02, 1.0).is_empty());
+        engine.with_plot(&vp, 1.0, |plot| assert!(!plot.parametrics.is_empty()));
     }
 
     #[test]
@@ -1096,7 +1309,7 @@ mod tests {
 
         // A factorial has no GPU form, so that row is traced on the CPU.
         assert!(engine.regions[2].shader.is_none());
-        engine.with_plot(|plot| {
+        engine.with_plot(&Viewport::new(800.0, 600.0), 1.0, |plot| {
             let (curves, implicits) = (plot.curves, plot.implicits);
             assert!(curves.is_empty());
             assert_eq!(implicits.len(), 1, "only what the GPU cannot draw");
@@ -1111,7 +1324,9 @@ mod tests {
             {"id": 1, "latex": "x^2+y^2<4", "color": "#c74440", "style": "dashed"},
         ]));
         assert_eq!(engine.shadings([-10.0, 10.0], 0.02, 1.0)[0].line_px, 0.0);
-        engine.with_plot(|plot| assert_eq!(plot.implicits.len(), 1));
+        engine.with_plot(&Viewport::new(800.0, 600.0), 1.0, |plot| {
+            assert_eq!(plot.implicits.len(), 1)
+        });
     }
 
     #[test]
@@ -1137,7 +1352,7 @@ mod tests {
         assert_eq!(engine.curves.len(), 2, "one curve per list element");
         assert_eq!(reply[4]["value"], "\\left[1,4,9\\right]");
         assert_eq!(engine.drawn(), 5);
-        engine.with_plot(|plot| {
+        engine.with_plot(&Viewport::new(800.0, 600.0), 1.0, |plot| {
             assert_eq!(plot.parametrics.len(), 2);
             assert_eq!(plot.points[0].points.len(), 2);
         });

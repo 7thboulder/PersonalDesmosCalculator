@@ -48,6 +48,10 @@ pub enum Tok {
     Arrow,
     /// `\sim` (typed `~`), which makes a regression.
     Tilde,
+    /// Text, typed with `$`, naming a unit or constant: `\text{km/h}`.
+    Unit(String),
+    /// Text that converts the answer: `\text{in km}`.
+    UnitTarget(String),
     /// A command this calculator does not understand yet.
     Unsupported(String),
 }
@@ -184,6 +188,56 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
     Ok(toks)
 }
 
+/// The text in `{…}` after `\text`, with MathQuill's escapes undone, and
+/// the index after the closing brace.
+fn text_block(chars: &[char], mut i: usize) -> Result<(String, usize), String> {
+    while chars.get(i) == Some(&' ') {
+        i += 1;
+    }
+    if chars.get(i) != Some(&'{') {
+        return Err("Text needs braces".into());
+    }
+    i += 1;
+    let mut text = String::new();
+    loop {
+        match chars.get(i) {
+            None => return Err("Unfinished text".into()),
+            Some('}') => return Ok((text, i + 1)),
+            Some('\\') => {
+                i += 1;
+                let start = i;
+                while chars.get(i).is_some_and(|c| c.is_ascii_alphabetic()) {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                match word.as_str() {
+                    "" => {
+                        // `\_`, `\{`, `\^` and the like stand for the character.
+                        if let Some(c) = chars.get(i) {
+                            text.push(*c);
+                            i += 1;
+                        }
+                    }
+                    "textasciicircum" => text.push('^'),
+                    "backslash" => text.push('\\'),
+                    "cdot" => text.push('·'),
+                    other => text.push_str(other),
+                }
+                // `\^{}` and `\textasciicircum{}` end with empty braces.
+                if chars.get(i) == Some(&'{') && chars.get(i + 1) == Some(&'}') {
+                    i += 2;
+                } else if chars.get(i) == Some(&' ') && !word.is_empty() {
+                    i += 1;
+                }
+            }
+            Some(c) => {
+                text.push(*c);
+                i += 1;
+            }
+        }
+    }
+}
+
 fn push(toks: &mut Vec<Tok>, tok: Tok, i: &mut usize) {
     toks.push(tok);
     *i += 1;
@@ -259,7 +313,21 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "int" => Tok::Int,
         "to" | "rightarrow" => Tok::Arrow,
         "sim" => Tok::Tilde,
-        "mathrm" | "text" | "mathit" => {
+        "mathrm" | "text" | "textrm" | "textnormal" => {
+            let (text, end) = text_block(chars, i)?;
+            let text = text.trim();
+            let lower = text.to_lowercase();
+            if text.is_empty() {
+                return Ok(end);
+            }
+            let tok = match ["in ", "to ", "→"].iter().find(|w| lower.starts_with(*w)) {
+                Some(w) => Tok::UnitTarget(text[w.len()..].trim().to_owned()),
+                None => Tok::Unit(text.to_owned()),
+            };
+            toks.push(tok);
+            return Ok(end);
+        }
+        "mathit" => {
             return Err(format!("text (\\{name}) is not supported"));
         }
         n if GREEK.contains(&n) => Tok::Letter(n.to_string()),

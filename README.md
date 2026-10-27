@@ -94,7 +94,18 @@ on the right. What you type is graphed as you type it:
   The session is autosaved, so the next launch carries on where you left
   off, unsaved changes included; New and Open ask before dropping them.
 - Complex numbers, always on: `i`, `e^{iθ}`, `3+2i` arithmetic and powers,
-  and `real`, `imag`, `conj`, `arg` and `abs`, in lists too.
+  `real`, `imag`, `conj`, `arg` and `abs`, and `sin`, `cos`, `tan` (and
+  their reciprocals), `sinh`, `cosh`, `tanh`, `ln`, `log`, `exp` and `sqrt`,
+  in lists too.
+- Complex function plots: a row in z, such as `z^2 + 1`, `\sin z` or
+  `f(z)` for a function f, colors the plane by its value at z = x + iy
+  (domain coloring, drawn by the GPU). The hue is the angle of f(z), red
+  where it is a positive real number, and the shade goes dark at zeros and
+  light at poles, with faint steps where |f(z)| doubles. Hold the row's
+  circle and pick **Grid** to see instead where the view's grid lines go
+  under f, with the lines of constant real part brighter than those of
+  constant imaginary part. A row that defines z makes it an ordinary
+  variable again.
 - List tools: `sort(L, keys)`, `join`, `unique`, `distance`, `midpoint`,
   comprehensions written `f(n) for n = L`, and `L[n].x`.
 - Polygons: `polygon((0,0), (4,0), (2,3))`, or one per element with `for`,

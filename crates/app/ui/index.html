@@ -67,6 +67,10 @@
 </div>
 <div id="style-menu">
   <div class="colors"></div>
+  <div class="complex-options styles">
+    <button data-complex="colors" title="Color the plane by the value of f(z)">Colors</button>
+    <button data-complex="grid" title="Draw where the grid lines go under f(z)">Grid</button>
+  </div>
   <div class="line-options">
   <div class="styles">
     <button data-style="solid" title="Solid"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button>
@@ -92,7 +96,7 @@
 </div>
 <div id="shortcuts" class="overlay">
   <div class="box">
-    <div class="tabs"><button data-tab="keys" class="on">Keyboard shortcuts</button><button data-tab="functions">Functions</button><button class="close" title="Close (Esc)">&times;</button></div>
+    <div class="tabs"><button data-tab="keys" class="on">Keyboard shortcuts</button><button data-tab="functions">Functions</button><button data-tab="units">Units</button><button class="close" title="Close (Esc)">&times;</button></div>
     <div class="tab keys">
     <h2>Keyboard shortcuts</h2>
     <table>
@@ -127,6 +131,42 @@
     </table>
     </div>
     <div class="tab functions"></div>
+    <div class="tab units">
+    <h2>Units and constants</h2>
+    <table>
+      <tr><td>Type <b>$</b></td><td>Start or end a unit, as in 5$m/s$&middot;3$h$</td></tr>
+      <tr><td>$in km$ at the end</td><td>Show the answer in km (or <b>to km</b>)</td></tr>
+      <tr><td>m/s^2, kg m^2/s^2, J/(mol K)</td><td>Combine units with spaces, * or /</td></tr>
+      <tr><td>v = 5$m/s$</td><td>Variables and functions carry their units</td></tr>
+      <tr><td>2$m$ + 3$s$</td><td>Units that don't match are an error</td></tr>
+    </table>
+    <h2>Units</h2>
+    <table>
+      <tr><td>SI prefixes</td><td>Y Z E P T G M k h da d c m u (µ) n p f a, as in km, mg, &micro;s, kWh, MeV</td></tr>
+      <tr><td>Base</td><td>m, g, s, A, K, mol, cd</td></tr>
+      <tr><td>Derived</td><td>Hz, N, Pa, J, W, C, V, ohm, F, Wb, T, H, S, L, eV, Wh, cal, bar, t</td></tr>
+      <tr><td>Time</td><td>min, h, day, wk, yr</td></tr>
+      <tr><td>Length</td><td>in, ft, yd, mi, nmi, au, ly, pc, angstrom</td></tr>
+      <tr><td>Mass</td><td>lb, oz, ton, Da</td></tr>
+      <tr><td>Area, volume</td><td>ha, acre, gal, qt, pt, cup, floz, tbsp, tsp</td></tr>
+      <tr><td>Speed</td><td>mph, kph, kn</td></tr>
+      <tr><td>Energy, power, pressure</td><td>kcal, BTU, hp, atm, psi, mmHg, torr</td></tr>
+      <tr><td>Angle</td><td>rad, deg, rev, arcmin, arcsec (sin(30$deg$) = 0.5)</td></tr>
+    </table>
+    <h2>Constants</h2>
+    <table>
+      <tr><td>c</td><td>Speed of light</td></tr>
+      <tr><td>G</td><td>Gravitational constant</td></tr>
+      <tr><td>g0</td><td>Standard gravity</td></tr>
+      <tr><td>planck, hbar</td><td>Planck constant, reduced</td></tr>
+      <tr><td>e</td><td>Elementary charge</td></tr>
+      <tr><td>kB, NA, R</td><td>Boltzmann, Avogadro, gas constant</td></tr>
+      <tr><td>me, mp, mn</td><td>Electron, proton, neutron mass</td></tr>
+      <tr><td>eps0, mu0, sigma</td><td>Vacuum permittivity, permeability, Stefan&ndash;Boltzmann</td></tr>
+      <tr><td>phi</td><td>Golden ratio</td></tr>
+      <tr><td>&pi;, &tau;, e, &infin;</td><td>As in Desmos, typed without $</td></tr>
+    </table>
+    </div>
   </div>
 </div>
 <script>{{JQUERY}}</script>
