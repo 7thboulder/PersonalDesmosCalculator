@@ -105,7 +105,8 @@
           };
         }
         return Object.assign(styleOf(r), {
-          id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider
+          id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider,
+          seeds: r.seeds
         });
       });
     // The ticker goes first, as a hidden row the engine analyzes like any
@@ -609,6 +610,26 @@
       domainEl.title = p.error || '';
     }
 
+    // A differential equation's initial points, which its solution
+    // curves pass through. The first time, one at (0, 1) to start from.
+    var ode = r.ode;
+    el.classList.toggle('has-seeds', !!ode);
+    if (ode) {
+      if (!row.seedsShown) {
+        row.seedsShown = true;
+        if (row.seeds == null) {
+          row.seeds = '\\left(0,1\\right)';
+          setTimeout(sendRows, 0);
+        }
+        row.settingSeeds = true;
+        row.seedsField.latex(row.seeds);
+        row.settingSeeds = false;
+      }
+      var seedsEl = el.querySelector('.seeds');
+      seedsEl.classList.toggle('bad', !!ode.error);
+      seedsEl.title = ode.error || '';
+    }
+
     var missing = r.missing || [];
     el.classList.toggle('has-missing', missing.length > 0);
     row.missingButtons.innerHTML = '';
@@ -652,6 +673,7 @@
       '<input class="lmax" size="5"> Step: <input class="lstep" size="4"></div>' +
       '<div class="domain"><span class="bound dmin"></span> ≤ <span class="dname"></span> ≤ ' +
       '<span class="bound dmax"></span></div>' +
+      '<div class="seeds" title="">through <span class="bound seeds-field"></span></div>' +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
       '</div>' +
       '<button class="remove" title="Delete">&#x2715;</button>';
@@ -677,6 +699,10 @@
       settingDomain: false,
       domainMin: null,
       domainMax: null,
+      seeds: null,
+      seedsShown: false,
+      settingSeeds: false,
+      seedsField: null,
       slider: { min: -10, max: 10, step: null },
       playing: false,
       settingSlider: false,
@@ -726,6 +752,16 @@
     };
     row.domainMin = MQ.MathField(el.querySelector('.dmin'), domainOptions());
     row.domainMax = MQ.MathField(el.querySelector('.dmax'), domainOptions());
+    row.seedsField = MQ.MathField(el.querySelector('.seeds-field'), Object.assign({}, MATH_OPTIONS, {
+      handlers: {
+        edit: function () {
+          if (row.settingSeeds) return;
+          row.seeds = row.seedsField.latex();
+          sendRows();
+        },
+        enter: function () { row.field.focus(); }
+      }
+    }));
     if (latex) row.field.latex(latex);
     el.querySelector('.math').addEventListener('keydown', function (e) {
       if (e.key === '"' && row.field.latex() === '') {
@@ -1406,6 +1442,7 @@
       ['y=x^2\\left\\{x>0\\right\\}', 'Restriction'],
       ['\\left\\{x<0:-x,x\\right\\}', 'Piecewise'],
       ['y_1\\sim mx_1+b', 'Regression: fits m and b'],
+      ["y'=x-y", 'Slope field, with solution curves through the points under it (drag them)'],
       ['a\\to a+1', 'Action (type ->)']]],
     ['TRIG (RADIANS)', [
       ['\\sin x,\\ \\cos x,\\ \\tan x', 'Also csc, sec, cot'],
@@ -1669,6 +1706,7 @@
       applyStyle(row, s);
       if (s.slider && typeof s.slider.min === 'number') row.slider = s.slider;
       if (s.domain && s.domain.length === 2) row.domain = s.domain;
+      if (typeof s.seeds === 'string') row.seeds = s.seeds;
       paintRow(row);
     });
     if (rows.length === 0) addRow('', 0);
@@ -1745,6 +1783,17 @@
         row.playPos = null;
         setSlider(row, p[1], true);
       });
+    },
+    // Dragging a differential equation's initial point on the graph
+    // rewrites its initial points.
+    setSeeds: function (id, latex) {
+      var row = rows.filter(function (r) { return r.id === id; })[0];
+      if (!row || row.kind || !row.seedsField) return;
+      row.seeds = latex;
+      row.settingSeeds = true;
+      row.seedsField.latex(latex);
+      row.settingSeeds = false;
+      sendRows();
     },
     // Used by the smoke test: adds a slider and plays it.
     demo: function () {
