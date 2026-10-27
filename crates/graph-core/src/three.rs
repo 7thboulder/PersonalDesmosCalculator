@@ -343,10 +343,29 @@ pub struct LineVertex {
     pub side: f32,
     pub color: [f32; 4],
     pub width: f32,
-    pub _pad: [f32; 3],
+    /// 1 for a round dot (both ends the same point, `width` across), 0
+    /// for a line.
+    pub round: f32,
+    pub _pad: [f32; 2],
 }
 
 fn segment(a: [f64; 3], b: [f64; 3], width: f32, color: [f32; 4], out: &mut Vec<LineVertex>) {
+    quad(a, b, width, color, 0.0, out);
+}
+
+/// A round dot `size` pixels across, drawn facing the camera.
+fn disc(at: [f64; 3], size: f32, color: [f32; 4], out: &mut Vec<LineVertex>) {
+    quad(at, at, size, color, 1.0, out);
+}
+
+fn quad(
+    a: [f64; 3],
+    b: [f64; 3],
+    width: f32,
+    color: [f32; 4],
+    round: f32,
+    out: &mut Vec<LineVertex>,
+) {
     let a = a.map(|v| v as f32);
     let b = b.map(|v| v as f32);
     for (end, side) in [
@@ -364,8 +383,64 @@ fn segment(a: [f64; 3], b: [f64; 3], width: f32, color: [f32; 4], out: &mut Vec<
             side,
             color,
             width,
-            _pad: [0.0; 3],
+            round,
+            _pad: [0.0; 2],
         });
+    }
+}
+
+/// Points in 3D, as dots `size` pixels across. Points outside the box are
+/// left out, as Desmos does.
+pub fn points_3d(
+    view: &View3,
+    points: &[[f64; 3]],
+    size: f32,
+    color: [f32; 4],
+    out: &mut Vec<LineVertex>,
+) {
+    for p in points {
+        let b = view.to_box(*p);
+        if b.iter().all(|v| v.abs() <= 1.0) {
+            disc(b, size, color, out);
+        }
+    }
+}
+
+/// Samples along a curve in 3D.
+const CURVE_SAMPLES: usize = 2000;
+
+/// The curve `t -> (x(t), y(t), z(t))` for t over `domain`, `width`
+/// pixels wide. The GPU trims it to the box; stretches far outside the box
+/// or where the curve is undefined are left out.
+#[allow(clippy::too_many_arguments)]
+pub fn curve_3d(
+    view: &View3,
+    x: &dyn Fn(f64) -> f64,
+    y: &dyn Fn(f64) -> f64,
+    z: &dyn Fn(f64) -> f64,
+    domain: (f64, f64),
+    width: f32,
+    color: [f32; 4],
+    out: &mut Vec<LineVertex>,
+) {
+    let (lo, hi) = domain;
+    if !(lo.is_finite() && hi.is_finite()) {
+        return;
+    }
+    let near = |b: &[f64; 3]| b.iter().all(|v| v.abs() <= HEIGHT_LIMIT);
+    let mut last: Option<[f64; 3]> = None;
+    for k in 0..=CURVE_SAMPLES {
+        let t = lo + (hi - lo) * k as f64 / CURVE_SAMPLES as f64;
+        let b = view.to_box([x(t), y(t), z(t)]);
+        let here = (b.iter().all(|v| v.is_finite()) && near(&b)).then_some(b);
+        if let (Some(a), Some(b)) = (last, here) {
+            segment(a, b, width, color, out);
+            // Round joints keep a thick curve whole where it bends.
+            if k < CURVE_SAMPLES {
+                disc(b, width, color, out);
+            }
+        }
+        last = here;
     }
 }
 
@@ -572,6 +647,38 @@ mod tests {
         assert_eq!(defined, 6 * 12 + 2 * 11);
         let left = half.vertices.iter().map(|p| p.pos[0]).fold(1.0, f32::min);
         assert!(left.abs() < 1e-3, "filled to x = 0: {left}");
+    }
+
+    #[test]
+    fn points_and_curves_stay_in_the_box() {
+        let v = View3::new(600.0, 600.0);
+        let mut out = Vec::new();
+        points_3d(
+            &v,
+            &[[1.0, 2.0, 3.0], [0.0, 0.0, 30.0]],
+            9.0,
+            [1.0; 4],
+            &mut out,
+        );
+        assert_eq!(out.len(), 6, "only the point inside the box");
+        assert!(out.iter().all(|c| c.round == 1.0 && c.a == c.b));
+        out.clear();
+        // A helix rising out of the top of the box: its far end is left out.
+        curve_3d(
+            &v,
+            &|t| t.cos(),
+            &|t| t.sin(),
+            &|t| t,
+            (0.0, 100.0),
+            2.5,
+            [1.0; 4],
+            &mut out,
+        );
+        let tops = out
+            .iter()
+            .map(|c| c.a[2].max(c.b[2]))
+            .fold(f32::MIN, f32::max);
+        assert!(tops <= HEIGHT_LIMIT as f32 && !out.is_empty());
     }
 
     #[test]

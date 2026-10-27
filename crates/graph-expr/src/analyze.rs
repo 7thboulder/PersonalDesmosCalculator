@@ -79,6 +79,16 @@ pub struct Surface {
     pub program: Program,
 }
 
+/// A curve in 3D traced by t: `(cos t, sin t, t)`. All three programs
+/// read t as their argument.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Curve3 {
+    pub x: Program,
+    pub y: Program,
+    pub z: Program,
+    pub domain: (f64, f64),
+}
+
 /// How a relation compares its two sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compare {
@@ -129,6 +139,9 @@ pub enum Value {
     Point(f64, f64),
     Numbers(Vec<f64>),
     Points(Vec<[f64; 2]>),
+    /// A point in 3D, and a list of them.
+    Point3([f64; 3]),
+    Points3(Vec<[f64; 3]>),
     Polygon(Vec<[f64; 2]>),
     Polygons(Vec<Vec<[f64; 2]>>),
     /// A complex number, real part then imaginary part.
@@ -181,6 +194,9 @@ pub struct RowAnalysis {
     pub regions: Vec<Region>,
     /// Surfaces over the xy plane, in a 3D graph.
     pub surfaces: Vec<Surface>,
+    /// Points and curves in 3D.
+    pub points3: Vec<[f64; 3]>,
+    pub curves3: Vec<Curve3>,
     /// Fixed points to draw.
     pub points: Vec<[f64; 2]>,
     /// Filled polygons to draw, each a list of vertices.
@@ -225,6 +241,8 @@ impl RowAnalysis {
             parametrics: Vec::new(),
             regions: Vec::new(),
             surfaces: Vec::new(),
+            points3: Vec::new(),
+            curves3: Vec::new(),
             points: Vec::new(),
             polygons: Vec::new(),
             updates: Vec::new(),
@@ -266,6 +284,8 @@ impl RowAnalysis {
             && self.parametrics.is_empty()
             && self.regions.is_empty()
             && self.surfaces.is_empty()
+            && self.points3.is_empty()
+            && self.curves3.is_empty()
             && self.points.is_empty()
             && self.polygons.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
@@ -404,6 +424,8 @@ fn same_value(a: &Result<Value, String>, b: &Result<Value, String>) -> bool {
                     push(7, p.as_flattened());
                 }
             }
+            Value::Point3(p) => push(8, p),
+            Value::Points3(ps) => push(9, ps.as_flattened()),
         }
         out
     }
@@ -425,6 +447,7 @@ enum Def {
 enum Item {
     Num(Low),
     Point(Low, Low),
+    Point3(Low, Low, Low),
     /// A polygon's vertices, which are always constants.
     Polygon(Vec<[f64; 2]>),
     /// A complex number with a nonzero imaginary part: real, imaginary.
@@ -481,8 +504,15 @@ impl Val {
         }
     }
 
+    /// Whether any element is a point, in 2D or 3D.
     fn has_points(&self) -> bool {
-        self.items.iter().any(|i| matches!(i, Item::Point(..)))
+        self.items
+            .iter()
+            .any(|i| matches!(i, Item::Point(..) | Item::Point3(..)))
+    }
+
+    fn has_points3(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Point3(..)))
     }
 
     fn has_polygons(&self) -> bool {
@@ -530,6 +560,21 @@ impl Val {
                 Value::Complex(numbers[0][0], numbers[0][1])
             });
         }
+        if self.has_points3() {
+            let points = self
+                .items
+                .iter()
+                .map(|i| match i {
+                    Item::Point3(a, b, c) => Some([num(a)?, num(b)?, num(c)?]),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(if self.list {
+                Value::Points3(points)
+            } else {
+                Value::Point3(points[0])
+            });
+        }
         if self.has_points() {
             let points = self
                 .items
@@ -572,6 +617,15 @@ impl Val {
             Value::Points(ps) => {
                 Val::list(ps.iter().map(|p| Item::Point(c(p[0]), c(p[1]))).collect())
             }
+            Value::Point3(p) => Val {
+                items: vec![Item::Point3(c(p[0]), c(p[1]), c(p[2]))],
+                list: false,
+            },
+            Value::Points3(ps) => Val::list(
+                ps.iter()
+                    .map(|p| Item::Point3(c(p[0]), c(p[1]), c(p[2])))
+                    .collect(),
+            ),
             Value::Polygon(p) => Val {
                 items: vec![Item::Polygon(p.clone())],
                 list: false,
@@ -974,8 +1028,9 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             if out.error.is_none() && out.points.len() == 1 {
                 out.drag = point.and_then(|e| env.drag_of(&e));
             }
-            if mode == Mode::ThreeD {
-                flat_only(&mut out);
+            match mode {
+                Mode::ThreeD => into_3d(&mut out),
+                Mode::Flat => flat(&mut out),
             }
             out
         })
@@ -985,30 +1040,54 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
     results
 }
 
-/// In a 3D graph, drops what only a flat graph can draw (curves, points,
-/// shading) and says so on the row.
-fn flat_only(row: &mut RowAnalysis) {
+/// In a 3D graph, flat points and parametric curves sit on the xy plane,
+/// as in Desmos 3D. What only a flat graph can draw (curves of x, shading,
+/// polygons, tables) is dropped and the row says so.
+fn into_3d(row: &mut RowAnalysis) {
+    for p in std::mem::take(&mut row.points) {
+        row.points3.push([p[0], p[1], 0.0]);
+    }
+    if !row.parametrics.is_empty() {
+        let zero = Program::compile(&Low::Const(0.0)).expect("a constant compiles");
+        for p in std::mem::take(&mut row.parametrics) {
+            row.curves3.push(Curve3 {
+                x: p.x,
+                y: p.y,
+                z: zero.clone(),
+                domain: p.domain,
+            });
+        }
+    }
+    row.drag = None;
     let flat = !(row.curves.is_empty()
-        && row.parametrics.is_empty()
         && row.regions.is_empty()
-        && row.points.is_empty()
         && row.polygons.is_empty()
         && row.columns.iter().all(|c| c.points.is_empty()));
     if !flat {
         return;
     }
     row.curves.clear();
-    row.parametrics.clear();
     row.regions.clear();
-    row.points.clear();
     row.polygons.clear();
-    row.drag = None;
     row.parameter = None;
     for column in &mut row.columns {
         column.points.clear();
     }
     if row.error.is_none() {
         row.error = Some("3D graphs can't draw this yet".into());
+    }
+}
+
+/// In a flat graph, 3D points and curves can't be drawn.
+fn flat(row: &mut RowAnalysis) {
+    if row.points3.is_empty() && row.curves3.is_empty() {
+        return;
+    }
+    row.points3.clear();
+    row.curves3.clear();
+    row.parameter = None;
+    if row.error.is_none() {
+        row.error = Some("Points with three coordinates need a 3D graph".into());
     }
 }
 
@@ -1212,6 +1291,7 @@ fn constant_key(v: &Val, key: &mut Vec<u64>) -> Option<()> {
             Item::Num(a) => key.extend([0, bits(a)?]),
             Item::Point(a, b) => key.extend([1, bits(a)?, bits(b)?]),
             Item::Complex(a, b) => key.extend([2, bits(a)?, bits(b)?]),
+            Item::Point3(a, b, c) => key.extend([3, bits(a)?, bits(b)?, bits(c)?]),
             Item::Polygon(_) => return None,
         }
     }
@@ -1403,6 +1483,7 @@ impl Env {
                 }
                 // A point or polygon variable is drawn, as in Desmos.
                 row.points = points_of(&value);
+                row.points3 = points3_of(&value);
                 row.polygons = polygons_of(&value);
                 if !row.polygons.is_empty() {
                     row.value = None;
@@ -1606,17 +1687,32 @@ impl Env {
         let parameter = self.parameter(input, "t", T_DOMAIN);
         if row.error.is_none() {
             for item in &val.items {
-                let Item::Point(a, b) = item else {
-                    row.error = Some("A list mixing points and numbers can't be graphed".into());
-                    break;
+                let compile = |l: &Low| Program::compile(l);
+                let compiled = match item {
+                    Item::Point(a, b) => (|| {
+                        let (x, y) = (compile(a)?, compile(b)?);
+                        row.parametrics.push(Parametric {
+                            x,
+                            y,
+                            domain: parameter.domain,
+                        });
+                        Ok(())
+                    })(),
+                    Item::Point3(a, b, c) => (|| {
+                        let (x, y, z) = (compile(a)?, compile(b)?, compile(c)?);
+                        row.curves3.push(Curve3 {
+                            x,
+                            y,
+                            z,
+                            domain: parameter.domain,
+                        });
+                        Ok(())
+                    })(),
+                    _ => Err("A list mixing points and numbers can't be graphed".into()),
                 };
-                match (Program::compile(a), Program::compile(b)) {
-                    (Ok(x), Ok(y)) => row.parametrics.push(Parametric {
-                        x,
-                        y,
-                        domain: parameter.domain,
-                    }),
-                    (Err(e), _) | (_, Err(e)) => row.error = Some(e),
+                if let Err(e) = compiled {
+                    row.error = Some(e);
+                    break;
                 }
             }
         }
@@ -1947,10 +2043,12 @@ impl Env {
             row.value = val.constant();
             if let Some(v) = &row.value {
                 row.points = points_of(v);
+                row.points3 = points3_of(v);
                 row.polygons = polygons_of(v);
                 if !row.points.is_empty()
+                    || !row.points3.is_empty()
                     || !row.polygons.is_empty()
-                    || matches!(v, Value::Point(..))
+                    || matches!(v, Value::Point(..) | Value::Point3(_))
                 {
                     // Points are shown on the graph, not echoed under the row.
                     row.kind = RowKind::Curve;
@@ -2800,6 +2898,13 @@ impl Env {
                     Point(op2(a, k), op2(b, k))
                 }
                 (BinOp::Mul, Num(k), Point(a, b)) => Point(op2(k, a), op2(k, b)),
+                (BinOp::Add | BinOp::Sub, Point3(a, b, c), Point3(d, e, f)) => {
+                    Point3(op2(a, d), op2(b, e), op2(c, f))
+                }
+                (BinOp::Mul | BinOp::Div, Point3(a, b, c), Num(k)) => {
+                    Point3(op2(a, k), op2(b, k), op2(c, k))
+                }
+                (BinOp::Mul, Num(k), Point3(a, b, c)) => Point3(op2(k, a), op2(k, b), op2(k, c)),
                 (BinOp::Add | BinOp::Sub, _, _) => {
                     return Err("Points can't be added to numbers".into())
                 }
@@ -2842,6 +2947,7 @@ impl Env {
                     Ok(match items[0] {
                         Item::Num(a) => Item::Num(neg(a)),
                         Item::Point(a, b) => Item::Point(neg(a), neg(b)),
+                        Item::Point3(a, b, c) => Item::Point3(neg(a), neg(b), neg(c)),
                         Item::Polygon(_) => return Err("Polygons can't be negated".into()),
                         Item::Complex(a, b) => Item::Complex(neg(a), neg(b)),
                     })
@@ -2882,13 +2988,28 @@ impl Env {
                     _ => Err("A point's coordinates must be numbers".into()),
                 })
             }
+            Expr::Point3(a, b, c) => {
+                let (a, b, c) = (go!(a), go!(b), go!(c));
+                self.broadcast(&[a, b, c], problems, |items| {
+                    match (items[0], items[1], items[2]) {
+                        (Item::Num(a), Item::Num(b), Item::Num(c)) => {
+                            Ok(Item::Point3(a.clone(), b.clone(), c.clone()))
+                        }
+                        _ => Err("A point's coordinates must be numbers".into()),
+                    }
+                })
+            }
             Expr::Coord(a, coord) => {
                 let a = go!(a);
-                self.broadcast(&[a], problems, |items| match items[0] {
-                    Item::Point(x, y) => Ok(Item::Num(match coord {
-                        Coord::X => x.clone(),
-                        Coord::Y => y.clone(),
-                    })),
+                self.broadcast(&[a], problems, |items| match (items[0], coord) {
+                    (Item::Point(x, _) | Item::Point3(x, _, _), Coord::X) => {
+                        Ok(Item::Num(x.clone()))
+                    }
+                    (Item::Point(_, y) | Item::Point3(_, y, _), Coord::Y) => {
+                        Ok(Item::Num(y.clone()))
+                    }
+                    (Item::Point3(_, _, z), Coord::Z) => Ok(Item::Num(z.clone())),
+                    (Item::Point(..), Coord::Z) => Err("Only 3D points have .z".into()),
                     _ => Err("Only points have .x and .y".into()),
                 })
             }
@@ -3488,6 +3609,9 @@ impl Env {
                         let key = |i: &Item| match i {
                             Item::Num(l) => constant(l).map(|v| vec![v]),
                             Item::Point(..) => point_of(i).map(|p| p.to_vec()),
+                            Item::Point3(a, b, c) => {
+                                Some(vec![constant(a)?, constant(b)?, constant(c)?])
+                            }
                             Item::Complex(a, b) => Some(vec![constant(a)?, constant(b)?]),
                             Item::Polygon(_) => None,
                         };
@@ -3854,6 +3978,7 @@ impl Env {
             let reads_plane = v.items.iter().any(|i| match i {
                 Item::Num(l) => l.uses_arg(),
                 Item::Point(a, b) | Item::Complex(a, b) => a.uses_arg() || b.uses_arg(),
+                Item::Point3(a, b, c) => a.uses_arg() || b.uses_arg() || c.uses_arg(),
                 Item::Polygon(_) => false,
             });
             if let Some(g) = GRAPH_VARIABLES.iter().find(|g| **g == name) {
@@ -3932,7 +4057,7 @@ fn numbers_of(v: &Value, rows: usize, error: &mut Option<String>) -> Option<Vec<
             ns.resize(rows, f64::NAN);
             Some(ns)
         }
-        Value::Point(..) | Value::Points(_) => {
+        Value::Point(..) | Value::Points(_) | Value::Point3(_) | Value::Points3(_) => {
             *error = Some("Table cells hold numbers, not points".into());
             None
         }
@@ -3956,6 +4081,15 @@ fn points_of(v: &Value) -> Vec<[f64; 2]> {
     }
 }
 
+fn points3_of(v: &Value) -> Vec<[f64; 3]> {
+    let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
+    match v {
+        Value::Point3(p) => [*p].into_iter().filter(finite).collect(),
+        Value::Points3(ps) => ps.iter().copied().filter(finite).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn polygons_of(v: &Value) -> Vec<Vec<[f64; 2]>> {
     match v {
         Value::Polygon(p) => vec![p.clone()],
@@ -3969,6 +4103,7 @@ fn is_literal(e: &Expr) -> bool {
     match e {
         Expr::List(items) => items.iter().all(is_literal),
         Expr::Point(a, b) => a.as_literal().is_some() && b.as_literal().is_some(),
+        Expr::Point3(a, b, c) => [a, b, c].iter().all(|e| e.as_literal().is_some()),
         other => other.as_literal().is_some(),
     }
 }

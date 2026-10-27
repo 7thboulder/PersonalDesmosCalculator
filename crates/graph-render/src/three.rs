@@ -63,13 +63,15 @@ fn surface_fs(i: SurfaceOut) -> @location(0) vec4<f32> {
     // The underside is lit like the top, a little darker.
     if (dot(n, u.toward.xyz) < 0.0) {
         n = -n;
-        tint = 0.85;
+        tint = 0.92;
     }
-    let light = normalize(u.toward.xyz + vec3<f32>(0.0, 0.0, 1.2));
+    // Lit mostly from the camera, a little from above, so whatever faces
+    // the viewer reads clearly, inside or out.
+    let light = normalize(u.toward.xyz + vec3<f32>(0.0, 0.0, 0.25));
     let diffuse = max(dot(n, light), 0.0);
     let half_way = normalize(light + u.toward.xyz);
     let shine = pow(max(dot(n, half_way), 0.0), 40.0) * 0.12;
-    var rgb = i.color.rgb * (0.5 + 0.5 * diffuse) * tint + vec3<f32>(shine);
+    var rgb = i.color.rgb * (0.55 + 0.45 * diffuse) * tint + vec3<f32>(shine);
     // Faint grid lines at the box's grid steps help show the shape.
     let g = (i.at.xy - u.grid.zw) / u.grid.xy;
     let d = abs(fract(g + 0.5) - 0.5) / max(fwidth(g), vec2<f32>(1e-6));
@@ -81,13 +83,18 @@ fn surface_fs(i: SurfaceOut) -> @location(0) vec4<f32> {
 struct LineOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
+    /// Where in the quad, for dots: -1 to 1 each way.
+    @location(1) uv: vec2<f32>,
+    @location(2) round: f32,
+    /// Box coordinates, so curves are trimmed to the box.
+    @location(3) at: vec3<f32>,
 };
 
 @vertex
 fn line_vs(
     @location(0) a: vec3<f32>, @location(1) end: f32,
     @location(2) b: vec3<f32>, @location(3) side: f32,
-    @location(4) c: vec4<f32>, @location(5) width: f32,
+    @location(4) c: vec4<f32>, @location(5) width: f32, @location(6) round: f32,
 ) -> LineOut {
     let half_size = u.size.xy / 2.0;
     let ca = clip(a);
@@ -99,10 +106,17 @@ fn line_vs(
         dir = vec2<f32>(1.0, 0.0);
     }
     dir = normalize(dir);
-    let across = vec2<f32>(-dir.y, dir.x) * side * width / 2.0;
+    var offset = vec2<f32>(-dir.y, dir.x) * side * width / 2.0;
+    if (round > 0.5) {
+        // A dot's quad reaches along as far as across.
+        offset = offset + dir * (end * 2.0 - 1.0) * width / 2.0;
+    }
     var o: LineOut;
     var p = select(ca, cb, end > 0.5);
-    p = vec4<f32>(p.xy + across / half_size * p.w, p.z, p.w);
+    p = vec4<f32>(p.xy + offset / half_size * p.w, p.z, p.w);
+    o.uv = vec2<f32>(end * 2.0 - 1.0, side);
+    o.round = round;
+    o.at = select(a, b, end > 0.5);
     // Lines win against a surface at the same depth, such as the grid
     // under z = 0.
     p.z = p.z - 0.002 * p.w;
@@ -113,6 +127,12 @@ fn line_vs(
 
 @fragment
 fn line_fs(i: LineOut) -> @location(0) vec4<f32> {
+    if (i.round > 0.5 && dot(i.uv, i.uv) > 1.0) {
+        discard;
+    }
+    if (any(abs(i.at) > vec3<f32>(1.001))) {
+        discard;
+    }
     return output(i.color);
 }
 "#;
@@ -275,7 +295,7 @@ impl Renderer3 {
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &wgpu::vertex_attr_array![
                     0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Float32,
-                    4 => Float32x4, 5 => Float32
+                    4 => Float32x4, 5 => Float32, 6 => Float32
                 ],
             },
         );

@@ -287,8 +287,9 @@ impl Parser {
                 e = match self.next() {
                     Some(Tok::Letter(l)) if l == "x" => Expr::Coord(Box::new(e), Coord::X),
                     Some(Tok::Letter(l)) if l == "y" => Expr::Coord(Box::new(e), Coord::Y),
+                    Some(Tok::Letter(l)) if l == "z" => Expr::Coord(Box::new(e), Coord::Z),
                     Some(Tok::OpName(n)) if n == "length" => Expr::Call(Builtin::Length, vec![e]),
-                    _ => return Err("Only .x, .y and .length can follow a '.'".into()),
+                    _ => return Err("Only .x, .y, .z and .length can follow a '.'".into()),
                 };
             } else if self.peek() == Some(&Tok::Prime) {
                 return Err("Only functions can be differentiated with ', like f'(x)".into());
@@ -389,8 +390,13 @@ impl Parser {
                 }
                 if self.eat(&Tok::Comma) {
                     let y = self.expr()?;
-                    if self.peek() == Some(&Tok::Comma) {
-                        return Err("Points have two coordinates in 2D".into());
+                    if self.eat(&Tok::Comma) {
+                        let z = self.expr()?;
+                        if self.peek() == Some(&Tok::Comma) {
+                            return Err("Points have at most three coordinates".into());
+                        }
+                        self.expect(&Tok::RParen)?;
+                        return Ok(Expr::Point3(Box::new(e), Box::new(y), Box::new(z)));
                     }
                     self.expect(&Tok::RParen)?;
                     return Ok(Expr::Point(Box::new(e), Box::new(y)));
