@@ -125,12 +125,23 @@ impl GraphRegion {
     }
 }
 
+/// How opaque a shaded solid is by default, as a share of its row's
+/// opacity. Its row's Fill slider changes it.
+const SOLID_OPACITY: f32 = 0.4;
+
 /// What a surface in a 3D graph is.
 pub enum Shape {
     /// `z = f(x, y)`.
     Explicit(Program),
     /// `f(x, y, z) = 0`.
     Implicit(Program),
+    /// The translucent solid where `f(x, y, z) < 0`, or `> 0` when
+    /// `above`.
+    Solid { program: Program, above: bool },
+    /// A polygon's fill, by its corners.
+    Polygon(Vec<[f64; 3]>),
+    /// A shaded box: its low and high end on each axis.
+    Box([[f64; 2]; 3]),
     /// `(x(u, v), y(u, v), z(u, v))`.
     Parametric {
         x: Program,
@@ -154,6 +165,13 @@ pub struct GraphPoints3 {
     pub points: Vec<[f64; 3]>,
     pub color: [f32; 4],
     pub size: f32,
+}
+
+/// A polygon's outline in a 3D graph (its fill is a surface).
+pub struct GraphPolygon3 {
+    pub corners: Vec<[f64; 3]>,
+    pub color: [f32; 4],
+    pub width: f32,
 }
 
 /// A curve in a 3D graph, traced by t.
@@ -192,10 +210,14 @@ pub struct Engine {
     pub surfaces: Vec<GraphSurface>,
     pub points3: Vec<GraphPoints3>,
     pub curves3: Vec<GraphCurve3>,
+    pub polygons3: Vec<GraphPolygon3>,
     /// Flat or 3D, as the panel last said.
     pub mode: Mode,
     /// Surface meshes for the current view, by surface and range.
     meshes: Vec<(u64, Mesh)>,
+    /// The 3D points' and curves' lines, by rows and range. They are in box
+    /// coordinates, so turning the box keeps them.
+    lines3: Option<(u64, Vec<three::LineVertex>)>,
     /// The LaTeX of every row, in order, as last received.
     pub latex: Vec<String>,
     /// The row selected in the panel, whose curves show points of interest.
@@ -257,6 +279,7 @@ impl Engine {
         self.surfaces.clear();
         self.points3.clear();
         self.curves3.clear();
+        self.polygons3.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -276,6 +299,9 @@ impl Engine {
                     style,
                 });
             }
+            let solid_fill = row["fillOpacity"]
+                .as_f64()
+                .map_or(SOLID_OPACITY, |f| f.clamp(0.0, 1.0) as f32);
             for p in &result.parametrics {
                 self.parametrics.push(GraphParametric {
                     row: result.id,
@@ -311,10 +337,21 @@ impl Engine {
                 });
             }
             for surface in &result.implicits3 {
-                self.surfaces.push(GraphSurface {
-                    shape: Shape::Implicit(surface.program.clone()),
-                    key: mix(surface.program.fingerprint(), 1),
-                    color,
+                let program = surface.program.clone();
+                self.surfaces.push(match surface.shade {
+                    None => GraphSurface {
+                        shape: Shape::Implicit(program),
+                        key: mix(surface.program.fingerprint(), 1),
+                        color,
+                    },
+                    Some(compare) => {
+                        let above = matches!(compare, Compare::Gt | Compare::Ge);
+                        GraphSurface {
+                            shape: Shape::Solid { program, above },
+                            key: mix(surface.program.fingerprint(), 3 + above as u64),
+                            color: [color[0], color[1], color[2], color[3] * solid_fill],
+                        }
+                    }
                 });
             }
             for s in &result.param_surfaces {
@@ -349,6 +386,30 @@ impl Engine {
                     y: c.y.clone(),
                     z: c.z.clone(),
                     domain: c.domain,
+                    color,
+                    width,
+                });
+            }
+            for b in &result.boxes3 {
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Box(*b),
+                    key: b.iter().flatten().fold(6, |k, c| mix(k, c.to_bits())),
+                    color: [color[0], color[1], color[2], color[3] * solid_fill],
+                });
+            }
+            for corners in &result.polygons3 {
+                let fill = row["fillOpacity"]
+                    .as_f64()
+                    .unwrap_or(POLYGON_FILL)
+                    .clamp(0.0, 1.0) as f32;
+                let key = corners.iter().flatten().fold(5, |k, c| mix(k, c.to_bits()));
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Polygon(corners.clone()),
+                    key,
+                    color: [color[0], color[1], color[2], color[3] * fill],
+                });
+                self.polygons3.push(GraphPolygon3 {
+                    corners: corners.clone(),
                     color,
                     width,
                 });
@@ -536,6 +597,13 @@ impl Engine {
                         let f = |x: f64, y: f64, z: f64| p.eval3(x, y, z);
                         three::implicit_mesh(view, &f, s.color, three::IMPLICIT_SAMPLES)
                     }
+                    Shape::Solid { program, above } => {
+                        let sign = if *above { -1.0 } else { 1.0 };
+                        let f = |x: f64, y: f64, z: f64| sign * program.eval3(x, y, z);
+                        three::solid_mesh(view, &f, s.color, three::IMPLICIT_SAMPLES)
+                    }
+                    Shape::Polygon(corners) => three::polygon_mesh(view, corners, s.color),
+                    Shape::Box(b) => three::box_mesh(view, *b, s.color),
                     Shape::Parametric { x, y, z, u, v } => {
                         let f = |a: f64, b: f64| [x.eval2(a, b), y.eval2(a, b), z.eval2(a, b)];
                         three::parametric_mesh(view, &f, *u, *v, s.color, three::PARAMETRIC_SAMPLES)
@@ -546,22 +614,31 @@ impl Engine {
         }
         self.meshes = kept;
         let meshes: Vec<&Mesh> = self.meshes.iter().map(|(_, m)| m).collect();
-        let mut lines = three::box_lines(view, scale);
-        for c in &self.curves3 {
-            three::curve_3d(
-                view,
-                &|t| c.x.eval(t),
-                &|t| c.y.eval(t),
-                &|t| c.z.eval(t),
-                c.domain,
-                c.width * scale,
-                c.color,
-                &mut lines,
-            );
+        let lines_key = mix(mix(self.generation, range), scale.to_bits() as u64);
+        if !matches!(&self.lines3, Some((k, _)) if *k == lines_key) {
+            let mut lines = Vec::new();
+            for c in &self.curves3 {
+                three::curve_3d(
+                    view,
+                    &|t| c.x.eval(t),
+                    &|t| c.y.eval(t),
+                    &|t| c.z.eval(t),
+                    c.domain,
+                    c.width * scale,
+                    c.color,
+                    &mut lines,
+                );
+            }
+            for p in &self.polygons3 {
+                three::polygon_outline_3d(view, &p.corners, p.width * scale, p.color, &mut lines);
+            }
+            for p in &self.points3 {
+                three::points_3d(view, &p.points, p.size * scale, p.color, &mut lines);
+            }
+            self.lines3 = Some((lines_key, lines));
         }
-        for p in &self.points3 {
-            three::points_3d(view, &p.points, p.size * scale, p.color, &mut lines);
-        }
+        let lines = three::box_lines(view, scale);
+        let marks = self.lines3.as_ref().map_or(&[][..], |(_, l)| &l[..]);
         let overlay = three::box_labels(view, scale, text);
         let step = three::steps(view);
         let grid = [
@@ -577,6 +654,8 @@ impl Engine {
             surfaces: &meshes,
             surfaces_key: keys.iter().fold(keys.len() as u64, |k, &v| mix(k, v)),
             lines: &lines,
+            marks,
+            marks_key: lines_key,
         };
         draw(&frame, &overlay, text)
     }
@@ -689,7 +768,11 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
         "points": !(r.points.is_empty() && r.points3.is_empty()),
-        "polygons": !r.polygons.is_empty(),
+        // Whether the row has a fill, for the Fill slider.
+        "polygons": !(r.polygons.is_empty()
+            && r.polygons3.is_empty()
+            && r.boxes3.is_empty()
+            && r.implicits3.iter().all(|s| s.shade.is_none())),
         "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
             "row": defined.get(name.as_str())?,
             "latex": exact_latex(v),
@@ -961,12 +1044,17 @@ mod tests {
         assert_eq!(reply[1]["lines"], true);
         assert_eq!(with_more.points3[0].size, 12.0);
         assert_eq!(with_more.curves3.len(), 1);
-        let bare = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.lines.len());
-        let more = with_more.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.lines.len());
-        assert!(
-            more > bare + 6,
-            "{more} lines with a point and a curve, {bare} without"
-        );
+        let bare = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.marks.len());
+        let (more, marks_key) = with_more.with_frame_3d(&view, 1.0, &mut text, |f, _, _| {
+            (f.marks.len(), f.marks_key)
+        });
+        assert_eq!(bare, 0);
+        assert!(more > 6, "{more} vertices for a point and a curve");
+        // Points and curves are kept while the box turns.
+        let mut turned = view;
+        turned.turn_px(40.0, 0.0);
+        let same = with_more.with_frame_3d(&turned, 1.0, &mut text, |f, _, _| f.marks_key);
+        assert_eq!(same, marks_key);
 
         // Turning the box keeps the mesh; zooming makes a new one.
         view.turn_px(40.0, 0.0);
@@ -975,6 +1063,21 @@ mod tests {
         view.zoom(2.0);
         let zoomed = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| f.surfaces_key);
         assert_ne!(zoomed, key);
+    }
+
+    #[test]
+    fn solids_have_a_fill_slider_that_reaches_solid() {
+        let mut engine = Engine {
+            mode: Mode::ThreeD,
+            ..Engine::default()
+        };
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "x^2+y^2+z^2<4", "color": "#2d70b3"},
+            {"id": 2, "latex": "0\\le z\\le 1", "color": "#2d70b3", "fillOpacity": 1},
+        ]));
+        assert_eq!(reply[0]["polygons"], true, "a solid shows the Fill slider");
+        assert_eq!(engine.surfaces[0].color[3], SOLID_OPACITY);
+        assert_eq!(engine.surfaces[1].color[3], 1.0, "Fill at 1 is solid");
     }
 
     #[test]

@@ -31,6 +31,10 @@ USAGE:
                                        (open, slider drag, pan, zoom) and print a
                                        table to set beside bench/desmos-bench.js
                                        (GRAPHCALC_SIZE=260x540 sets the graph size)
+    graphcalc --bench-suite-3d [FRAMES]
+                                       the same for the 3D graphs in bench/3d/
+                                       (open, slider, turn, zoom), to set beside
+                                       bench/desmos-3d-bench.js
     graphcalc --smoke-test SECS FILE   open the window, check the editor panel and
                                        graph both start, write the result to FILE
     graphcalc --opaque-window          open the window without transparency
@@ -109,6 +113,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 None => 120,
             };
             headless::bench_suite(frames)
+        }
+        Some("--bench-suite-3d") => {
+            let frames = match args.get(1) {
+                Some(n) => n.parse().map_err(|_| format!("bad frame count: {n}"))?,
+                None => 60,
+            };
+            headless::bench_suite_3d(frames)
+        }
+        Some("--desmos-script-3d") => {
+            let path = args.get(1).ok_or("--desmos-script-3d needs a file name")?;
+            std::fs::write(path, headless::desmos_script_3d()).map_err(|e| format!("{path}: {e}"))
         }
         Some("--desmos-script") => {
             let path = args.get(1).ok_or("--desmos-script needs a file name")?;

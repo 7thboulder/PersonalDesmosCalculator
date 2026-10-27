@@ -8,6 +8,8 @@ use crate::scene::axis_label;
 use crate::tess::Vertex;
 use crate::text::TextAtlas;
 use bytemuck::{Pod, Zeroable};
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
 /// How far the camera sits from the centre of the box, in box units. Far
 /// enough that the perspective is gentle.
@@ -54,7 +56,7 @@ impl View3 {
     pub fn new(width_px: f64, height_px: f64) -> Self {
         Self {
             center: [0.0; 3],
-            half: [10.0; 3],
+            half: [5.0; 3],
             yaw: DEFAULT_YAW,
             pitch: DEFAULT_PITCH,
             width_px,
@@ -352,6 +354,102 @@ fn sample_grid(values: &mut [f64], side: usize, f: &(dyn Fn(usize, usize, usize)
     });
 }
 
+/// The outside of the solid where `f(x, y, z) < 0` within the box: the
+/// surface `f = 0` closed off by the box's walls where the solid meets
+/// them, as Desmos 3D shades an inequality.
+pub fn solid_mesh(
+    view: &View3,
+    f: &(dyn Fn(f64, f64, f64) -> f64 + Sync),
+    color: [f32; 4],
+    n: usize,
+) -> Mesh {
+    let mut mesh = implicit_mesh(view, f, color, n);
+    let n = n.max(2);
+    let side = n + 1;
+    let coord = |i: usize| -1.0 + 2.0 * i as f64 / n as f64;
+    // Each wall: the axis it is across, and which end.
+    for axis in 0..3 {
+        for end in [-1.0, 1.0] {
+            let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+            let at = |i: usize, j: usize| {
+                let mut p = [0.0; 3];
+                p[axis] = end;
+                p[a] = coord(i);
+                p[b] = coord(j);
+                p
+            };
+            let graph = |p: [f64; 3]| [0, 1, 2].map(|d| view.center[d] + p[d] * view.half[d]);
+            let mut values = vec![f64::NAN; side * side];
+            for j in 0..side {
+                for i in 0..side {
+                    let [x, y, z] = graph(at(i, j));
+                    values[j * side + i] = f(x, y, z);
+                }
+            }
+            let mut normal = [0f32; 3];
+            normal[axis] = end as f32;
+            for j in 0..n {
+                for i in 0..n {
+                    let corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+                    let v = corners.map(|(ci, cj)| values[cj * side + ci]);
+                    if v.iter().any(|x| !x.is_finite()) || v.iter().all(|&x| x >= 0.0) {
+                        continue;
+                    }
+                    // The part of the cell inside the solid, corner by
+                    // corner around it.
+                    let mut polygon: Vec<[f64; 3]> = Vec::with_capacity(6);
+                    for k in 0..4 {
+                        let (p, q) = (corners[k], corners[(k + 1) % 4]);
+                        let (vp, vq) = (v[k], v[(k + 1) % 4]);
+                        let (pp, pq) = (at(p.0, p.1), at(q.0, q.1));
+                        if vp < 0.0 {
+                            polygon.push(pp);
+                        }
+                        if (vp < 0.0) != (vq < 0.0) {
+                            let t = vp / (vp - vq);
+                            polygon.push([0, 1, 2].map(|d| pp[d] + (pq[d] - pp[d]) * t));
+                        }
+                    }
+                    let base = mesh.vertices.len() as u32;
+                    mesh.vertices.extend(polygon.iter().map(|p| Vertex3 {
+                        pos: p.map(|c| c as f32),
+                        normal,
+                        color,
+                    }));
+                    for k in 1..polygon.len().saturating_sub(1) as u32 {
+                        mesh.indices.extend([base, base + k, base + k + 1]);
+                    }
+                }
+            }
+        }
+    }
+    mesh
+}
+
+/// A quick hash for grid edges, which are already well spread.
+#[derive(Default)]
+struct EdgeHasher(u64);
+
+impl std::hash::Hasher for EdgeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(u64::from(*b));
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(29) ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
 /// The surface where `f(x, y, z) = 0` inside the box, found by marching
 /// tetrahedra over a grid of `n` cells a side. Points where f is undefined
 /// break the surface there.
@@ -408,57 +506,94 @@ pub fn implicit_mesh(
         [0, 4, 5, 7],
         [0, 5, 1, 7],
     ];
-    let mut mesh = Mesh::default();
-    for k in 0..n {
-        for j in 0..n {
-            for i in 0..n {
-                let grid = CORNERS.map(|c| [i + c[0], j + c[1], k + c[2]]);
-                let v = grid.map(|g| at(g[0], g[1], g[2]));
-                if v.iter().any(|x| !x.is_finite()) {
-                    continue;
-                }
-                if v.iter().all(|&x| x < 0.0) || v.iter().all(|&x| x >= 0.0) {
-                    continue;
-                }
-                for tet in TETS {
-                    let inside: Vec<usize> = tet.iter().copied().filter(|&c| v[c] < 0.0).collect();
-                    let outside: Vec<usize> =
-                        tet.iter().copied().filter(|&c| v[c] >= 0.0).collect();
-                    // Where the field crosses zero along the edge a-b.
-                    let mut cross = |a: usize, b: usize| -> u32 {
-                        let t = v[a] / (v[a] - v[b]);
-                        let (ga, gb) = (grid[a], grid[b]);
-                        let pos = [0, 1, 2]
-                            .map(|d| (coord(ga[d]) + (coord(gb[d]) - coord(ga[d])) * t) as f32);
-                        let (na, nb) = (gradient(ga), gradient(gb));
-                        let mut normal = [0, 1, 2].map(|d| na[d] + (nb[d] - na[d]) * t);
-                        let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
-                        if len.is_finite() && len > 0.0 {
-                            normal = normal.map(|c| c / len);
-                        } else {
-                            normal = [0.0, 0.0, 1.0];
+    // Slabs of k on separate threads, joined in order.
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get());
+    let per = n.div_ceil(threads.clamp(1, 16));
+    let slab = |ks: std::ops::Range<usize>| {
+        let mut mesh = Mesh::default();
+        // Each crossing's vertex, by the grid edge it is on, so the
+        // tetrahedra around an edge share it.
+        let mut made: HashMap<(usize, usize), u32, BuildHasherDefault<EdgeHasher>> =
+            HashMap::default();
+        for k in ks {
+            for j in 0..n {
+                for i in 0..n {
+                    let grid = CORNERS.map(|c| [i + c[0], j + c[1], k + c[2]]);
+                    let v = grid.map(|g| at(g[0], g[1], g[2]));
+                    if v.iter().any(|x| !x.is_finite()) {
+                        continue;
+                    }
+                    if v.iter().all(|&x| x < 0.0) || v.iter().all(|&x| x >= 0.0) {
+                        continue;
+                    }
+                    for tet in TETS {
+                        // The tetrahedron's corners, inside ones first.
+                        let mut order = tet;
+                        order.sort_by_key(|&c| v[c] >= 0.0);
+                        let count = order.iter().filter(|&&c| v[c] < 0.0).count();
+                        let (inside, outside) = order.split_at(count);
+                        // Where the field crosses zero along the edge a-b.
+                        let mut cross = |a: usize, b: usize| -> u32 {
+                            let (ga, gb) = (grid[a], grid[b]);
+                            let index = |g: [usize; 3]| (g[2] * side + g[1]) * side + g[0];
+                            let edge = (index(ga).min(index(gb)), index(ga).max(index(gb)));
+                            if let Some(&known) = made.get(&edge) {
+                                return known;
+                            }
+                            let t = v[a] / (v[a] - v[b]);
+                            let pos = [0, 1, 2]
+                                .map(|d| (coord(ga[d]) + (coord(gb[d]) - coord(ga[d])) * t) as f32);
+                            let (na, nb) = (gradient(ga), gradient(gb));
+                            let mut normal = [0, 1, 2].map(|d| na[d] + (nb[d] - na[d]) * t);
+                            let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+                            if len.is_finite() && len > 0.0 {
+                                normal = normal.map(|c| c / len);
+                            } else {
+                                normal = [0.0, 0.0, 1.0];
+                            }
+                            mesh.vertices.push(Vertex3 {
+                                pos,
+                                normal: normal.map(|c| c as f32),
+                                color,
+                            });
+                            let new = mesh.vertices.len() as u32 - 1;
+                            made.insert(edge, new);
+                            new
+                        };
+                        match (inside, outside) {
+                            ([a], [b, c, d]) | ([b, c, d], [a]) => {
+                                let t = [cross(*a, *b), cross(*a, *c), cross(*a, *d)];
+                                mesh.indices.extend(t);
+                            }
+                            ([a, b], [c, d]) => {
+                                let q =
+                                    [cross(*a, *c), cross(*a, *d), cross(*b, *d), cross(*b, *c)];
+                                mesh.indices.extend([q[0], q[1], q[2], q[0], q[2], q[3]]);
+                            }
+                            _ => {}
                         }
-                        mesh.vertices.push(Vertex3 {
-                            pos,
-                            normal: normal.map(|c| c as f32),
-                            color,
-                        });
-                        mesh.vertices.len() as u32 - 1
-                    };
-                    match (inside.as_slice(), outside.as_slice()) {
-                        ([a], [b, c, d]) | ([b, c, d], [a]) => {
-                            let t = [cross(*a, *b), cross(*a, *c), cross(*a, *d)];
-                            mesh.indices.extend(t);
-                        }
-                        ([a, b], [c, d]) => {
-                            let q = [cross(*a, *c), cross(*a, *d), cross(*b, *d), cross(*b, *c)];
-                            mesh.indices.extend([q[0], q[1], q[2], q[0], q[2], q[3]]);
-                        }
-                        _ => {}
                     }
                 }
             }
         }
+        mesh
+    };
+    let parts: Vec<Mesh> = std::thread::scope(|scope| {
+        let slab = &slab;
+        let handles: Vec<_> = (0..n)
+            .step_by(per)
+            .map(|k0| scope.spawn(move || slab(k0..(k0 + per).min(n))))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("mesh thread"))
+            .collect()
+    });
+    let mut mesh = Mesh::default();
+    for part in parts {
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.extend(part.vertices);
+        mesh.indices.extend(part.indices.iter().map(|i| i + base));
     }
     mesh
 }
@@ -619,6 +754,95 @@ fn quad(
 }
 
 /// Points in 3D, as dots `size` pixels across. Points outside the box are
+/// A flat polygon's fill, fanned out from its first corner. Its normal is
+/// Newell's average, so a slightly bent polygon still lights evenly.
+pub fn polygon_mesh(view: &View3, corners: &[[f64; 3]], color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::default();
+    let b: Vec<[f64; 3]> = corners.iter().map(|p| view.to_box(*p)).collect();
+    if b.len() < 3 || b.iter().flatten().any(|c| !c.is_finite()) {
+        return mesh;
+    }
+    let mut n = [0.0; 3];
+    for (k, p) in b.iter().enumerate() {
+        let q = b[(k + 1) % b.len()];
+        n[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        n[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        n[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    let len = dot(n, n).sqrt();
+    let normal = if len > 1e-12 {
+        n.map(|c| (c / len) as f32)
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    mesh.vertices = b
+        .iter()
+        .map(|p| Vertex3 {
+            pos: p.map(|c| c.clamp(-HEIGHT_LIMIT, HEIGHT_LIMIT) as f32),
+            normal,
+            color,
+        })
+        .collect();
+    for k in 1..b.len() as u32 - 1 {
+        mesh.indices.extend([0, k, k + 1]);
+    }
+    mesh
+}
+
+/// The six faces of an axis-aligned box, its low and high end on each
+/// axis in graph units, cut to the view's box.
+pub fn box_mesh(view: &View3, bounds: [[f64; 2]; 3], color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::default();
+    let mut b = [[0.0; 2]; 3];
+    for axis in 0..3 {
+        let to_box = |v: f64| ((v - view.center[axis]) / view.half[axis]).clamp(-1.0, 1.0);
+        b[axis] = [to_box(bounds[axis][0]), to_box(bounds[axis][1])];
+        if b[axis][0].partial_cmp(&b[axis][1]) != Some(std::cmp::Ordering::Less) {
+            return mesh;
+        }
+    }
+    for axis in 0..3 {
+        let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
+        for side in 0..2 {
+            let mut normal = [0f32; 3];
+            normal[axis] = if side == 0 { -1.0 } else { 1.0 };
+            let base = mesh.vertices.len() as u32;
+            for (i, j) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+                let mut p = [0f32; 3];
+                p[axis] = b[axis][side] as f32;
+                p[u] = b[u][i] as f32;
+                p[w] = b[w][j] as f32;
+                mesh.vertices.push(Vertex3 {
+                    pos: p,
+                    normal,
+                    color,
+                });
+            }
+            mesh.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    mesh
+}
+
+/// A polygon's closed outline, `width` pixels wide.
+pub fn polygon_outline_3d(
+    view: &View3,
+    corners: &[[f64; 3]],
+    width: f32,
+    color: [f32; 4],
+    out: &mut Vec<LineVertex>,
+) {
+    let b: Vec<[f64; 3]> = corners.iter().map(|p| view.to_box(*p)).collect();
+    if b.len() < 2 || b.iter().flatten().any(|c| !c.is_finite()) {
+        return;
+    }
+    for (k, p) in b.iter().enumerate() {
+        segment(*p, b[(k + 1) % b.len()], width, color, out);
+        disc(*p, width, color, out);
+    }
+}
+
 /// left out, as Desmos does.
 pub fn points_3d(
     view: &View3,
@@ -798,13 +1022,20 @@ pub fn box_labels(view: &View3, scale: f32, text: &mut TextAtlas) -> Vec<Vertex>
 mod tests {
     use super::*;
 
+    /// A view of ±10 on each axis, which these tests were written for.
+    fn ten(width_px: f64, height_px: f64) -> View3 {
+        let mut v = View3::new(width_px, height_px);
+        v.half = [10.0; 3];
+        v
+    }
+
     fn clip(m: &[[f32; 4]; 4], b: [f64; 3]) -> [f64; 4] {
         m.map(|r| r[0] as f64 * b[0] + r[1] as f64 * b[1] + r[2] as f64 * b[2] + r[3] as f64)
     }
 
     #[test]
     fn matrix_and_projection_agree() {
-        let mut v = View3::new(800.0, 600.0);
+        let mut v = ten(800.0, 600.0);
         v.turn_px(37.0, -12.0);
         let m = v.matrix();
         for b in [[0.0, 0.0, 0.0], [1.0, -1.0, 1.0], [-1.0, 0.5, -1.0]] {
@@ -824,7 +1055,7 @@ mod tests {
 
     #[test]
     fn default_view_has_x_toward_the_viewer_and_z_up() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let [ox, oy] = v.project([0.0; 3]);
         let x = v.project([1.0, 0.0, 0.0]);
         let y = v.project([0.0, 1.0, 0.0]);
@@ -836,7 +1067,7 @@ mod tests {
 
     #[test]
     fn zoom_and_pan_change_the_range_not_the_box() {
-        let mut v = View3::new(600.0, 600.0);
+        let mut v = ten(600.0, 600.0);
         v.zoom(2.0);
         assert_eq!(v.half, [5.0; 3]);
         // Dragging right moves the contents right: the centre moves the
@@ -853,7 +1084,7 @@ mod tests {
 
     #[test]
     fn surface_mesh_follows_the_function() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let f = |x: f64, y: f64| x * y / 10.0;
         let mesh = surface_mesh(&v, &f, [1.0; 4], 10);
         assert_eq!(mesh.vertices.len(), 121);
@@ -880,7 +1111,7 @@ mod tests {
 
     #[test]
     fn points_and_curves_stay_in_the_box() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let mut out = Vec::new();
         points_3d(
             &v,
@@ -912,7 +1143,7 @@ mod tests {
 
     #[test]
     fn implicit_sphere_lies_on_its_radius() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let sphere = |x: f64, y: f64, z: f64| x * x + y * y + z * z - 25.0;
         let mesh = implicit_mesh(&v, &sphere, [1.0; 4], 24);
         assert!(mesh.indices.len() > 300, "{} indices", mesh.indices.len());
@@ -932,8 +1163,69 @@ mod tests {
     }
 
     #[test]
+    fn solid_below_a_plane_is_closed_by_the_walls() {
+        let v = ten(600.0, 600.0);
+        let below = |_: f64, _: f64, z: f64| z - 2.0;
+        let mesh = solid_mesh(&v, &below, [1.0; 4], 20);
+        let on_top = |p: &Vertex3| (p.pos[2] - 0.2).abs() < 0.02;
+        let on_wall = |p: &Vertex3| p.pos.iter().any(|c| (c.abs() - 1.0).abs() < 0.01);
+        assert!(
+            mesh.vertices.iter().any(on_top),
+            "the plane z = 2 is its top"
+        );
+        assert!(
+            mesh.vertices.iter().all(|p| on_top(p) || on_wall(p)),
+            "everything else lies on the walls"
+        );
+        assert!(
+            mesh.vertices.iter().any(|p| p.pos[2] < -0.98),
+            "the floor closes it"
+        );
+    }
+
+    #[test]
+    fn polygon_fill_is_a_fan_facing_its_normal() {
+        let v = ten(600.0, 600.0);
+        let square = [
+            [0.0, 0.0, 5.0],
+            [5.0, 0.0, 5.0],
+            [5.0, 5.0, 5.0],
+            [0.0, 5.0, 5.0],
+        ];
+        let mesh = polygon_mesh(&v, &square, [1.0; 4]);
+        assert_eq!(mesh.indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(mesh.vertices[0].normal, [0.0, 0.0, 1.0]);
+        assert_eq!(mesh.vertices[2].pos, [0.5, 0.5, 0.5]);
+        let mut lines = Vec::new();
+        polygon_outline_3d(&v, &square, 2.0, [1.0; 4], &mut lines);
+        assert_eq!(lines.len(), 4 * 12, "a side and a joint at each corner");
+    }
+
+    #[test]
+    fn box_mesh_is_cut_to_the_view() {
+        let v = ten(600.0, 600.0);
+        let m = box_mesh(
+            &v,
+            [[0.0, 5.0], [-20.0, 5.0], [0.0, f64::INFINITY]],
+            [1.0; 4],
+        );
+        assert_eq!((m.vertices.len(), m.indices.len()), (24, 36));
+        let lo = m
+            .vertices
+            .iter()
+            .fold([9f32; 3], |a, p| [0, 1, 2].map(|i| a[i].min(p.pos[i])));
+        let hi = m
+            .vertices
+            .iter()
+            .fold([-9f32; 3], |a, p| [0, 1, 2].map(|i| a[i].max(p.pos[i])));
+        assert_eq!((lo, hi), ([0.0, -1.0, 0.0], [0.5, 0.5, 1.0]));
+        let empty = box_mesh(&v, [[1.0, 1.0], [0.0, 1.0], [0.0, 1.0]], [1.0; 4]);
+        assert!(empty.vertices.is_empty());
+    }
+
+    #[test]
     fn parametric_cylinder_wraps_around() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let tau = std::f64::consts::TAU;
         let f = |u: f64, w: f64| [5.0 * (tau * u).cos(), 5.0 * (tau * u).sin(), 10.0 * w - 5.0];
         let mesh = parametric_mesh(&v, &f, (0.0, 1.0), (0.0, 1.0), [1.0; 4], 12);
@@ -948,7 +1240,7 @@ mod tests {
 
     #[test]
     fn frame_has_edges_grid_and_axes() {
-        let v = View3::new(600.0, 600.0);
+        let v = ten(600.0, 600.0);
         let lines = box_lines(&v, 1.0);
         // 12 edges, 5 grid lines each way at step 5 (-10 to 10), 3 axes.
         assert_eq!(lines.len(), (12 + 10 + 3) * 6);

@@ -741,6 +741,8 @@ mod tests {
             surfaces: &[&mesh],
             surfaces_key: 1,
             lines: &lines,
+            marks: &[],
+            marks_key: 0,
         };
         let text = graph_core::TextAtlas::empty();
         let px = render_offscreen_3d(&gpu, w, h, &frame, &[], &text);

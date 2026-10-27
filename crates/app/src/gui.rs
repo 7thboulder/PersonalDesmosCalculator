@@ -754,11 +754,11 @@ impl Running {
             });
         } else if files::desmos_state(text).is_some() {
             if !self.keep_changes() {
-                self.open_desmos(text);
+                self.open_desmos(text, false);
             }
         } else {
             show_error(
-                "That isn't a Desmos graph.\n\nPaste a desmos.com/calculator link, or the text \
+                "That isn't a Desmos graph.\n\nPaste a desmos.com/calculator or desmos.com/3d link, or the text \
                  Calc.getState() gives in Desmos's browser console.",
             );
         }
@@ -767,13 +767,17 @@ impl Running {
     fn fetched(&mut self, url: &str, reply: Result<String, String>) {
         self.run_script("window.engine.fetching(false)");
         match reply {
-            Ok(body) if files::desmos_state(&body).is_some() => self.open_desmos(&body),
+            Ok(body) if files::desmos_state(&body).is_some() => {
+                self.open_desmos(&body, url.contains("desmos.com/3d/"))
+            }
             Ok(_) => show_error(&format!("desmos.com did not send a graph for {url}.")),
             Err(e) => show_error(&format!("Could not get {url}.\n\n{e}")),
         }
     }
 
-    fn open_desmos(&mut self, text: &str) {
+    /// Opens Desmos's state for a graph, in 3D when it is from Desmos 3D
+    /// (or `three_d`, for a desmos.com/3d link).
+    fn open_desmos(&mut self, text: &str, three_d: bool) {
         match files::open_any(text) {
             Ok((rows, view, _)) => {
                 // Like an opened Desmos file, it saves to a new graph file.
@@ -781,7 +785,9 @@ impl Running {
                 if let Some(view) = view {
                     view.apply(&mut self.viewport);
                 }
-                self.apply_space(Space::default());
+                let mut space = files::space_of(text);
+                space.three_d |= three_d;
+                self.apply_space(space);
                 self.run_script(&format!("window.engine.load({rows})"));
                 self.update_title();
             }

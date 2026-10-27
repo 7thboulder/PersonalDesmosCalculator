@@ -1,0 +1,43 @@
+{
+ "version": 11,
+ "randomSeed": "0",
+ "graph": {
+  "threeDMode": true,
+  "viewport": {
+   "xmin": -10,
+   "xmax": 10,
+   "ymin": -10,
+   "ymax": 10,
+   "zmin": -10,
+   "zmax": 10
+  }
+ },
+ "expressions": {
+  "list": [
+   {
+    "type": "expression",
+    "id": "a",
+    "color": "#c74440",
+    "latex": "a=1",
+    "slider": {
+     "hardMin": true,
+     "hardMax": true,
+     "min": "0",
+     "max": "3"
+    }
+   },
+   {
+    "type": "expression",
+    "id": "2",
+    "color": "#2d70b3",
+    "latex": "z=a\\sin x\\cos y"
+   },
+   {
+    "type": "expression",
+    "id": "3",
+    "color": "#388c46",
+    "latex": "z=\\frac{x^2-y^2}{10}-a"
+   }
+  ]
+ }
+}

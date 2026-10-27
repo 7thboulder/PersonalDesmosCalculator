@@ -67,12 +67,35 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     } else {
         latex
     };
-    let three_d = flag("--3d").is_some();
+    // --open=FILE draws a saved graph or a Desmos state instead.
+    let opened = match flag("--open=") {
+        Some(file) => {
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
+            let (rows, _, _) = crate::files::open_any(&text)?;
+            let mut rows = rows.as_array().cloned().unwrap_or_default();
+            for (i, r) in rows.iter_mut().enumerate() {
+                r["id"] = json!(i + 1);
+            }
+            Some((rows, crate::files::space_of(&text)))
+        }
+        None => None,
+    };
+    let three_d = flag("--3d").is_some() || opened.as_ref().is_some_and(|(_, s)| s.three_d);
     let mut engine = Engine::default();
     if three_d {
         engine.mode = Mode::ThreeD;
     }
-    let results = engine.update(&rows(latex));
+    let (rows, latex): (serde_json::Value, Vec<String>) = match &opened {
+        Some((rows, _)) => (
+            serde_json::Value::Array(rows.clone()),
+            rows.iter()
+                .map(|r| r["latex"].as_str().unwrap_or("").to_owned())
+                .collect(),
+        ),
+        None => (rows(latex), latex.to_vec()),
+    };
+    let latex = &latex[..];
+    let results = engine.update(&rows);
     for (l, r) in latex.iter().zip(results.as_array().into_iter().flatten()) {
         if let Some(e) = r["error"].as_str() {
             println!("{l}: {e}");
@@ -80,7 +103,18 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     }
     let mut text = TextAtlas::system();
     if three_d {
-        let view = View3::new(width as f64, height as f64);
+        let mut view = View3::new(width as f64, height as f64);
+        if let Some(saved) = opened.as_ref().and_then(|(_, s)| s.view) {
+            saved.apply(&mut view);
+        }
+        // --camera=YAW,PITCH (radians) turns the box.
+        if let Some((yaw, pitch)) = flag("--camera=").and_then(|c| {
+            let (a, b) = c.split_once(',')?;
+            Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
+        }) {
+            view.yaw = yaw;
+            view.pitch = pitch;
+        }
         let start = Instant::now();
         let mut build = Duration::ZERO;
         let pixels = engine.with_frame_3d(&view, 1.0, &mut text, |frame, overlay, text| {
@@ -747,6 +781,265 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The 3D graphs for comparing with Desmos 3D, kept as its states. Each
+/// has a slider `a` (id "a") from 0 to 3.
+pub const SUITE_3D: &[(&str, &str)] = &[
+    ("surface", include_str!("../../../bench/3d/surface.json")),
+    ("implicit", include_str!("../../../bench/3d/implicit.json")),
+    (
+        "uvsurface",
+        include_str!("../../../bench/3d/uvsurface.json"),
+    ),
+    ("solids", include_str!("../../../bench/3d/solids.json")),
+    ("curves3d", include_str!("../../../bench/3d/curves3d.json")),
+];
+
+/// Times each 3D suite graph as bench/desmos-3d-bench.js times it in
+/// Desmos 3D: opening it, then `frames` frames each of moving slider `a`,
+/// turning the box and zooming. Moving the slider rebuilds every mesh;
+/// turning and zooming in only reuses them.
+pub fn bench_suite_3d(frames: u32) -> Result<(), String> {
+    let (width, height) = (1600u32, 1000u32);
+    let gpu = Gpu::new(&new_instance(), None)?;
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut renderer = GraphRenderer::new(&gpu, format);
+    let mut three = renderer.renderer_3d(&gpu);
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("3d suite target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let area = Area {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let mut text = TextAtlas::system();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let software = gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu;
+    println!(
+        "3d suite on {} at {width}x{height}, {frames} frames each (ms; cpu = analysis and meshes)",
+        gpu.describe()
+    );
+    println!(
+        "{:<11} {:>8} {:>13} {:>13} {:>13}",
+        "graph", "open", "slider", "turn", "zoom"
+    );
+    let only = std::env::var("GRAPHCALC_SUITE").unwrap_or_default();
+    for (name, state) in SUITE_3D {
+        if !only.is_empty() && !only.split(',').any(|o| o.trim() == *name) {
+            continue;
+        }
+        let (rows, _, _) = crate::files::open_any(state)?;
+        let mut rows = rows.as_array().cloned().unwrap_or_default();
+        for (i, r) in rows.iter_mut().enumerate() {
+            r["id"] = json!(i + 1);
+        }
+        let slider = rows
+            .iter()
+            .position(|r| r["latex"].as_str().is_some_and(|l| l.starts_with("a=")))
+            .ok_or(format!("{name} has no slider a"))?;
+        let fresh_view = || View3::new(width as f64, height as f64);
+        let new_engine = || {
+            let mut engine = Engine::default();
+            engine.mode = Mode::ThreeD;
+            engine
+        };
+        let mut frame =
+            |engine: &mut Engine, view: &View3, update: Option<&[serde_json::Value]>| {
+                let start = Instant::now();
+                if let Some(rows) = update {
+                    engine.update(&serde_json::Value::Array(rows.to_vec()));
+                }
+                let mut cpu = Duration::ZERO;
+                engine.with_frame_3d(view, 1.0, &mut text, |frame, overlay, text| {
+                    cpu = start.elapsed();
+                    renderer.draw_3d(
+                        &gpu,
+                        &target,
+                        (width, height),
+                        area,
+                        frame,
+                        overlay,
+                        text,
+                        &mut three,
+                    );
+                });
+                gpu.device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((cpu, start.elapsed()))
+            };
+        // Opening: a fresh engine analyzes every row and builds every mesh.
+        let mut open = Duration::MAX;
+        for _ in 0..3 {
+            let mut engine = new_engine();
+            let rows = rows.clone();
+            open = open.min(frame(&mut engine, &fresh_view(), Some(&rows))?.1);
+        }
+        let mut engine = new_engine();
+        engine.update(&serde_json::Value::Array(rows.clone()));
+        let mut run = |engine: &mut Engine,
+                       each: &mut dyn FnMut(
+            u32,
+            &mut View3,
+            &mut Vec<serde_json::Value>,
+        ) -> bool| {
+            let mut view = fresh_view();
+            let mut rows = rows.clone();
+            let (mut cpu, mut total) = (Duration::ZERO, Duration::ZERO);
+            for i in 0..frames {
+                let changed = each(i, &mut view, &mut rows);
+                let (c, t) = frame(engine, &view, changed.then_some(&rows[..]))?;
+                cpu += c;
+                total += t;
+            }
+            let n = frames.max(1);
+            Ok::<_, String>((cpu / n, total / n))
+        };
+        let slider_t = run(&mut engine, &mut |i, _, rows| {
+            let a = 0.5 + 2.0 * f64::from(i) / f64::from(frames.max(1));
+            rows[slider]["latex"] = json!(format!("a={a:.4}"));
+            true
+        })?;
+        engine.update(&serde_json::Value::Array(rows.clone()));
+        let turn_t = run(&mut engine, &mut |_, view, _| {
+            view.turn_px(4.0, 0.0);
+            false
+        })?;
+        let zoom_t = run(&mut engine, &mut |_, view, _| {
+            view.zoom(1.0 / 1.01);
+            false
+        })?;
+        let cell = |(cpu, total): (Duration, Duration)| {
+            if software {
+                format!("{:.1} cpu", ms(cpu))
+            } else {
+                format!("{:.1} ({:.1})", ms(total), ms(cpu))
+            }
+        };
+        println!(
+            "{:<11} {:>8.1} {:>13} {:>13} {:>13}",
+            name,
+            ms(open),
+            cell(slider_t),
+            cell(turn_t),
+            cell(zoom_t)
+        );
+    }
+    if software {
+        println!("software adapter: only the app's own (cpu) time is shown");
+    } else {
+        println!("frame times are total (cpu in brackets)");
+    }
+    Ok(())
+}
+
+/// The console script that times the 3D suite graphs in Desmos 3D, for
+/// [`bench_suite_3d`]. Kept in the repository as bench/desmos-3d-bench.js.
+pub fn desmos_script_3d() -> String {
+    let graphs: Vec<String> = SUITE_3D
+        .iter()
+        .map(|(name, state)| {
+            // Just the expressions: Desmos 3D refuses states it didn't write.
+            let state: serde_json::Value = serde_json::from_str(state).expect("suite JSON");
+            let rows: Vec<serde_json::Value> = state["expressions"]["list"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| {
+                    let mut row = json!({"id": e["id"], "latex": e["latex"], "color": e["color"]});
+                    if let (Some(lo), Some(hi)) =
+                        (e["slider"]["min"].as_str(), e["slider"]["max"].as_str())
+                    {
+                        row["sliderBounds"] = json!({"min": lo, "max": hi, "step": ""});
+                    }
+                    row
+                })
+                .collect();
+            format!("    {name}: {},", serde_json::Value::Array(rows))
+        })
+        .collect();
+    format!(
+        r#"// Times the graphcalc 3D comparison graphs in Desmos 3D. Open
+// https://www.desmos.com/3d in Chrome, press F12, paste all of this into the
+// Console and press Enter. It replaces the graph on screen, takes about a
+// minute, and prints a line to compare with `graphcalc --bench-suite-3d`.
+//
+// Desmos 3D can't tell a script when it has finished drawing, so each step
+// takes small screenshots every animation frame until the picture has
+// changed and then held still for two frames (or 1.5 s pass), less what
+// that watching costs on an unchanged graph. Desmos 3D has no API for
+// turning the box, so only opening and the slider are timed.
+// Generated by graphcalc (headless.rs, desmos_script_3d); do not edit by hand.
+(async () => {{
+  const FRAMES = 60;
+  const GRAPHS = {{
+{}
+  }};
+  const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+  const shot = () => Calc.screenshot({{ width: 320, height: 240, targetPixelRatio: 1 }});
+  let stuck = 0;
+  // Waits until the picture differs from `before` and then holds still.
+  const settle = async (before) => {{
+    const t0 = performance.now();
+    let last = shot(), still = 0, moved = last !== before;
+    while (performance.now() - t0 < 1500) {{
+      await frame();
+      const now = shot();
+      moved = moved || now !== before;
+      still = now === last ? still + 1 : 0;
+      last = now;
+      if (moved && still >= 2) return last;
+    }}
+    stuck++;
+    return last;
+  }};
+  const results = [];
+  let picture = shot();
+  for (const [graph, state] of Object.entries(GRAPHS)) {{
+    let t = performance.now();
+    Calc.setBlank();
+    for (const e of state) Calc.setExpression(e);
+    picture = await settle(picture);
+    const open = performance.now() - t;
+    // Watching an unchanged graph: three frames with a screenshot each.
+    t = performance.now();
+    for (let i = 0; i < 10; i++) {{
+      for (let k = 0; k < 3; k++) {{
+        await frame();
+        shot();
+      }}
+    }}
+    const base = (performance.now() - t) / 10;
+    stuck = 0;
+    t = performance.now();
+    for (let i = 0; i < FRAMES; i++) {{
+      Calc.setExpression({{ id: 'a', latex: 'a=' + (0.5 + (2 * i) / FRAMES).toFixed(4) }});
+      picture = await settle(picture);
+    }}
+    const slider = Math.max(0, (performance.now() - t) / FRAMES - base);
+    results.push({{ graph, open: +open.toFixed(1), slider: +slider.toFixed(1), stuck }});
+  }}
+  console.table(results);
+  console.log('Desmos 3D times in ms. Copy this line into the chat:\n' + JSON.stringify(results));
+}})();
+"#,
+        graphs.join("\n")
+    )
+}
+
 /// The console script that times the suite graphs in Desmos, the same way
 /// [`bench_suite`] times them here. Kept in the repository as
 /// bench/desmos-bench.js; a test checks the two agree.
@@ -825,6 +1118,30 @@ pub fn desmos_script() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn suite_3d_graphs_open_in_3d_and_the_desmos_script_is_current() {
+        for (name, state) in super::SUITE_3D {
+            assert!(crate::files::space_of(state).three_d, "{name}");
+            let (rows, _, _) = crate::files::open_any(state).unwrap();
+            let mut engine = crate::engine::Engine::default();
+            engine.mode = graph_expr::Mode::ThreeD;
+            let reply = engine.update(&rows);
+            for r in reply.as_array().unwrap() {
+                assert!(r["error"].is_null(), "{name}: {r}");
+            }
+        }
+        let script = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../bench/desmos-3d-bench.js"
+        ))
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+        assert!(
+            script == super::desmos_script_3d().replace("\r\n", "\n"),
+            "bench/desmos-3d-bench.js is out of date: run `graphcalc --desmos-script-3d bench/desmos-3d-bench.js`"
+        );
+    }
+
     #[test]
     fn suite_graphs_open_and_the_desmos_script_is_current() {
         for (name, state) in super::SUITE {

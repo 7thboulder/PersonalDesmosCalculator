@@ -58,6 +58,13 @@ pub fn result_latex(v: &crate::Value) -> String {
         Value::Points3(ps) => list(ps.len(), &mut ps.iter().map(|p| point3(p, &value_latex))),
         Value::Polygon(p) => polygon(p, &point),
         Value::Polygons(ps) => list(ps.len(), &mut ps.iter().map(|p| polygon(p, &point))),
+        Value::Polygon3(p) => polygon(p, &|q: [f64; 3]| point3(&q, &value_latex)),
+        Value::Polygons3(ps) => list(
+            ps.len(),
+            &mut ps
+                .iter()
+                .map(|p| polygon(p, &|q: [f64; 3]| point3(&q, &value_latex))),
+        ),
         Value::Complex(a, b) => complex(*a, *b, &value_latex),
         Value::Complexes(zs) => list(
             zs.len(),
@@ -93,7 +100,7 @@ fn complex(re: f64, im: f64, number: &dyn Fn(f64) -> String) -> String {
     format!("{}{sign}{magnitude}i", number(re))
 }
 
-fn polygon(vertices: &[[f64; 2]], point: &dyn Fn([f64; 2]) -> String) -> String {
+fn polygon<P: Copy>(vertices: &[P], point: &dyn Fn(P) -> String) -> String {
     let shown: Vec<String> = vertices
         .iter()
         .take(SHOWN_ELEMENTS)
@@ -148,6 +155,10 @@ pub fn exact_latex(v: &crate::Value) -> String {
         let vertices: Vec<String> = p.iter().map(|q| point(*q)).collect();
         format!("\\operatorname{{polygon}}\\left({}\\right)", list(vertices))
     };
+    let polygon3 = |p: &Vec<[f64; 3]>| {
+        let vertices: Vec<String> = p.iter().map(|q| point3(q, &exact_number)).collect();
+        format!("\\operatorname{{polygon}}\\left({}\\right)", list(vertices))
+    };
     match v {
         Value::Number(n) => exact_number(*n),
         Value::Point(a, b) => point([*a, *b]),
@@ -157,6 +168,8 @@ pub fn exact_latex(v: &crate::Value) -> String {
         Value::Points3(ps) => list(ps.iter().map(|p| point3(p, &exact_number)).collect()),
         Value::Polygon(p) => polygon(p),
         Value::Polygons(ps) => list(ps.iter().map(polygon).collect()),
+        Value::Polygon3(p) => polygon3(p),
+        Value::Polygons3(ps) => list(ps.iter().map(polygon3).collect()),
         Value::Complex(a, b) => complex(*a, *b, &exact_number),
         Value::Complexes(zs) => list(
             zs.iter()
