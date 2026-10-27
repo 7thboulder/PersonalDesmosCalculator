@@ -1382,6 +1382,42 @@
     send({ type: 'paste', text: text });
   });
 
+  // Export: the engine sends the graph as Desmos's Calc.setState takes it,
+  // and the box shows it ready to copy into desmos.com's console.
+  var exportBox = document.getElementById('export');
+  var exportText = exportBox.querySelector('textarea');
+  function closeExport() {
+    exportBox.classList.remove('open');
+    focusRow(Math.max(0, activeIndex()));
+  }
+  function showExport(reply) {
+    exportText.value = 'Calc.setState(' + reply.state + ')';
+    var site = reply.threeD ? 'desmos.com/3d' : 'desmos.com/calculator';
+    exportBox.querySelector('.site').textContent = site;
+    var list = exportBox.querySelector('.warnings');
+    list.innerHTML = '';
+    reply.warnings.forEach(function (w) {
+      var li = document.createElement('li');
+      li.textContent = w;
+      list.appendChild(li);
+    });
+    exportBox.querySelector('.go').textContent = 'Copy';
+    exportBox.classList.add('open');
+    exportText.focus();
+    exportText.select();
+  }
+  exportBox.addEventListener('mousedown', function (e) {
+    if (e.target === exportBox) { e.preventDefault(); closeExport(); }
+  });
+  exportBox.querySelector('.cancel').addEventListener('click', closeExport);
+  exportBox.querySelector('.go').addEventListener('click', function () {
+    exportText.focus();
+    exportText.select();
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (err) { copied = false; }
+    this.textContent = copied ? 'Copied' : 'Press Ctrl+C';
+  });
+
   // Ctrl+V of a Desmos graph anywhere opens it, instead of typing it in.
   document.addEventListener('paste', function (e) {
     if (e.target === importText) return;
@@ -1532,6 +1568,10 @@
     }
     if (importBox.classList.contains('open')) {
       if (e.key === 'Escape') { e.preventDefault(); closeImport(); }
+      return;
+    }
+    if (exportBox.classList.contains('open')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeExport(); }
       return;
     }
     var ctrl = e.ctrlKey || e.metaKey;
@@ -1710,6 +1750,8 @@
       forgetHistory();
       loadRows(saved);
     },
+    // The graph for Desmos, after Export to Desmos in the menu.
+    exported: showExport,
     info: function (adapter) {
       document.getElementById('engine').textContent = 'Graph engine: ' + adapter;
     },

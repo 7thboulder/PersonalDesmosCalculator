@@ -630,6 +630,15 @@ impl Running {
                     }
                 }
             }
+            Some("exportDesmos") => {
+                let (state, warnings) = files::to_desmos(&self.rows, &self.viewport, &self.space());
+                let reply = serde_json::json!({
+                    "state": state.to_string(),
+                    "threeD": self.three_d(),
+                    "warnings": warnings,
+                });
+                self.run_script(&format!("window.engine.exported({reply})"));
+            }
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
