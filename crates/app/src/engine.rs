@@ -125,9 +125,25 @@ impl GraphRegion {
     }
 }
 
-/// One surface `z = f(x, y)` ready to draw in a 3D graph.
+/// What a surface in a 3D graph is.
+pub enum Shape {
+    /// `z = f(x, y)`.
+    Explicit(Program),
+    /// `f(x, y, z) = 0`.
+    Implicit(Program),
+    /// `(x(u, v), y(u, v), z(u, v))`.
+    Parametric {
+        x: Program,
+        y: Program,
+        z: Program,
+        u: (f64, f64),
+        v: (f64, f64),
+    },
+}
+
+/// One surface ready to draw in a 3D graph.
 pub struct GraphSurface {
-    pub program: Program,
+    pub shape: Shape,
     pub color: [f32; 4],
     /// As [`GraphCurve::key`].
     pub key: u64,
@@ -289,8 +305,34 @@ impl Engine {
             }
             for surface in &result.surfaces {
                 self.surfaces.push(GraphSurface {
-                    program: surface.program.clone(),
+                    shape: Shape::Explicit(surface.program.clone()),
                     key: surface.program.fingerprint(),
+                    color,
+                });
+            }
+            for surface in &result.implicits3 {
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Implicit(surface.program.clone()),
+                    key: mix(surface.program.fingerprint(), 1),
+                    color,
+                });
+            }
+            for s in &result.param_surfaces {
+                let bits = [s.u.0, s.u.1, s.v.0, s.v.1]
+                    .iter()
+                    .fold(2, |k, b| mix(k, b.to_bits()));
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Parametric {
+                        x: s.x.clone(),
+                        y: s.y.clone(),
+                        z: s.z.clone(),
+                        u: s.u,
+                        v: s.v,
+                    },
+                    key: mix(
+                        mix(s.x.fingerprint(), s.y.fingerprint()),
+                        mix(s.z.fingerprint(), bits),
+                    ),
                     color,
                 });
             }
@@ -485,10 +527,20 @@ impl Engine {
         for (s, &key) in self.surfaces.iter().zip(&keys) {
             let mesh = match self.meshes.iter().position(|(k, _)| *k == key) {
                 Some(i) => self.meshes.swap_remove(i).1,
-                None => {
-                    let f = |x: f64, y: f64| s.program.eval2(x, y);
-                    three::surface_mesh(view, &f, s.color, three::SURFACE_SAMPLES)
-                }
+                None => match &s.shape {
+                    Shape::Explicit(p) => {
+                        let f = |x: f64, y: f64| p.eval2(x, y);
+                        three::surface_mesh(view, &f, s.color, three::SURFACE_SAMPLES)
+                    }
+                    Shape::Implicit(p) => {
+                        let f = |x: f64, y: f64, z: f64| p.eval3(x, y, z);
+                        three::implicit_mesh(view, &f, s.color, three::IMPLICIT_SAMPLES)
+                    }
+                    Shape::Parametric { x, y, z, u, v } => {
+                        let f = |a: f64, b: f64| [x.eval2(a, b), y.eval2(a, b), z.eval2(a, b)];
+                        three::parametric_mesh(view, &f, *u, *v, s.color, three::PARAMETRIC_SAMPLES)
+                    }
+                },
             };
             kept.push((key, mesh));
         }
@@ -883,15 +935,16 @@ mod tests {
         let reply = engine.update(&json!([
             {"id": 1, "latex": "z=x+y", "color": "#2d70b3"},
             {"id": 2, "latex": "y=x"},
+            {"id": 3, "latex": "x+z"},
         ]));
-        assert_eq!(engine.surfaces.len(), 1);
+        assert_eq!(engine.surfaces.len(), 2, "y = x is a wall in 3D");
         assert_eq!(engine.curves.len(), 0, "flat curves are not drawn in 3D");
         assert_eq!(reply[0]["graphed"], true);
-        assert!(reply[1]["error"].is_string());
+        assert!(reply[2]["error"].is_string());
         let mut view = View3::new(400.0, 300.0);
         let mut text = TextAtlas::empty();
         let key = engine.with_frame_3d(&view, 1.0, &mut text, |f, _, _| {
-            assert_eq!(f.surfaces.len(), 1);
+            assert_eq!(f.surfaces.len(), 2);
             assert!(!f.lines.is_empty());
             f.surfaces_key
         });

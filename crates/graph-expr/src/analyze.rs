@@ -89,6 +89,25 @@ pub struct Curve3 {
     pub domain: (f64, f64),
 }
 
+/// An equation in x, y and z drawn as a surface, such as
+/// `x^2 + y^2 + z^2 = 25`. The program is the left side minus the right,
+/// reading x, y and z as `Arg::X`, `Arg::Y` and `Arg::Z`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Implicit3 {
+    pub program: Program,
+}
+
+/// A surface traced by u and v: `(u, v, u v)`. All three programs read u
+/// as `Arg::X` and v as `Arg::Y`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamSurface {
+    pub x: Program,
+    pub y: Program,
+    pub z: Program,
+    pub u: (f64, f64),
+    pub v: (f64, f64),
+}
+
 /// How a relation compares its two sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compare {
@@ -194,6 +213,9 @@ pub struct RowAnalysis {
     pub regions: Vec<Region>,
     /// Surfaces over the xy plane, in a 3D graph.
     pub surfaces: Vec<Surface>,
+    /// Equations in space and surfaces traced by u and v.
+    pub implicits3: Vec<Implicit3>,
+    pub param_surfaces: Vec<ParamSurface>,
     /// Points and curves in 3D.
     pub points3: Vec<[f64; 3]>,
     pub curves3: Vec<Curve3>,
@@ -241,6 +263,8 @@ impl RowAnalysis {
             parametrics: Vec::new(),
             regions: Vec::new(),
             surfaces: Vec::new(),
+            implicits3: Vec::new(),
+            param_surfaces: Vec::new(),
             points3: Vec::new(),
             curves3: Vec::new(),
             points: Vec::new(),
@@ -284,6 +308,8 @@ impl RowAnalysis {
             && self.parametrics.is_empty()
             && self.regions.is_empty()
             && self.surfaces.is_empty()
+            && self.implicits3.is_empty()
+            && self.param_surfaces.is_empty()
             && self.points3.is_empty()
             && self.curves3.is_empty()
             && self.points.is_empty()
@@ -300,6 +326,10 @@ const CONSTANTS: &[(&str, f64)] = &[
     ("infty", f64::INFINITY),
 ];
 const GRAPH_VARIABLES: &[&str] = &["x", "y", "r", "theta"];
+/// Names that are coordinates in a 3D graph and so can't be defined there.
+const SPACE_VARIABLES: &[&str] = &["z", "rho", "phi"];
+/// Desmos 3D's domain for u and v in a parametric surface.
+const UV_DOMAIN: (f64, f64) = (0.0, 1.0);
 const MAX_INLINE_DEPTH: usize = 64;
 /// Desmos's limit on list length.
 const MAX_LIST: usize = 10_000;
@@ -882,9 +912,12 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
     let mut defs: Vec<Option<Result<Def, String>>> = parsed
         .iter()
         .map(|p| match p {
-            // In 3D, z = … is a surface rather than a variable.
-            Some(Ok(statement)) => definition(statement)
-                .filter(|d| !(mode == Mode::ThreeD && matches!(d, Ok(Def::Var(n, _)) if n == "z"))),
+            // In 3D, z = … is a surface rather than a variable, and ρ and φ
+            // are spherical coordinates.
+            Some(Ok(statement)) => definition(statement).filter(|d| {
+                !(mode == Mode::ThreeD
+                    && matches!(d, Ok(Def::Var(n, _)) if SPACE_VARIABLES.contains(&n.as_str())))
+            }),
             _ => None,
         })
         .collect();
@@ -1080,11 +1113,12 @@ fn into_3d(row: &mut RowAnalysis) {
 
 /// In a flat graph, 3D points and curves can't be drawn.
 fn flat(row: &mut RowAnalysis) {
-    if row.points3.is_empty() && row.curves3.is_empty() {
+    if row.points3.is_empty() && row.curves3.is_empty() && row.param_surfaces.is_empty() {
         return;
     }
     row.points3.clear();
     row.curves3.clear();
+    row.param_surfaces.clear();
     row.parameter = None;
     if row.error.is_none() {
         row.error = Some("Points with three coordinates need a 3D graph".into());
@@ -1576,29 +1610,162 @@ impl Env {
     /// without a graph variable is a value or points as in 2D.
     fn other_row_3d(&mut self, input: &RowInput, statement: &Statement) -> RowAnalysis {
         let id = input.id;
+        let spherical = |e: &Expr| e.mentions("rho") || e.mentions("phi");
         let spatial = |e: &Expr| ["x", "y", "z", "r", "theta"].iter().any(|v| e.mentions(v));
         match statement {
             Statement::Relation(lhs, Relation::Eq, rhs)
-                if is_var(lhs, "z") && !rhs.mentions("z") =>
+                if is_var(lhs, "z") && !rhs.mentions("z") && !spherical(rhs) =>
             {
                 self.surface_row(id, rhs)
             }
             Statement::Relation(lhs, Relation::Eq, rhs)
-                if is_var(rhs, "z") && !lhs.mentions("z") =>
+                if is_var(rhs, "z") && !lhs.mentions("z") && !spherical(lhs) =>
             {
                 self.surface_row(id, lhs)
             }
-            Statement::Expr(e) if e.mentions("z") => RowAnalysis {
+            Statement::Relation(lhs, Relation::Eq, rhs) => self.implicit3_row(id, lhs, rhs),
+            Statement::Expr(e) if e.mentions("z") || spherical(e) => RowAnalysis {
                 kind: RowKind::NotYet,
-                ..RowAnalysis::error(id, "Try writing this as z = …")
+                ..RowAnalysis::error(id, "Try writing this as an equation, such as z = …")
             },
+            Statement::Expr(e) if self.uses_uv(e) => self.param_surface_row(id, e),
             Statement::Expr(e) if spatial(e) && !self.is_parametric(e) => self.surface_row(id, e),
             Statement::Expr(e) => self.expression_row(input, e),
             _ => RowAnalysis {
                 kind: RowKind::NotYet,
-                ..RowAnalysis::error(id, "3D graphs can only draw z = f(x, y) so far")
+                ..RowAnalysis::error(id, "3D graphs can't shade inequalities yet")
             },
         }
+    }
+
+    /// Lowers one side of an equation in space: x, y and z, with r and θ
+    /// measured around the z axis and ρ and φ from the origin and the z
+    /// axis, as in Desmos 3D.
+    fn lower_space(&mut self, e: &Expr, problems: &mut Problems) -> Val {
+        let x = || Low::Arg(Arg::X);
+        let y = || Low::Arg(Arg::Y);
+        let z = || Low::Arg(Arg::Z);
+        let sq = |a: Low| bin(BinOp::Mul, a.clone(), a);
+        let r = Low::Call(Builtin::Sqrt, vec![bin(BinOp::Add, sq(x()), sq(y()))]);
+        let rho = Low::Call(
+            Builtin::Sqrt,
+            vec![bin(BinOp::Add, bin(BinOp::Add, sq(x()), sq(y())), sq(z()))],
+        );
+        let theta = Low::Call(
+            Builtin::Mod,
+            vec![
+                Low::Call(Builtin::Arctan, vec![y(), x()]),
+                Low::Const(std::f64::consts::TAU),
+            ],
+        );
+        let phi = Low::Call(Builtin::Arccos, vec![bin(BinOp::Div, z(), rho.clone())]);
+        let bindings: HashMap<String, Val> = [
+            ("r".to_owned(), Val::num(r)),
+            ("theta".to_owned(), Val::num(theta)),
+            ("rho".to_owned(), Val::num(rho)),
+            ("phi".to_owned(), Val::num(phi)),
+        ]
+        .into_iter()
+        .collect();
+        self.lower(
+            e,
+            &bindings,
+            &[("x", Arg::X), ("y", Arg::Y), ("z", Arg::Z)],
+            problems,
+        )
+    }
+
+    /// An equation in space, drawn where the left side equals the right.
+    fn implicit3_row(&mut self, id: u64, lhs: &Expr, rhs: &Expr) -> RowAnalysis {
+        let mut problems = Problems::default();
+        let left = self.lower_space(lhs, &mut problems);
+        let right = self.lower_space(rhs, &mut problems);
+        let difference = self.broadcast(&[left, right], &mut problems, |items| {
+            match (items[0], items[1]) {
+                (Item::Num(a), Item::Num(b)) => {
+                    Ok(Item::Num(bin(BinOp::Sub, a.clone(), b.clone())))
+                }
+                _ => Err("Points can't be compared".into()),
+            }
+        });
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_some() {
+            return row;
+        }
+        let mut constant = None;
+        for item in &difference.items {
+            let Item::Num(low) = item else { continue };
+            match Program::compile(low) {
+                Ok(program) if !program.uses_arg() => constant = program.constant(),
+                Ok(program) => row.implicits3.push(Implicit3 { program }),
+                Err(e) => row.error = Some(e),
+            }
+        }
+        if row.implicits3.is_empty() && row.error.is_none() {
+            row.kind = RowKind::Value;
+            row.value = constant.map(Value::Number);
+        }
+        row
+    }
+
+    /// Whether a bare expression is a 3D point that reads u or v (unless a
+    /// row defines them), which makes it a surface.
+    fn uses_uv(&mut self, e: &Expr) -> bool {
+        if !(e.mentions("u") || e.mentions("v")) {
+            return false;
+        }
+        let mut free = Vec::new();
+        for (name, arg) in [("u", Arg::X), ("v", Arg::Y)] {
+            if !self.vars.contains_key(name) {
+                free.push((name, arg));
+            }
+        }
+        let mut probe = Problems::default();
+        let val = self.lower(e, &HashMap::new(), &free, &mut probe);
+        val.has_points3() && (probe.uses("u") || probe.uses("v"))
+    }
+
+    /// `(f(u, v), g(u, v), h(u, v))`, one surface per point in a list,
+    /// over Desmos 3D's 0 ≤ u ≤ 1 and 0 ≤ v ≤ 1.
+    fn param_surface_row(&mut self, id: u64, e: &Expr) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        let mut problems = Problems::default();
+        let mut free = Vec::new();
+        for (name, arg) in [("u", Arg::X), ("v", Arg::Y)] {
+            if !self.vars.contains_key(name) {
+                free.push((name, arg));
+            }
+        }
+        let val = self.lower(e, &HashMap::new(), &free, &mut problems);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_some() {
+            return row;
+        }
+        for item in &val.items {
+            let compiled = match item {
+                Item::Point3(a, b, c) => (|| {
+                    let compile = |l: &Low| Program::compile(l);
+                    row.param_surfaces.push(ParamSurface {
+                        x: compile(a)?,
+                        y: compile(b)?,
+                        z: compile(c)?,
+                        u: UV_DOMAIN,
+                        v: UV_DOMAIN,
+                    });
+                    Ok(())
+                })(),
+                _ => Err("A surface needs points with three coordinates".to_string()),
+            };
+            if let Err(e) = compiled {
+                row.error = Some(e);
+                row.param_surfaces.clear();
+                break;
+            }
+        }
+        row
     }
 
     /// Whether a bare expression is a point that moves with t.

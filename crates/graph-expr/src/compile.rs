@@ -13,6 +13,8 @@ use crate::interval::Interval;
 pub enum Arg {
     X,
     Y,
+    /// The third coordinate, for relations in 3D.
+    Z,
     Local(u8),
 }
 
@@ -119,7 +121,7 @@ impl Low {
     }
 
     pub fn uses_arg(&self) -> bool {
-        self.uses(Arg::X) || self.uses(Arg::Y)
+        self.uses(Arg::X) || self.uses(Arg::Y) || self.uses(Arg::Z)
     }
 
     pub fn uses_hole(&self, hole: u32) -> bool {
@@ -230,7 +232,7 @@ impl Low {
                         return Low::Const(integrate(
                             &mut |t| {
                                 locals[0] = t;
-                                p.run(f64::NAN, f64::NAN, &mut locals)
+                                p.run(f64::NAN, f64::NAN, f64::NAN, &mut locals)
                             },
                             *a,
                             *b,
@@ -332,7 +334,7 @@ impl Program {
 
     /// True when the program reads either graph variable.
     pub fn uses_arg(&self) -> bool {
-        self.reads(&|a| matches!(a, Arg::X | Arg::Y))
+        self.reads(&|a| matches!(a, Arg::X | Arg::Y | Arg::Z))
     }
 
     /// True when the program reads y, so it needs a two-dimensional plot.
@@ -363,7 +365,7 @@ impl Program {
                     stack[top] = match a {
                         Arg::X => x,
                         Arg::Y => y,
-                        Arg::Local(_) => Interval::ANY,
+                        Arg::Z | Arg::Local(_) => Interval::ANY,
                     };
                     top += 1;
                 }
@@ -393,21 +395,37 @@ impl Program {
 
     /// Evaluates a program of x and y.
     pub fn eval2(&self, x: f64, y: f64) -> f64 {
-        let mut locals = [f64::NAN; MAX_LOCALS];
-        self.run(x, y, &mut locals)
+        self.eval3(x, y, f64::NAN)
     }
 
-    fn run(&self, x: f64, y: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
+    /// Evaluates a program of x, y and z.
+    pub fn eval3(&self, x: f64, y: f64, z: f64) -> f64 {
+        let mut locals = [f64::NAN; MAX_LOCALS];
+        self.run(x, y, z, &mut locals)
+    }
+
+    /// True when the program reads z, so it is a relation in space.
+    pub fn uses_z(&self) -> bool {
+        self.reads(&|a| a == Arg::Z)
+    }
+
+    fn run(&self, x: f64, y: f64, z: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
         // Clearing a full-size stack on every call cost as much as running
         // a short program.
         if self.depth <= SMALL_STACK {
-            self.run_on::<SMALL_STACK>(x, y, locals)
+            self.run_on::<SMALL_STACK>(x, y, z, locals)
         } else {
-            self.run_on::<MAX_STACK>(x, y, locals)
+            self.run_on::<MAX_STACK>(x, y, z, locals)
         }
     }
 
-    fn run_on<const N: usize>(&self, x: f64, y: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
+    fn run_on<const N: usize>(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        locals: &mut [f64; MAX_LOCALS],
+    ) -> f64 {
         let mut stack = [0.0f64; N];
         let mut top = 0usize;
         for op in &self.ops {
@@ -420,6 +438,7 @@ impl Program {
                     stack[top] = match a {
                         Arg::X => x,
                         Arg::Y => y,
+                        Arg::Z => z,
                         Arg::Local(s) => locals[s as usize],
                     };
                     top += 1;
@@ -448,7 +467,7 @@ impl Program {
                     let value = integrate(
                         &mut |t| {
                             locals[slot] = t;
-                            body.run(x, y, locals)
+                            body.run(x, y, z, locals)
                         },
                         lo,
                         hi,

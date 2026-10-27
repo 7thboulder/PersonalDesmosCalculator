@@ -35,8 +35,12 @@ on the right. What you type is graphed as you type it:
   zoom. Each graph is either 2D or 3D, as in Desmos, and its file remembers
   which. Points `(1, 2, 3)` (and lists of them, with `p.z`) are drawn as
   dots and `(cos t, sin t, t)` as a curve; flat points and parametric
-  curves sit on the z = 0 plane. Implicit and parametric surfaces are still
-  to come.
+  curves sit on the z = 0 plane. Any other equation, such as
+  `x^2 + y^2 + z^2 = 25` or `y = x^2`, is drawn where both sides are
+  equal, with ρ (distance from the origin) and φ (angle from +z) as in
+  Desmos 3D, so `ρ = 5` is a sphere and `r = 3` a cylinder. A point that
+  reads u and v, such as `(cos 2πu, sin 2πu, v)`, is a surface over
+  0 ≤ u, v ≤ 1. Shaded inequalities are still to come.
 - Notes (+ then **note**, Ctrl+Alt+O, or typing `"` in an empty row): a row
   of plain text between expressions. Shift+Enter breaks the line; Enter
   starts a new expression below.
