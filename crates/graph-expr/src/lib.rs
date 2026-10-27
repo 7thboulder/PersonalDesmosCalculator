@@ -10,6 +10,7 @@ mod fastsum;
 pub mod format;
 pub mod interval;
 pub mod lexer;
+pub mod matrix;
 pub mod parser;
 pub mod wgsl;
 
@@ -20,4 +21,5 @@ pub use analyze::{
 };
 pub use compile::Program;
 pub use interval::Interval;
+pub use matrix::{Ink, Matrix, Stroke};
 pub use parser::parse;

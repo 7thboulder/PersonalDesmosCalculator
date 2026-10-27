@@ -55,6 +55,19 @@ on the right. What you type is graphed as you type it:
   arrow keys move between cells, and moving right from the last column adds
   one. Each column has its own color circle and style, including **Points**
   and **Lines** toggles (point lists in expressions get them too).
+- Matrices (+ then **matrix**, or type `matrix` in an empty row): a name
+  and a grid of entries, which can use sliders. Enter moves to the next
+  row of the grid, and the buttons under it add or remove rows and columns.
+  Other rows use a matrix by name: `\det(A)`, `A^{-1}` (or `inv(A)`),
+  `A^T`, `AB`, `2A`, `A^3`, `rref(A)`, `rank`, `trace`, `A[2, 1]`,
+  `identity(3)`, and `[[1, 2], [3, 4]]` written out. Matrix results show
+  under the row, with simple fractions as fractions. `eigenvalues(A)` lists
+  them (complex ones too) and `eigenvectors(A)` gives them as columns and
+  draws each as an arrow on its dashed line. `A(1, 2)` moves a point and
+  `A(\cos t, \sin t)` a curve. A 2×2 matrix has **Show transformation**:
+  the grid, the unit square and the arrows for (1, 0) and (0, 1) move from
+  where they are to where the matrix sends them, with a play button and a
+  t slider, and the eigenvector lines dashed.
 - Points of interest: select a row and its curve shows grey dots where it
   crosses the axes, turns, and meets other curves; hover or click one for
   its coordinates. Press and drag on any curve (explicit, parametric, polar

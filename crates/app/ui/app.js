@@ -29,7 +29,8 @@
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
-      'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg'
+      'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
+      'det inv transpose rref trace rank eigenvalues eigenvectors identity'
   };
 
   // Desmos subscripts hold only letters and digits, so typing anything else
@@ -93,6 +94,13 @@
     if (loading) return;
     var sent = rows.map(function (r) {
         if (r.kind === 'note') return { id: r.id, latex: '', note: r.text.value };
+        if (r.kind === 'matrix') {
+          return Object.assign(styleOf(r), {
+            id: r.id, latex: r.field.latex(),
+            matrix: r.cells.map(function (line) { return line.map(function (f) { return f.latex(); }); }),
+            transform: transformOf(r)
+          });
+        }
         if (r.kind === 'table') {
           return {
             id: r.id, latex: '',
@@ -105,7 +113,8 @@
           };
         }
         return Object.assign(styleOf(r), {
-          id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider
+          id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider,
+          transform: transformOf(r)
         });
       });
     // The ticker goes first, as a hidden row the engine analyzes like any
@@ -220,6 +229,12 @@
     if (!row) return;
     if (row.kind === 'table') {
       tableFocus(row, 0, fromBelow ? row.nrows - 1 : -1);
+      return;
+    }
+    if (row.kind === 'matrix') {
+      var f = fromBelow ? row.cells[row.cells.length - 1][0] : row.field;
+      f.focus();
+      if (atEnd === false) f.moveToLeftEnd(); else f.moveToRightEnd();
       return;
     }
     if (row.kind === 'note') {
@@ -508,7 +523,9 @@
   // ---- Rows ----------------------------------------------------------------
 
   function paintTarget(t) {
-    if (t.isColumn) paintColumn(t); else paintRow(t);
+    if (t.isColumn) paintColumn(t);
+    else if (t.kind === 'matrix') paintMatrix(t);
+    else paintRow(t);
   }
 
   // Click a color circle to hide or show; hold it (or right-click) for the
@@ -591,6 +608,8 @@
     var showValue = (r.value != null || r.fit != null) && !hasSlider && !warn;
     el.classList.toggle('has-value', showValue);
     if (showValue) row.valueMath.latex(r.fit != null ? r.fit : '=' + r.value);
+    showMatrixValue(row, warn ? null : r.matrix);
+    showTransform(row, r);
 
     var p = r.parameter;
     el.classList.toggle('has-domain', !!p);
@@ -641,6 +660,8 @@
       '<div class="body">' +
       '<div class="math"><span class="field"></span></div>' +
       '<div class="value"><span class="value-math"></span></div>' +
+      '<div class="matrix-value"><span class="mx-equals">=</span><div class="mx-bracket"></div></div>' +
+      TRANSFORM_HTML +
       '<div class="run-box"><button class="run" title="Run this action">&#x25B6; Run</button></div>' +
       '<div class="slider-box"><span class="lim min" title="Edit range"></span>' +
       '<input type="range" min="-10" max="10" step="any">' +
@@ -691,8 +712,10 @@
     var options = Object.assign({}, MATH_OPTIONS, {
       handlers: {
         edit: function () {
-          // Typing table into an empty row makes a table there, as in Desmos.
+          // Typing table into an empty row makes a table there, as in Desmos,
+          // and matrix makes a matrix.
           if (!loading && row.field.latex() === 'table') { replaceWithTable(row); return; }
+          if (!loading && row.field.latex() === 'matrix') { replaceWithMatrix(row); return; }
           if (!row.settingSlider) row.playPos = null;
           sendRows();
         },
@@ -748,6 +771,7 @@
     });
 
     bindSwatch(row);
+    bindTransform(row);
 
     row.play.addEventListener('click', function () { togglePlay(row); });
     el.querySelector('.slower').addEventListener('click', function () { changeSpeed(row, -1); });
@@ -1082,6 +1106,336 @@
     });
   }
 
+
+  // ---- Matrices --------------------------------------------------------------
+
+  // A matrix row: a name, then a grid of cells, each an expression that may
+  // use sliders. Rows such as det(A), A^{-1} or A(1, 2) use it by name.
+  var MATRIX_LIMIT = 20;
+  var TRANSFORM_SECONDS = 2;
+
+  // The first capital letter no row has taken as a name yet.
+  function nextMatrixName() {
+    var taken = {};
+    rows.forEach(function (r) {
+      if (!r.field) return;
+      var m = /^([A-Za-z](?:_\{?\w+\}?)?)=?/.exec(r.field.latex());
+      if (m) taken[m[1]] = true;
+    });
+    var letters = 'ABCDEFGHJKLMNPQRSUVW';
+    for (var i = 0; i < letters.length; i++) if (!taken[letters[i]]) return letters[i];
+    return 'M_{' + rows.length + '}';
+  }
+
+  function matrixFocus(m, ri, ci, atStart) {
+    var line = m.cells[Math.max(0, Math.min(m.cells.length - 1, ri))];
+    var f = line[Math.max(0, Math.min(line.length - 1, ci))];
+    f.focus();
+    if (atStart) f.moveToLeftEnd(); else f.moveToRightEnd();
+  }
+
+  function where(m, field) {
+    for (var ri = 0; ri < m.cells.length; ri++) {
+      var ci = m.cells[ri].indexOf(field);
+      if (ci >= 0) return [ri, ci];
+    }
+    return [0, 0];
+  }
+
+  function matrixCellOptions(m, getField) {
+    return Object.assign({}, MATH_OPTIONS, {
+      handlers: {
+        edit: function () { if (!m.filling) sendRows(); },
+        // Enter starts the next row of the matrix, so it is typed row by
+        // row; from the last row it goes on to a new expression.
+        enter: function () {
+          var at = where(m, getField());
+          if (at[0] < m.cells.length - 1) matrixFocus(m, at[0] + 1, 0);
+          else leaveDown(m);
+        },
+        upOutOf: function () {
+          var at = where(m, getField());
+          if (at[0] > 0) matrixFocus(m, at[0] - 1, at[1]); else m.field.focus();
+        },
+        downOutOf: function () {
+          var at = where(m, getField());
+          if (at[0] < m.cells.length - 1) matrixFocus(m, at[0] + 1, at[1]); else leaveDown(m);
+        },
+        moveOutOf: function (dir) {
+          var at = where(m, getField());
+          var line = m.cells[at[0]];
+          if (dir === MQ.L) {
+            if (at[1] > 0) matrixFocus(m, at[0], at[1] - 1);
+            else if (at[0] > 0) matrixFocus(m, at[0] - 1, line.length - 1);
+            else { m.field.focus(); m.field.moveToRightEnd(); }
+          } else if (at[1] < line.length - 1) {
+            matrixFocus(m, at[0], at[1] + 1, true);
+          } else if (at[0] < m.cells.length - 1) {
+            matrixFocus(m, at[0] + 1, 0, true);
+          }
+        },
+        deleteOutOf: function (dir) {
+          if (dir !== MQ.L) return;
+          var at = where(m, getField());
+          if (at[1] > 0) matrixFocus(m, at[0], at[1] - 1);
+          else if (at[0] > 0) matrixFocus(m, at[0] - 1, m.cells[at[0] - 1].length - 1);
+        }
+      }
+    });
+  }
+
+  // Rebuilds the grid at a new size, keeping what fits.
+  function resizeMatrix(m, nrows, ncols) {
+    nrows = Math.max(1, Math.min(MATRIX_LIMIT, nrows));
+    ncols = Math.max(1, Math.min(MATRIX_LIMIT, ncols));
+    var old = m.cells.map(function (line) { return line.map(function (f) { return f.latex(); }); });
+    fillMatrix(m, nrows, ncols, old);
+    sendRows();
+  }
+
+  function fillMatrix(m, nrows, ncols, values) {
+    m.grid.innerHTML = '';
+    m.cells = [];
+    m.filling = true;
+    for (var ri = 0; ri < nrows; ri++) {
+      var tr = document.createElement('tr');
+      var line = [];
+      for (var ci = 0; ci < ncols; ci++) {
+        var td = document.createElement('td');
+        td.innerHTML = '<span class="mx-cell"></span>';
+        tr.appendChild(td);
+        (function (td) {
+          var field = MQ.MathField(td.firstChild, matrixCellOptions(m, function () { return field; }));
+          var v = values && values[ri] && values[ri][ci];
+          if (v) field.latex(v);
+          line.push(field);
+          td.addEventListener('mousedown', function (e) {
+            if (!e.target.closest('.mq-editable-field')) { e.preventDefault(); field.focus(); }
+          });
+        })(td);
+      }
+      m.cells.push(line);
+      m.grid.appendChild(tr);
+    }
+    m.filling = false;
+    m.sizeEl.textContent = nrows + ' × ' + ncols;
+  }
+
+  function addMatrix(at, name, values) {
+    var el = document.createElement('div');
+    el.className = 'row matrix-row';
+    el.innerHTML =
+      '<div class="tab"><span class="index"></span>' +
+      '<button class="swatch"></button>' +
+      '<span class="warn" tabindex="-1">⚠</span></div>' +
+      '<div class="body">' +
+      '<div class="mx-line"><span class="mx-name"></span><span class="mx-equals">=</span>' +
+      '<div class="mx-bracket"><table class="mx-grid"></table></div></div>' +
+      '<div class="mx-size">' +
+      '<button data-size="r-" title="Remove a row">−</button><span class="mx-dim">rows</span>' +
+      '<button data-size="r+" title="Add a row">+</button>' +
+      '<button data-size="c-" title="Remove a column">−</button><span class="mx-dim">columns</span>' +
+      '<button data-size="c+" title="Add a column">+</button>' +
+      '<span class="mx-size-label"></span></div>' +
+      TRANSFORM_HTML +
+      '<div class="missing">add slider: <span class="buttons"></span></div>' +
+      '</div>' +
+      '<button class="remove" title="Delete">&#x2715;</button>';
+    var m = Object.assign(newStyle(), {
+      kind: 'matrix',
+      id: nextId++,
+      el: el,
+      indexEl: el.querySelector('.index'),
+      swatch: el.querySelector('.swatch'),
+      warn: el.querySelector('.warn'),
+      grid: el.querySelector('.mx-grid'),
+      sizeEl: el.querySelector('.mx-size-label'),
+      missingButtons: el.querySelector('.missing .buttons'),
+      cells: [],
+      filling: false,
+      result: null,
+      resultKey: ''
+    });
+    var target = rows[at];
+    if (target) list.insertBefore(el, target.el); else list.appendChild(el);
+    rows.splice(at, 0, m);
+    m.field = MQ.MathField(el.querySelector('.mx-name'), Object.assign({}, MATH_OPTIONS, {
+      handlers: {
+        edit: function () { if (!m.filling) sendRows(); },
+        enter: function () { matrixFocus(m, 0, 0); },
+        moveOutOf: function (dir) { if (dir === MQ.R) matrixFocus(m, 0, 0, true); },
+        downOutOf: function () { matrixFocus(m, 0, 0); },
+        upOutOf: function () { focusRow(indexOf(m) - 1, true, true); },
+        deleteOutOf: function (dir) {
+          var empty = m.cells.every(function (line) {
+            return line.every(function (f) { return f.latex() === ''; });
+          });
+          if (dir === MQ.L && m.field.latex() === '' && empty && rows.length > 1) removeRow(m);
+        }
+      }
+    }));
+    m.filling = true;
+    m.field.latex(name == null ? nextMatrixName() : name);
+    m.filling = false;
+    values = values && values.length ? values : [['', ''], ['', '']];
+    fillMatrix(m, values.length, Math.max.apply(null, values.map(function (l) { return l.length || 1; })), values);
+    el.querySelector('.mx-size').addEventListener('mousedown', function (e) {
+      var b = e.target.closest('button');
+      if (!b) return;
+      e.preventDefault();
+      var nr = m.cells.length, nc = m.cells[0].length;
+      var k = b.dataset.size;
+      resizeMatrix(m, nr + (k === 'r+' ? 1 : k === 'r-' ? -1 : 0), nc + (k === 'c+' ? 1 : k === 'c-' ? -1 : 0));
+    });
+    el.addEventListener('focusin', function () { setActive(m); });
+    el.querySelector('.remove').addEventListener('click', function () { removeRow(m); });
+    bindSwatch(m);
+    bindTransform(m);
+    paintMatrix(m);
+    renumber();
+    return m;
+  }
+
+  function paintMatrix(m) {
+    m.swatch.style.borderColor = m.color;
+    m.swatch.style.background = m.hidden ? '#fff' : m.color;
+    m.swatch.style.opacity = String(0.35 + 0.65 * m.opacity);
+  }
+
+  function showMatrixResult(m, r) {
+    var key = JSON.stringify(r);
+    if (key === m.resultKey) return;
+    m.resultKey = key;
+    m.result = r;
+    var warn = !!r.error;
+    m.el.classList.toggle('has-error', warn);
+    m.el.classList.toggle('graphed', !!r.graphed && !warn);
+    m.warn.dataset.tip = r.error || '';
+    showTransform(m, r);
+    var missing = r.missing || [];
+    m.el.classList.toggle('has-missing', missing.length > 0);
+    m.missingButtons.innerHTML = '';
+    missing.forEach(function (x) { m.missingButtons.appendChild(sliderButton(m, x.latex, [x])); });
+    if (missing.length > 1) m.missingButtons.appendChild(sliderButton(m, null, missing, 'all'));
+  }
+
+  // A matrix value under an expression row, such as rref(A).
+  function showMatrixValue(row, mx) {
+    var box = row.el.querySelector('.matrix-value');
+    row.el.classList.toggle('has-matrix', !!mx);
+    var key = mx ? JSON.stringify(mx.cells) : '';
+    if (key === row.matrixKey) return;
+    row.matrixKey = key;
+    var bracket = box.querySelector('.mx-bracket');
+    bracket.innerHTML = '';
+    if (!mx) return;
+    var table = document.createElement('table');
+    table.className = 'mx-grid';
+    mx.cells.forEach(function (line) {
+      var tr = document.createElement('tr');
+      line.forEach(function (latex) {
+        var td = document.createElement('td');
+        var span = document.createElement('span');
+        span.textContent = latex;
+        td.appendChild(span);
+        tr.appendChild(td);
+        MQ.StaticMath(span);
+      });
+      table.appendChild(tr);
+    });
+    bracket.appendChild(table);
+  }
+
+  // ---- The transformation view ---------------------------------------------
+
+  // A 2×2 matrix can show what it does to the plane, 3Blue1Brown style: the
+  // grid, the unit square and the basis arrows move from where they are to
+  // where the matrix sends them. t runs from 0 (nothing done) to 1.
+  var TRANSFORM_HTML =
+    '<div class="transform-box">' +
+    '<button class="tf-toggle" title="Show what this matrix does to the plane">' +
+    '<span class="tf-check"></span>Show transformation</button>' +
+    '<span class="tf-controls"><button class="tf-play" title="Play the transformation">' +
+    '<span class="tri"></span><span class="bars"></span></button>' +
+    '<input class="tf-t" type="range" min="0" max="1" step="any">' +
+    '<span class="tf-label"></span></span></div>';
+
+  function transformOf(row) {
+    return row.transform && row.transform.on ? row.transform.t : undefined;
+  }
+
+  function bindTransform(row) {
+    var box = row.el.querySelector('.transform-box');
+    row.tfRange = box.querySelector('.tf-t');
+    row.tfLabel = box.querySelector('.tf-label');
+    box.addEventListener('mousedown', function (e) {
+      if (e.target.closest('button')) e.preventDefault();
+    });
+    box.querySelector('.tf-toggle').addEventListener('click', function () {
+      var on = !(row.transform && row.transform.on);
+      row.transform = { on: on, t: on ? 0 : 1 };
+      paintTransform(row);
+      sendRows();
+      if (on) playTransform(row);
+    });
+    box.querySelector('.tf-play').addEventListener('click', function () {
+      if (!row.transform) return;
+      if (row.transform.playing) { row.transform.playing = false; paintTransform(row); return; }
+      if (row.transform.t >= 1) row.transform.t = 0;
+      playTransform(row);
+    });
+    row.tfRange.addEventListener('input', function () {
+      row.transform.playing = false;
+      row.transform.t = Number(row.tfRange.value);
+      paintTransform(row);
+      sendRows();
+    });
+  }
+
+  function paintTransform(row) {
+    var tf = row.transform || { on: false, t: 1 };
+    row.el.classList.toggle('transforming', !!tf.on);
+    row.el.classList.toggle('tf-playing', !!tf.playing);
+    row.tfRange.value = String(tf.t);
+    row.tfLabel.textContent = 't = ' + tf.t.toFixed(2);
+  }
+
+  function playTransform(row) {
+    var tf = row.transform;
+    tf.playing = true;
+    paintTransform(row);
+    var last = null;
+    function frame(now) {
+      if (!tf.playing || row.transform !== tf || !document.body.contains(row.el)) return;
+      if (last != null) tf.t = Math.min(1, tf.t + (now - last) / 1000 / TRANSFORM_SECONDS);
+      last = now;
+      if (tf.t >= 1) tf.playing = false;
+      paintTransform(row);
+      sendRows();
+      if (tf.playing) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function showTransform(row, r) {
+    var can = !!(r.matrix && r.matrix.transforms) && !r.error;
+    row.el.classList.toggle('can-transform', can);
+    if (!can && row.transform && row.transform.on) {
+      row.transform = { on: false, t: 1 };
+      paintTransform(row);
+    }
+  }
+
+  function replaceWithMatrix(row) {
+    var i = indexOf(row);
+    row.el.parentNode.removeChild(row.el);
+    rows.splice(i, 1);
+    var m = addMatrix(i);
+    renumber();
+    matrixFocus(m, 0, 0);
+    sendRows();
+  }
+
   // ---- Actions and the ticker -----------------------------------------------
 
   // Runs an action: each variable it sets has its row rewritten with the
@@ -1240,7 +1594,8 @@
       ['\u222b', 'c:\\int'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
     ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
-    ['COMPLEX', named('real imag conj arg')]
+    ['COMPLEX', named('real imag conj arg')],
+    ['MATRICES', named('det inv transpose rref trace rank eigenvalues eigenvectors identity')]
   ];
 
   var keypad = document.getElementById('keypad');
@@ -1450,7 +1805,20 @@
       ['3+2i,\\ e^{i\\pi}', 'i is the imaginary unit'],
       ['\\operatorname{real}\\left(z\\right)', 'Also imag'],
       ['\\operatorname{conj}\\left(z\\right)', 'Conjugate'],
-      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]]
+      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]],
+    ['MATRICES (+ THEN MATRIX, OR TYPE matrix)', [
+      ['\\det\\left(A\\right)', 'Determinant'],
+      ['A^{-1},\\ \\operatorname{inv}\\left(A\\right)', 'Inverse'],
+      ['A^T,\\ \\operatorname{transpose}\\left(A\\right)', 'Transpose'],
+      ['AB,\\ 2A,\\ A+B,\\ A^3', 'Products, sums and whole-number powers'],
+      ['\\operatorname{rref}\\left(A\\right)', 'Reduced row echelon form; also rank'],
+      ['\\operatorname{trace}\\left(A\\right)', 'Sum of the diagonal'],
+      ['\\operatorname{eigenvalues}\\left(A\\right)', 'Eigenvalues, complex ones too'],
+      ['\\operatorname{eigenvectors}\\left(A\\right)', 'Eigenvectors as columns, drawn as arrows'],
+      ['A\\left(1,2\\right),\\ A\\left(\\cos t,\\sin t\\right)', 'A point or curve moved by A'],
+      ['A\\left[2,1\\right]', 'Entry in row 2, column 1'],
+      ['\\operatorname{identity}\\left(3\\right)', 'Identity matrix'],
+      ['B=\\left[\\left[1,2\\right],\\left[3,4\\right]\\right]', 'A matrix written out, row by row']]]
   ];
 
   var shortcuts = document.getElementById('shortcuts');
@@ -1591,6 +1959,9 @@
       var t = addTable(at);
       tableFocus(t, 0, 0);
       sendRows();
+    } else if (b.dataset.add === 'matrix') {
+      matrixFocus(addMatrix(at), 0, 0);
+      sendRows();
     } else {
       addRow('', at).field.focus();
     }
@@ -1637,6 +2008,12 @@
       .forEach(function (k) { if (saved[k] !== undefined && saved[k] !== null) target[k] = saved[k]; });
   }
 
+  function loadTransform(row, saved) {
+    if (typeof saved.transform !== 'number') return;
+    row.transform = { on: true, t: Math.max(0, Math.min(1, saved.transform)) };
+    paintTransform(row);
+  }
+
   // Replaces every row with the saved ones (the rows array the panel sends).
   function loadRows(saved) {
     loading = true;
@@ -1657,6 +2034,13 @@
         addNote(i, s.note);
         return;
       }
+      if (s.matrix) {
+        var m = addMatrix(i, s.latex || '', s.matrix);
+        applyStyle(m, s);
+        paintMatrix(m);
+        loadTransform(m, s);
+        return;
+      }
       if (s.table) {
         var t = addTable(i, s.table.map(function (c) { return { header: c.header, cells: c.cells }; }));
         t.columns.forEach(function (c, ci) {
@@ -1669,6 +2053,7 @@
       applyStyle(row, s);
       if (s.slider && typeof s.slider.min === 'number') row.slider = s.slider;
       if (s.domain && s.domain.length === 2) row.domain = s.domain;
+      loadTransform(row, s);
       paintRow(row);
     });
     if (rows.length === 0) addRow('', 0);
@@ -1725,7 +2110,9 @@
       rows.forEach(function (row) {
         var r = byId[row.id];
         if (!r || row.kind === 'note') return;
-        if (row.kind === 'table') showTableResult(row, r); else showResult(row, r);
+        if (row.kind === 'table') showTableResult(row, r);
+        else if (row.kind === 'matrix') showMatrixResult(row, r);
+        else showResult(row, r);
       });
     },
     // Clicking a curve on the graph selects its row; clicking empty paper
