@@ -67,12 +67,35 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     } else {
         latex
     };
-    let three_d = flag("--3d").is_some();
+    // --open=FILE draws a saved graph or a Desmos state instead.
+    let opened = match flag("--open=") {
+        Some(file) => {
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
+            let (rows, _, _) = crate::files::open_any(&text)?;
+            let mut rows = rows.as_array().cloned().unwrap_or_default();
+            for (i, r) in rows.iter_mut().enumerate() {
+                r["id"] = json!(i + 1);
+            }
+            Some((rows, crate::files::space_of(&text)))
+        }
+        None => None,
+    };
+    let three_d = flag("--3d").is_some() || opened.as_ref().is_some_and(|(_, s)| s.three_d);
     let mut engine = Engine::default();
     if three_d {
         engine.mode = Mode::ThreeD;
     }
-    let results = engine.update(&rows(latex));
+    let (rows, latex): (serde_json::Value, Vec<String>) = match &opened {
+        Some((rows, _)) => (
+            serde_json::Value::Array(rows.clone()),
+            rows.iter()
+                .map(|r| r["latex"].as_str().unwrap_or("").to_owned())
+                .collect(),
+        ),
+        None => (rows(latex), latex.to_vec()),
+    };
+    let latex = &latex[..];
+    let results = engine.update(&rows);
     for (l, r) in latex.iter().zip(results.as_array().into_iter().flatten()) {
         if let Some(e) = r["error"].as_str() {
             println!("{l}: {e}");
@@ -80,7 +103,10 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     }
     let mut text = TextAtlas::system();
     if three_d {
-        let view = View3::new(width as f64, height as f64);
+        let mut view = View3::new(width as f64, height as f64);
+        if let Some(saved) = opened.as_ref().and_then(|(_, s)| s.view) {
+            saved.apply(&mut view);
+        }
         let start = Instant::now();
         let mut build = Duration::ZERO;
         let pixels = engine.with_frame_3d(&view, 1.0, &mut text, |frame, overlay, text| {

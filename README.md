@@ -42,7 +42,10 @@ on the right. What you type is graphed as you type it:
   reads u and v, such as `(cos 2πu, sin 2πu, v)`, is a surface over
   0 ≤ u, v ≤ 1. An inequality such as `x^2 + y^2 + z^2 < 25` or
   `-1 < z < 1` is a see-through solid, closed off by the box's walls where
-  it meets them.
+  it meets them; restrictions such as `\{0 ≤ x ≤ 1\}` cut it, and bounds
+  that are numbers on x, y and z make exact boxes (one per list element, as
+  in a 3D Riemann sum). `f(x, y) = …` is drawn as a surface, and `polygon`
+  takes 3D points.
 - Notes (+ then **note**, Ctrl+Alt+O, or typing `"` in an empty row): a row
   of plain text between expressions. Shift+Enter breaks the line; Enter
   starts a new expression below.

@@ -167,6 +167,9 @@ pub enum Value {
     Points3(Vec<[f64; 3]>),
     Polygon(Vec<[f64; 2]>),
     Polygons(Vec<Vec<[f64; 2]>>),
+    /// A polygon with corners in 3D, and a list of them.
+    Polygon3(Vec<[f64; 3]>),
+    Polygons3(Vec<Vec<[f64; 3]>>),
     /// A complex number, real part then imaginary part.
     Complex(f64, f64),
     Complexes(Vec<[f64; 2]>),
@@ -227,6 +230,12 @@ pub struct RowAnalysis {
     pub points: Vec<[f64; 2]>,
     /// Filled polygons to draw, each a list of vertices.
     pub polygons: Vec<Vec<[f64; 2]>>,
+    /// Polygons in a 3D graph.
+    pub polygons3: Vec<Vec<[f64; 3]>>,
+    /// Shaded boxes in a 3D graph, from inequalities that bound x, y and z
+    /// by constants: the low and high end on each axis (infinite where
+    /// unbounded).
+    pub boxes3: Vec<[[f64; 2]; 3]>,
     /// For an action row: what each variable becomes when it runs, worked
     /// out from the current values.
     pub updates: Vec<(String, Value)>,
@@ -273,6 +282,8 @@ impl RowAnalysis {
             curves3: Vec::new(),
             points: Vec::new(),
             polygons: Vec::new(),
+            polygons3: Vec::new(),
+            boxes3: Vec::new(),
             updates: Vec::new(),
             parameter: None,
             columns: Vec::new(),
@@ -318,6 +329,8 @@ impl RowAnalysis {
             && self.curves3.is_empty()
             && self.points.is_empty()
             && self.polygons.is_empty()
+            && self.polygons3.is_empty()
+            && self.boxes3.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
 }
@@ -460,6 +473,12 @@ fn same_value(a: &Result<Value, String>, b: &Result<Value, String>) -> bool {
             }
             Value::Point3(p) => push(8, p),
             Value::Points3(ps) => push(9, ps.as_flattened()),
+            Value::Polygon3(p) => push(10, p.as_flattened()),
+            Value::Polygons3(ps) => {
+                for p in ps {
+                    push(11, p.as_flattened());
+                }
+            }
         }
         out
     }
@@ -484,6 +503,7 @@ enum Item {
     Point3(Low, Low, Low),
     /// A polygon's vertices, which are always constants.
     Polygon(Vec<[f64; 2]>),
+    Polygon3(Vec<[f64; 3]>),
     /// A complex number with a nonzero imaginary part: real, imaginary.
     Complex(Low, Low),
 }
@@ -550,7 +570,9 @@ impl Val {
     }
 
     fn has_polygons(&self) -> bool {
-        self.items.iter().any(|i| matches!(i, Item::Polygon(_)))
+        self.items
+            .iter()
+            .any(|i| matches!(i, Item::Polygon(_) | Item::Polygon3(_)))
     }
 
     fn has_complex(&self) -> bool {
@@ -564,6 +586,21 @@ impl Val {
             Low::Const(v) => Some(v),
             _ => None,
         };
+        if self.items.iter().any(|i| matches!(i, Item::Polygon3(_))) {
+            let polygons = self
+                .items
+                .iter()
+                .map(|i| match i {
+                    Item::Polygon3(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(if self.list {
+                Value::Polygons3(polygons)
+            } else {
+                Value::Polygon3(polygons.into_iter().next()?)
+            });
+        }
         if self.has_polygons() {
             let polygons = self
                 .items
@@ -665,6 +702,11 @@ impl Val {
                 list: false,
             },
             Value::Polygons(ps) => Val::list(ps.iter().cloned().map(Item::Polygon).collect()),
+            Value::Polygon3(p) => Val {
+                items: vec![Item::Polygon3(p.clone())],
+                list: false,
+            },
+            Value::Polygons3(ps) => Val::list(ps.iter().cloned().map(Item::Polygon3).collect()),
             Value::Complex(a, b) => Val {
                 items: vec![Item::complex(c(*a), c(*b))],
                 list: false,
@@ -1095,6 +1137,10 @@ fn into_3d(row: &mut RowAnalysis) {
             });
         }
     }
+    for p in std::mem::take(&mut row.polygons) {
+        row.polygons3
+            .push(p.iter().map(|q| [q[0], q[1], 0.0]).collect());
+    }
     row.drag = None;
     let flat = !(row.curves.is_empty()
         && row.regions.is_empty()
@@ -1117,10 +1163,15 @@ fn into_3d(row: &mut RowAnalysis) {
 
 /// In a flat graph, 3D points and curves can't be drawn.
 fn flat(row: &mut RowAnalysis) {
-    if row.points3.is_empty() && row.curves3.is_empty() && row.param_surfaces.is_empty() {
+    if row.points3.is_empty()
+        && row.curves3.is_empty()
+        && row.param_surfaces.is_empty()
+        && row.polygons3.is_empty()
+    {
         return;
     }
     row.points3.clear();
+    row.polygons3.clear();
     row.curves3.clear();
     row.param_surfaces.clear();
     row.parameter = None;
@@ -1330,7 +1381,7 @@ fn constant_key(v: &Val, key: &mut Vec<u64>) -> Option<()> {
             Item::Point(a, b) => key.extend([1, bits(a)?, bits(b)?]),
             Item::Complex(a, b) => key.extend([2, bits(a)?, bits(b)?]),
             Item::Point3(a, b, c) => key.extend([3, bits(a)?, bits(b)?, bits(c)?]),
-            Item::Polygon(_) => return None,
+            Item::Polygon(_) | Item::Polygon3(_) => return None,
         }
     }
     Some(())
@@ -1523,7 +1574,8 @@ impl Env {
                 row.points = points_of(&value);
                 row.points3 = points3_of(&value);
                 row.polygons = polygons_of(&value);
-                if !row.polygons.is_empty() {
+                row.polygons3 = polygons3_of(&value);
+                if !row.polygons.is_empty() || !row.polygons3.is_empty() {
                     row.value = None;
                 }
             }
@@ -1537,6 +1589,24 @@ impl Env {
 
     fn function_row(&mut self, id: u64, name: &str, f: &FuncDef) -> RowAnalysis {
         let mut row = RowAnalysis::new(id, RowKind::Function(name.to_owned()));
+        // In a 3D graph, f(x, y) = … is also drawn as the surface z = f(x, y).
+        let surface = self.mode == Mode::ThreeD && f.params == ["x", "y"];
+        if surface {
+            let bindings: HashMap<String, Val> = [
+                ("x".to_owned(), Val::num(Low::Arg(Arg::X))),
+                ("y".to_owned(), Val::num(Low::Arg(Arg::Y))),
+            ]
+            .into_iter()
+            .collect();
+            let mut problems = Problems::default();
+            let val = self.lower(&f.body, &bindings, PARAM_ONLY, &mut problems);
+            row.missing = slider_names(&problems.missing);
+            row.error = problems.first_message();
+            if row.error.is_none() && !val.has_points() {
+                row.surfaces = compile_all(&val, &mut row.error, |program| Surface { program });
+            }
+            return row;
+        }
         let graph_param = f.params.len() == 1 && f.params[0] == "x";
         let mut problems = Problems::default();
         let bindings: HashMap<String, Val> = f
@@ -1636,19 +1706,13 @@ impl Env {
             Statement::Expr(e) if spatial(e) && !self.is_parametric(e) => self.surface_row(id, e),
             Statement::Expr(e) => self.expression_row(input, e),
             Statement::Relation(lhs, rel, rhs) => {
-                let compare = match rel {
-                    Relation::Lt => Compare::Lt,
-                    Relation::Le => Compare::Le,
-                    Relation::Gt => Compare::Gt,
-                    _ => Compare::Ge,
+                let condition = Condition {
+                    operands: vec![lhs.clone(), rhs.clone()],
+                    relations: vec![*rel],
                 };
-                let row = self.region_row(id, lhs, rhs, compare);
-                solids(row)
+                self.solid_row(id, &condition)
             }
-            Statement::Chain(condition) => {
-                let row = self.chain_row(id, condition);
-                solids(row)
-            }
+            Statement::Chain(condition) => self.solid_row(id, condition),
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
         }
     }
@@ -2006,32 +2070,33 @@ impl Env {
     /// the larger of `a - b` and `b - c` is negative. The boundary of that
     /// is exactly the boundary of the shaded region.
     fn chain_row(&mut self, id: u64, c: &Condition) -> RowAnalysis {
-        let ascending = c
-            .relations
-            .iter()
-            .all(|r| matches!(r, Relation::Lt | Relation::Le));
-        let descending = c
-            .relations
-            .iter()
-            .all(|r| matches!(r, Relation::Gt | Relation::Ge));
-        if !ascending && !descending {
-            return RowAnalysis::error(id, "A chain of inequalities must all point the same way");
-        }
-        let strict = c
-            .relations
-            .iter()
-            .all(|r| matches!(r, Relation::Lt | Relation::Gt));
+        self.chains_row(id, std::slice::from_ref(c))
+    }
+
+    /// Where every chain in `conditions` holds, as [`Self::chain_row`].
+    fn chains_row(&mut self, id: u64, conditions: &[Condition]) -> RowAnalysis {
         let mut problems = Problems::default();
-        let operands: Vec<Val> = c
-            .operands
-            .iter()
-            .map(|e| self.lower_side(e, &mut problems))
-            .collect();
-        let gaps: Vec<Val> = operands
-            .windows(2)
-            .map(|pair| {
+        let mut gaps: Vec<Val> = Vec::new();
+        let mut strict = true;
+        for c in conditions {
+            let Some(ascending) = direction(c) else {
+                return RowAnalysis::error(
+                    id,
+                    "A chain of inequalities must all point the same way",
+                );
+            };
+            strict &= c
+                .relations
+                .iter()
+                .all(|r| matches!(r, Relation::Lt | Relation::Gt));
+            let operands: Vec<Val> = c
+                .operands
+                .iter()
+                .map(|e| self.lower_side(e, &mut problems))
+                .collect();
+            for pair in operands.windows(2) {
                 let (lo, hi) = if ascending { (0, 1) } else { (1, 0) };
-                self.broadcast(
+                gaps.push(self.broadcast(
                     &[pair[lo].clone(), pair[hi].clone()],
                     &mut problems,
                     |items| match (items[0], items[1]) {
@@ -2040,9 +2105,9 @@ impl Env {
                         }
                         _ => Err("Points can't be compared".into()),
                     },
-                )
-            })
-            .collect();
+                ));
+            }
+        }
         let largest = self.broadcast(&gaps, &mut problems, |items| {
             let mut args = Vec::new();
             for item in items {
@@ -2051,7 +2116,17 @@ impl Env {
                     _ => return Err("Points can't be compared".into()),
                 }
             }
-            Ok(Item::Num(shallow(Low::Call(Builtin::Max, args))))
+            // max skips undefined values, but a restriction on any operand
+            // must leave the whole chain undefined there, so add 0 times
+            // each gap.
+            let undefined_where_any_is = args.iter().fold(Low::Const(0.0), |acc, a| {
+                bin(BinOp::Add, acc, bin(BinOp::Mul, Low::Const(0.0), a.clone()))
+            });
+            Ok(Item::Num(shallow(bin(
+                BinOp::Add,
+                Low::Call(Builtin::Max, args),
+                undefined_where_any_is,
+            ))))
         });
         let compare = if strict { Compare::Lt } else { Compare::Le };
         self.region_from(id, largest, compare, problems)
@@ -2089,6 +2164,105 @@ impl Env {
 
     /// Lowers one side of a relation over the plane: x and y, plus r and θ
     /// measured from the origin.
+    /// An inequality or chain in a 3D graph: a see-through solid, or
+    /// exact boxes when every comparison bounds x, y or z by constants
+    /// (as a 3D Riemann sum does). Restrictions such as
+    /// `\{0 \le x \le 1\}` are part of the solid.
+    fn solid_row(&mut self, id: u64, condition: &Condition) -> RowAnalysis {
+        let mut conditions = Vec::new();
+        let main = Condition {
+            operands: condition
+                .operands
+                .iter()
+                .map(|e| peel_restrictions(e, &mut conditions))
+                .collect(),
+            relations: condition.relations.clone(),
+        };
+        conditions.insert(0, main);
+        if let Some(row) = self.box_row(id, &conditions) {
+            return row;
+        }
+        solids(self.chains_row(id, &conditions))
+    }
+
+    /// Boxes, when each condition is `a ≤ v ≤ b` (or one side of it) for v
+    /// one of x, y and z, each at most once, and a and b don't depend on
+    /// where in space. A list among the bounds makes one box per element.
+    fn box_row(&mut self, id: u64, conditions: &[Condition]) -> Option<RowAnalysis> {
+        const SPATIAL: [&str; 7] = ["x", "y", "z", "r", "theta", "rho", "phi"];
+        let mut bounds: [[Option<Val>; 2]; 3] = Default::default();
+        let mut problems = Problems::default();
+        for c in conditions {
+            let ascending = direction(c)?;
+            if c.operands.len() > 3 {
+                return None;
+            }
+            let axes: Vec<(usize, usize)> = c
+                .operands
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    ["x", "y", "z"]
+                        .iter()
+                        .position(|v| is_var(e, v))
+                        .map(|a| (i, a))
+                })
+                .collect();
+            let &[(at, axis)] = axes.as_slice() else {
+                return None;
+            };
+            if bounds[axis].iter().any(Option::is_some) {
+                return None;
+            }
+            for (i, e) in c.operands.iter().enumerate() {
+                if i == at {
+                    continue;
+                }
+                if SPATIAL.iter().any(|v| e.mentions(v)) {
+                    return None;
+                }
+                let below = (i < at) == ascending;
+                let side = if below { 0 } else { 1 };
+                if bounds[axis][side].is_some() {
+                    return None;
+                }
+                bounds[axis][side] = Some(self.lower_side(e, &mut problems));
+            }
+        }
+        if !problems.errors.is_empty() || !problems.missing.is_empty() {
+            return None;
+        }
+        let vals: Vec<&Val> = bounds.iter().flatten().flatten().collect();
+        let n = vals
+            .iter()
+            .filter(|v| v.list)
+            .map(|v| v.items.len())
+            .min()
+            .unwrap_or(1);
+        let constant = |v: &Val, k: usize| match v.item(k) {
+            Item::Num(low) => match low.clone().fold() {
+                Low::Const(c) => Some(c),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        for k in 0..n {
+            let mut b = [[f64::NEG_INFINITY, f64::INFINITY]; 3];
+            for (axis, ends) in bounds.iter().enumerate() {
+                for (side, end) in ends.iter().enumerate() {
+                    if let Some(v) = end {
+                        b[axis][side] = constant(v, k)?;
+                    }
+                }
+            }
+            if b.iter().all(|[lo, hi]| lo <= hi) {
+                row.boxes3.push(b);
+            }
+        }
+        Some(row)
+    }
+
     /// One side of an inequality: in the plane, or in space in a 3D graph.
     fn lower_side(&mut self, e: &Expr, problems: &mut Problems) -> Val {
         if self.mode == Mode::ThreeD {
@@ -2239,9 +2413,11 @@ impl Env {
                 row.points = points_of(v);
                 row.points3 = points3_of(v);
                 row.polygons = polygons_of(v);
+                row.polygons3 = polygons3_of(v);
                 if !row.points.is_empty()
                     || !row.points3.is_empty()
                     || !row.polygons.is_empty()
+                    || !row.polygons3.is_empty()
                     || matches!(v, Value::Point(..) | Value::Point3(_))
                 {
                     // Points are shown on the graph, not echoed under the row.
@@ -3076,7 +3252,8 @@ impl Env {
         self.broadcast(&[a, b], problems, |items| {
             use Item::*;
             let op2 = |a: &Low, b: &Low| bin(op, a.clone(), b.clone());
-            if matches!(items[0], Polygon(_)) || matches!(items[1], Polygon(_)) {
+            let polygon = |i: &Item| matches!(i, Polygon(_) | Polygon3(_));
+            if polygon(items[0]) || polygon(items[1]) {
                 return Err("Polygons can't be used in arithmetic".into());
             }
             if matches!(items[0], Complex(..)) || matches!(items[1], Complex(..)) {
@@ -3142,7 +3319,9 @@ impl Env {
                         Item::Num(a) => Item::Num(neg(a)),
                         Item::Point(a, b) => Item::Point(neg(a), neg(b)),
                         Item::Point3(a, b, c) => Item::Point3(neg(a), neg(b), neg(c)),
-                        Item::Polygon(_) => return Err("Polygons can't be negated".into()),
+                        Item::Polygon(_) | Item::Polygon3(_) => {
+                            return Err("Polygons can't be negated".into())
+                        }
                         Item::Complex(a, b) => Item::Complex(neg(a), neg(b)),
                     })
                 })
@@ -3703,6 +3882,7 @@ impl Env {
             Value::Points(v) => v.len(),
             Value::Complexes(v) => v.len(),
             Value::Polygons(v) => v.len(),
+            Value::Polygons3(v) => v.len(),
             _ => return None,
         };
         let items = positions
@@ -3717,6 +3897,7 @@ impl Env {
                     Value::Points(v) => Item::Point(c(v[k][0]), c(v[k][1])),
                     Value::Complexes(v) => Item::complex(c(v[k][0]), c(v[k][1])),
                     Value::Polygons(v) => Item::Polygon(v[k].clone()),
+                    Value::Polygons3(v) => Item::Polygon3(v[k].clone()),
                     _ => unreachable!("checked above"),
                 }
             })
@@ -3737,6 +3918,26 @@ impl Env {
         let point_of = |item: &Item| match item {
             Item::Point(a, b) => Some([constant(a)?, constant(b)?]),
             _ => None,
+        };
+        let point3_of = |item: &Item| match item {
+            Item::Point3(a, b, c) => Some([constant(a)?, constant(b)?, constant(c)?]),
+            _ => None,
+        };
+        // A polygon from 3D points has 3D corners.
+        let polygon_of = |items: &[&Item]| -> Option<Item> {
+            if items.iter().any(|i| matches!(i, Item::Point3(..))) {
+                items
+                    .iter()
+                    .map(|i| point3_of(i))
+                    .collect::<Option<Vec<_>>>()
+                    .map(Item::Polygon3)
+            } else {
+                items
+                    .iter()
+                    .map(|i| point_of(i))
+                    .collect::<Option<Vec<_>>>()
+                    .map(Item::Polygon)
+            }
         };
         match f {
             ShapeFn::Join => {
@@ -3762,14 +3963,10 @@ impl Env {
                 }
                 // A single list is the vertices of one polygon.
                 if args.len() == 1 {
-                    let vertices = args[0]
-                        .items
-                        .iter()
-                        .map(point_of)
-                        .collect::<Option<Vec<_>>>();
-                    return match vertices {
-                        Some(v) => Val {
-                            items: vec![Item::Polygon(v)],
+                    let vertices: Vec<&Item> = args[0].items.iter().collect();
+                    return match polygon_of(&vertices) {
+                        Some(polygon) => Val {
+                            items: vec![polygon],
                             list: false,
                         },
                         None => {
@@ -3781,12 +3978,7 @@ impl Env {
                 // Several points, any of them lists, make one polygon per
                 // element.
                 self.broadcast(&args, problems, |items| {
-                    items
-                        .iter()
-                        .map(|i| point_of(i))
-                        .collect::<Option<Vec<_>>>()
-                        .map(Item::Polygon)
-                        .ok_or_else(|| polygon_error.to_owned())
+                    polygon_of(items).ok_or_else(|| polygon_error.to_owned())
                 })
             }
             ShapeFn::Sort | ShapeFn::Unique => {
@@ -3807,7 +3999,7 @@ impl Env {
                                 Some(vec![constant(a)?, constant(b)?, constant(c)?])
                             }
                             Item::Complex(a, b) => Some(vec![constant(a)?, constant(b)?]),
-                            Item::Polygon(_) => None,
+                            Item::Polygon(_) | Item::Polygon3(_) => None,
                         };
                         let Some(k) = key(item) else {
                             problems.error("Function 'unique' needs numbers or points that don't depend on x or y");
@@ -4173,7 +4365,7 @@ impl Env {
                 Item::Num(l) => l.uses_arg(),
                 Item::Point(a, b) | Item::Complex(a, b) => a.uses_arg() || b.uses_arg(),
                 Item::Point3(a, b, c) => a.uses_arg() || b.uses_arg() || c.uses_arg(),
-                Item::Polygon(_) => false,
+                Item::Polygon(_) | Item::Polygon3(_) => false,
             });
             if let Some(g) = GRAPH_VARIABLES.iter().find(|g| **g == name) {
                 if reads_plane {
@@ -4255,7 +4447,7 @@ fn numbers_of(v: &Value, rows: usize, error: &mut Option<String>) -> Option<Vec<
             *error = Some("Table cells hold numbers, not points".into());
             None
         }
-        Value::Polygon(_) | Value::Polygons(_) => {
+        Value::Polygon(_) | Value::Polygons(_) | Value::Polygon3(_) | Value::Polygons3(_) => {
             *error = Some("Table cells hold numbers, not polygons".into());
             None
         }
@@ -4280,6 +4472,14 @@ fn points3_of(v: &Value) -> Vec<[f64; 3]> {
     match v {
         Value::Point3(p) => [*p].into_iter().filter(finite).collect(),
         Value::Points3(ps) => ps.iter().copied().filter(finite).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn polygons3_of(v: &Value) -> Vec<Vec<[f64; 3]>> {
+    match v {
+        Value::Polygon3(p) => vec![p.clone()],
+        Value::Polygons3(ps) => ps.clone(),
         _ => Vec::new(),
     }
 }
@@ -4463,4 +4663,52 @@ fn solids(mut row: RowAnalysis) -> RowAnalysis {
         });
     }
     row
+}
+
+/// Whether a chain of comparisons runs upward (`<`, `≤`), downward, or
+/// (None) both ways.
+fn direction(c: &Condition) -> Option<bool> {
+    if c.relations
+        .iter()
+        .all(|r| matches!(r, Relation::Lt | Relation::Le))
+    {
+        Some(true)
+    } else if c
+        .relations
+        .iter()
+        .all(|r| matches!(r, Relation::Gt | Relation::Ge))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Splits restrictions off an expression: `f\{0 \le x \le 1\}` is `f`
+/// where `0 ≤ x ≤ 1`.
+fn peel_restrictions(e: &Expr, conditions: &mut Vec<Condition>) -> Expr {
+    // The parser writes `f\{c\}` as f times `\{c: 1\}`.
+    let restriction = |e: &Expr| match e {
+        Expr::Piecewise(branches, None)
+            if branches.len() == 1 && matches!(branches[0].1, Expr::Num(n) if n == 1.0) =>
+        {
+            Some(branches[0].0.clone())
+        }
+        _ => None,
+    };
+    match e {
+        Expr::Mul(a, b) if restriction(b).is_some() => {
+            conditions.push(restriction(b).expect("checked"));
+            peel_restrictions(a, conditions)
+        }
+        // Written last, a restriction binds to the last term, but in Desmos
+        // it restricts the whole row.
+        Expr::Add(a, b) => Expr::Add(a.clone(), Box::new(peel_restrictions(b, conditions))),
+        Expr::Sub(a, b) => Expr::Sub(a.clone(), Box::new(peel_restrictions(b, conditions))),
+        Expr::Piecewise(branches, None) if branches.len() == 1 => {
+            conditions.push(branches[0].0.clone());
+            peel_restrictions(&branches[0].1, conditions)
+        }
+        other => other.clone(),
+    }
 }

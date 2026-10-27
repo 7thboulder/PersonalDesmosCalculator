@@ -137,6 +137,10 @@ pub enum Shape {
     /// The translucent solid where `f(x, y, z) < 0`, or `> 0` when
     /// `above`.
     Solid { program: Program, above: bool },
+    /// A polygon's fill, by its corners.
+    Polygon(Vec<[f64; 3]>),
+    /// A shaded box: its low and high end on each axis.
+    Box([[f64; 2]; 3]),
     /// `(x(u, v), y(u, v), z(u, v))`.
     Parametric {
         x: Program,
@@ -160,6 +164,13 @@ pub struct GraphPoints3 {
     pub points: Vec<[f64; 3]>,
     pub color: [f32; 4],
     pub size: f32,
+}
+
+/// A polygon's outline in a 3D graph (its fill is a surface).
+pub struct GraphPolygon3 {
+    pub corners: Vec<[f64; 3]>,
+    pub color: [f32; 4],
+    pub width: f32,
 }
 
 /// A curve in a 3D graph, traced by t.
@@ -198,6 +209,7 @@ pub struct Engine {
     pub surfaces: Vec<GraphSurface>,
     pub points3: Vec<GraphPoints3>,
     pub curves3: Vec<GraphCurve3>,
+    pub polygons3: Vec<GraphPolygon3>,
     /// Flat or 3D, as the panel last said.
     pub mode: Mode,
     /// Surface meshes for the current view, by surface and range.
@@ -266,6 +278,7 @@ impl Engine {
         self.surfaces.clear();
         self.points3.clear();
         self.curves3.clear();
+        self.polygons3.clear();
         for (row, result) in rows.iter().zip(&results) {
             if row["hidden"].as_bool().unwrap_or(false) {
                 continue;
@@ -369,6 +382,30 @@ impl Engine {
                     y: c.y.clone(),
                     z: c.z.clone(),
                     domain: c.domain,
+                    color,
+                    width,
+                });
+            }
+            for b in &result.boxes3 {
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Box(*b),
+                    key: b.iter().flatten().fold(6, |k, c| mix(k, c.to_bits())),
+                    color: [color[0], color[1], color[2], color[3] * SOLID_OPACITY],
+                });
+            }
+            for corners in &result.polygons3 {
+                let fill = row["fillOpacity"]
+                    .as_f64()
+                    .unwrap_or(POLYGON_FILL)
+                    .clamp(0.0, 1.0) as f32;
+                let key = corners.iter().flatten().fold(5, |k, c| mix(k, c.to_bits()));
+                self.surfaces.push(GraphSurface {
+                    shape: Shape::Polygon(corners.clone()),
+                    key,
+                    color: [color[0], color[1], color[2], color[3] * fill],
+                });
+                self.polygons3.push(GraphPolygon3 {
+                    corners: corners.clone(),
                     color,
                     width,
                 });
@@ -561,6 +598,8 @@ impl Engine {
                         let f = |x: f64, y: f64, z: f64| sign * program.eval3(x, y, z);
                         three::solid_mesh(view, &f, s.color, three::IMPLICIT_SAMPLES)
                     }
+                    Shape::Polygon(corners) => three::polygon_mesh(view, corners, s.color),
+                    Shape::Box(b) => three::box_mesh(view, *b, s.color),
                     Shape::Parametric { x, y, z, u, v } => {
                         let f = |a: f64, b: f64| [x.eval2(a, b), y.eval2(a, b), z.eval2(a, b)];
                         three::parametric_mesh(view, &f, *u, *v, s.color, three::PARAMETRIC_SAMPLES)
@@ -585,6 +624,9 @@ impl Engine {
                     c.color,
                     &mut lines,
                 );
+            }
+            for p in &self.polygons3 {
+                three::polygon_outline_3d(view, &p.corners, p.width * scale, p.color, &mut lines);
             }
             for p in &self.points3 {
                 three::points_3d(view, &p.points, p.size * scale, p.color, &mut lines);
@@ -722,7 +764,7 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "missing": r.missing.iter().map(|n| json!({"name": n, "latex": name_latex(n)})).collect::<Vec<_>>(),
         "graphed": r.graphed(),
         "points": !(r.points.is_empty() && r.points3.is_empty()),
-        "polygons": !r.polygons.is_empty(),
+        "polygons": !(r.polygons.is_empty() && r.polygons3.is_empty()),
         "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
             "row": defined.get(name.as_str())?,
             "latex": exact_latex(v),

@@ -754,6 +754,95 @@ fn quad(
 }
 
 /// Points in 3D, as dots `size` pixels across. Points outside the box are
+/// A flat polygon's fill, fanned out from its first corner. Its normal is
+/// Newell's average, so a slightly bent polygon still lights evenly.
+pub fn polygon_mesh(view: &View3, corners: &[[f64; 3]], color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::default();
+    let b: Vec<[f64; 3]> = corners.iter().map(|p| view.to_box(*p)).collect();
+    if b.len() < 3 || b.iter().flatten().any(|c| !c.is_finite()) {
+        return mesh;
+    }
+    let mut n = [0.0; 3];
+    for (k, p) in b.iter().enumerate() {
+        let q = b[(k + 1) % b.len()];
+        n[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        n[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        n[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    let len = dot(n, n).sqrt();
+    let normal = if len > 1e-12 {
+        n.map(|c| (c / len) as f32)
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    mesh.vertices = b
+        .iter()
+        .map(|p| Vertex3 {
+            pos: p.map(|c| c.clamp(-HEIGHT_LIMIT, HEIGHT_LIMIT) as f32),
+            normal,
+            color,
+        })
+        .collect();
+    for k in 1..b.len() as u32 - 1 {
+        mesh.indices.extend([0, k, k + 1]);
+    }
+    mesh
+}
+
+/// The six faces of an axis-aligned box, its low and high end on each
+/// axis in graph units, cut to the view's box.
+pub fn box_mesh(view: &View3, bounds: [[f64; 2]; 3], color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::default();
+    let mut b = [[0.0; 2]; 3];
+    for axis in 0..3 {
+        let to_box = |v: f64| ((v - view.center[axis]) / view.half[axis]).clamp(-1.0, 1.0);
+        b[axis] = [to_box(bounds[axis][0]), to_box(bounds[axis][1])];
+        if b[axis][0].partial_cmp(&b[axis][1]) != Some(std::cmp::Ordering::Less) {
+            return mesh;
+        }
+    }
+    for axis in 0..3 {
+        let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
+        for side in 0..2 {
+            let mut normal = [0f32; 3];
+            normal[axis] = if side == 0 { -1.0 } else { 1.0 };
+            let base = mesh.vertices.len() as u32;
+            for (i, j) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+                let mut p = [0f32; 3];
+                p[axis] = b[axis][side] as f32;
+                p[u] = b[u][i] as f32;
+                p[w] = b[w][j] as f32;
+                mesh.vertices.push(Vertex3 {
+                    pos: p,
+                    normal,
+                    color,
+                });
+            }
+            mesh.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    mesh
+}
+
+/// A polygon's closed outline, `width` pixels wide.
+pub fn polygon_outline_3d(
+    view: &View3,
+    corners: &[[f64; 3]],
+    width: f32,
+    color: [f32; 4],
+    out: &mut Vec<LineVertex>,
+) {
+    let b: Vec<[f64; 3]> = corners.iter().map(|p| view.to_box(*p)).collect();
+    if b.len() < 2 || b.iter().flatten().any(|c| !c.is_finite()) {
+        return;
+    }
+    for (k, p) in b.iter().enumerate() {
+        segment(*p, b[(k + 1) % b.len()], width, color, out);
+        disc(*p, width, color, out);
+    }
+}
+
 /// left out, as Desmos does.
 pub fn points_3d(
     view: &View3,
@@ -1085,6 +1174,46 @@ mod tests {
             mesh.vertices.iter().any(|p| p.pos[2] < -0.98),
             "the floor closes it"
         );
+    }
+
+    #[test]
+    fn polygon_fill_is_a_fan_facing_its_normal() {
+        let v = View3::new(600.0, 600.0);
+        let square = [
+            [0.0, 0.0, 5.0],
+            [5.0, 0.0, 5.0],
+            [5.0, 5.0, 5.0],
+            [0.0, 5.0, 5.0],
+        ];
+        let mesh = polygon_mesh(&v, &square, [1.0; 4]);
+        assert_eq!(mesh.indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(mesh.vertices[0].normal, [0.0, 0.0, 1.0]);
+        assert_eq!(mesh.vertices[2].pos, [0.5, 0.5, 0.5]);
+        let mut lines = Vec::new();
+        polygon_outline_3d(&v, &square, 2.0, [1.0; 4], &mut lines);
+        assert_eq!(lines.len(), 4 * 12, "a side and a joint at each corner");
+    }
+
+    #[test]
+    fn box_mesh_is_cut_to_the_view() {
+        let v = View3::new(600.0, 600.0);
+        let m = box_mesh(
+            &v,
+            [[0.0, 5.0], [-20.0, 5.0], [0.0, f64::INFINITY]],
+            [1.0; 4],
+        );
+        assert_eq!((m.vertices.len(), m.indices.len()), (24, 36));
+        let lo = m
+            .vertices
+            .iter()
+            .fold([9f32; 3], |a, p| [0, 1, 2].map(|i| a[i].min(p.pos[i])));
+        let hi = m
+            .vertices
+            .iter()
+            .fold([-9f32; 3], |a, p| [0, 1, 2].map(|i| a[i].max(p.pos[i])));
+        assert_eq!((lo, hi), ([0.0, -1.0, 0.0], [0.5, 0.5, 1.0]));
+        let empty = box_mesh(&v, [[1.0, 1.0], [0.0, 1.0], [0.0, 1.0]], [1.0; 4]);
+        assert!(empty.vertices.is_empty());
     }
 
     #[test]

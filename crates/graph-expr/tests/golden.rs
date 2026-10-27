@@ -1023,14 +1023,15 @@ fn three_d_equations_and_uv_surfaces() {
     let solid = &r[6].implicits3[0];
     assert_eq!(solid.shade, Some(Compare::Lt), "an inequality is a solid");
     assert!(close(solid.program.eval3(0.0, 0.0, 0.0), -25.0));
-    let r = rows_3d(&["z>x", "-1\\le z<1", "x^2>4"]);
-    assert_eq!(r[0].implicits3[0].shade, Some(Compare::Gt));
-    assert!(close(r[0].implicits3[0].program.eval3(1.0, 0.0, 3.0), 2.0));
+    let r = rows_3d(&["z>x", "-1\\le z<1+x", "x^2>4"]);
+    // Inside is where the program is negative: x - z for z > x.
+    assert_eq!(r[0].implicits3[0].shade, Some(Compare::Lt));
+    assert!(close(r[0].implicits3[0].program.eval3(1.0, 0.0, 3.0), -2.0));
     // A chain is inside where its largest gap is negative.
     let slab = &r[1].implicits3[0];
     assert_eq!(slab.shade, Some(Compare::Le));
     assert!(slab.program.eval3(5.0, 5.0, 0.0) < 0.0);
-    assert!(slab.program.eval3(5.0, 5.0, 2.0) > 0.0);
+    assert!(slab.program.eval3(5.0, 5.0, 7.0) > 0.0);
     assert!(r[2].graphed() && r[2].error.is_none(), "{:?}", r[2]);
     // A row that defines u fixes it, and the surface is traced by v alone.
     let r = rows_3d(&["u=2", "\\left(u,v,1\\right)"]);
@@ -1038,6 +1039,45 @@ fn three_d_equations_and_uv_surfaces() {
     let s = &r[1].param_surfaces[0];
     assert!(close(s.x.eval2(0.3, 0.6), 2.0));
     assert!(close(s.y.eval2(0.3, 0.6), 0.6));
+    // Restrictions bound a solid, and constant bounds on x, y and z make
+    // exact boxes, one per list element (a 3D Riemann sum).
+    let r = rows_3d(&[
+        "w=\\left[0,1\\right]",
+        "0\\le z\\le w+1\\left\\{w\\le x\\le w+1\\right\\}\\left\\{0\\le y\\le 2\\right\\}",
+        "x^2+y^2+z^2<25\\left\\{x>0\\right\\}",
+        "f\\left(x,y\\right)=x^2+y^2",
+        "\\operatorname{polygon}\\left(\\left(0,0,0\\right),\\left(1,0,0\\right),\\left(0,1,2\\right)\\right)",
+        "z<3",
+    ]);
+    assert_eq!(
+        r[1].boxes3,
+        vec![
+            [[0.0, 1.0], [0.0, 2.0], [0.0, 1.0]],
+            [[1.0, 2.0], [0.0, 2.0], [0.0, 2.0]]
+        ]
+    );
+    let half_ball = &r[2].implicits3[0].program;
+    assert!(half_ball.eval3(1.0, 0.0, 0.0) < 0.0);
+    assert!(
+        half_ball.eval3(-1.0, 0.0, 0.0) > 0.0,
+        "the restriction cuts it"
+    );
+    assert!(
+        close(r[3].surfaces[0].program.eval2(1.0, 2.0), 5.0),
+        "f(x, y) is a surface"
+    );
+    assert_eq!(
+        r[4].polygons3,
+        vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 2.0]]]
+    );
+    assert_eq!(
+        r[5].boxes3,
+        vec![[
+            [f64::NEG_INFINITY, f64::INFINITY],
+            [f64::NEG_INFINITY, f64::INFINITY],
+            [f64::NEG_INFINITY, 3.0]
+        ]]
+    );
     // In 2D, ρ and φ stay ordinary names.
     assert_eq!(rows(&["\\rho=5"])[0].kind, RowKind::Variable("rho".into()));
 }
