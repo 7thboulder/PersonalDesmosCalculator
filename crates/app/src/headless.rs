@@ -961,8 +961,7 @@ pub fn desmos_script_3d() -> String {
     results.push({{ graph, open: +open.toFixed(1), slider: +slider.toFixed(1) }});
   }}
   console.table(results);
-  console.log('Desmos 3D times in ms. Copy this line into the chat:
-' + JSON.stringify(results));
+  console.log('Desmos 3D times in ms. Copy this line into the chat:\n' + JSON.stringify(results));
 }})();
 "#,
         graphs.join("\n")
