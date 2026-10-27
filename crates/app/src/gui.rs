@@ -472,6 +472,10 @@ impl Running {
                     .collect();
                 self.run_script(&format!("window.engine.setSliders([{}])", pairs.join(",")));
             }
+            Effect::SetSeeds(row, latex) => {
+                let latex = serde_json::Value::String(latex).to_string();
+                self.run_script(&format!("window.engine.setSeeds({row},{latex})"));
+            }
         }
         self.window.request_redraw();
     }

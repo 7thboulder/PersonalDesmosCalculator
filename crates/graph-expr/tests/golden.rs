@@ -1081,3 +1081,64 @@ fn three_d_equations_and_uv_surfaces() {
     // In 2D, ρ and φ stay ordinary names.
     assert_eq!(rows(&["\\rho=5"])[0].kind, RowKind::Variable("rho".into()));
 }
+
+fn ode(latex: &[&str], seeds: &str) -> RowAnalysis {
+    let mut input: Vec<RowInput> = latex
+        .iter()
+        .enumerate()
+        .map(|(i, l)| RowInput {
+            id: i as u64,
+            latex: l.to_string(),
+            ..Default::default()
+        })
+        .collect();
+    input.last_mut().unwrap().seeds = Some(seeds.into());
+    analyze(&input).pop().unwrap()
+}
+
+#[test]
+fn differential_equations_draw_slope_fields_through_initial_points() {
+    let r = ode(&["k=2", "y'=k x-y"], "\\left(0,1\\right)");
+    assert_eq!(r.kind, RowKind::Curve);
+    assert_eq!(r.error, None);
+    assert!(r.graphed());
+    assert_eq!(r.odes.len(), 1);
+    assert!(close(r.odes[0].eval2(3.0, 1.0), 5.0));
+    assert_eq!(r.seeds.len(), 1);
+    assert_eq!(r.seeds[0].at, [0.0, 1.0]);
+    assert!(
+        r.seeds_fixed,
+        "plain numbers can be dragged by rewriting them"
+    );
+
+    // dy/dx works too, and a list of initial points with sliders in them
+    // drags those sliders.
+    let r = ode(
+        &["a=1", "b=-2", "\\frac{dy}{dx}=\\sin\\left(xy\\right)"],
+        "\\left[\\left(a,b\\right),\\left(2,3\\right)\\right]",
+    );
+    assert_eq!(r.error, None);
+    assert_eq!(r.seeds.len(), 2);
+    assert_eq!(r.seeds[0].at, [1.0, -2.0]);
+    assert_eq!(
+        r.seeds[0].drag,
+        Some([Some("a".to_string()), Some("b".to_string())])
+    );
+    assert_eq!(r.seeds[1].drag, None);
+    assert!(!r.seeds_fixed);
+
+    // No initial points: just the field. Bad ones say so without hiding it.
+    let r = ode(&["y'=y"], "");
+    assert_eq!((r.odes.len(), r.seeds.len()), (1, 0));
+    let r = ode(&["y'=y"], "3");
+    assert_eq!(r.odes.len(), 1);
+    assert!(r.seeds_error.is_some());
+    let r = ode(&["y'=y"], "\\left(c,1\\right)");
+    assert_eq!(r.missing, vec!["c".to_string()], "offers c as a slider");
+
+    // Undefined names in the slope are offered as sliders too.
+    let r = one("y'=mx");
+    assert_eq!(r.missing, vec!["m".to_string()]);
+    assert!(r.odes.is_empty());
+    assert!(one("y'=\\left(1,2\\right)").error.is_some());
+}

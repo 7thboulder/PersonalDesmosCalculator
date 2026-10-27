@@ -1,5 +1,6 @@
 use crate::grid::{grid_spacing, line_indices};
 use crate::implicit::{trace_implicit, Field};
+use crate::ode::{slope_marks, solution};
 use crate::sample::{sample_curve, sample_parametric, Axis};
 use crate::tess::{
     disc, fill_polygon, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex,
@@ -130,6 +131,23 @@ pub struct Polygon<'a> {
     pub style: LineStyle,
 }
 
+/// A differential equation y' = f(x, y): its slope field over the view,
+/// and the solution through each seed.
+pub struct SlopeField<'a> {
+    pub slope: &'a (dyn Fn(f64, f64) -> f64 + Sync),
+    pub seeds: &'a [[f64; 2]],
+    pub color: [f32; 4],
+    /// The solution curves' thickness in logical pixels.
+    pub width: f32,
+    pub style: LineStyle,
+}
+
+/// How much of the row's colour the slope marks get, so the solution
+/// curves stand out over them.
+const FIELD_OPACITY: f32 = 0.45;
+/// Slope mark thickness in logical pixels.
+const FIELD_WIDTH: f32 = 1.5;
+
 /// How a mark on top of the graph looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkKind {
@@ -162,6 +180,7 @@ pub struct Plot<'a> {
     pub implicits: &'a [Implicit<'a>],
     pub polygons: &'a [Polygon<'a>],
     pub points: &'a [Points<'a>],
+    pub fields: &'a [SlopeField<'a>],
     pub marks: &'a [Mark],
 }
 
@@ -400,6 +419,7 @@ pub fn build_scene_cached(
         implicits,
         polygons,
         points,
+        fields,
         marks,
     } = *plot;
     let mut out = Vec::with_capacity(64 * 1024);
@@ -482,7 +502,14 @@ pub fn build_scene_cached(
         .chain((parametrics.iter().zip(swept)).map(|(p, l)| (l, p.width * scale, p.style, p.color)))
         .chain((implicits.iter().zip(traced)).map(|(i, l)| (l, i.width * scale, i.style, i.color)))
         .collect();
+    // Slope marks go under every curve, and solutions over them.
+    for field in fields {
+        draw_marks(vp, scale, field, &mut out);
+    }
     stroke_all(&strokes, &mut out);
+    for field in fields {
+        draw_solutions(vp, scale, field, &mut out);
+    }
     for set in points {
         draw_points(vp, scale, set, &mut out);
     }
@@ -528,6 +555,47 @@ fn draw_polygon(vp: &Viewport, scale: f32, polygon: &Polygon, out: &mut Vec<Vert
             polygon.width * scale,
             polygon.style,
             polygon.color,
+            out,
+        );
+    }
+}
+
+fn draw_marks(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<Vertex>) {
+    let [r, g, b, a] = field.color;
+    let faint = [r, g, b, a * FIELD_OPACITY];
+    let to_f32 = |p: [f64; 2]| {
+        let s = vp.to_screen(p[0], p[1]);
+        [s[0] as f32, s[1] as f32]
+    };
+    for [p, q] in slope_marks(field.slope, vp, scale as f64) {
+        stroke_polyline(&[to_f32(p), to_f32(q)], FIELD_WIDTH * scale, faint, out);
+    }
+}
+
+fn draw_solutions(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<Vertex>) {
+    // Each solution is integrated on its own thread.
+    let lines: Vec<Vec<[f64; 2]>> = std::thread::scope(|s| {
+        let jobs: Vec<_> = field
+            .seeds
+            .iter()
+            .map(|&seed| s.spawn(move || solution(field.slope, seed, vp)))
+            .collect();
+        jobs.into_iter()
+            .map(|j| j.join().unwrap_or_default())
+            .collect()
+    });
+    for line in &lines {
+        draw_points(
+            vp,
+            scale,
+            &Points {
+                points: line,
+                color: field.color,
+                size: 0.0,
+                style: PointStyle::Filled,
+                dots: false,
+                line: Some((field.width, field.style)),
+            },
             out,
         );
     }
@@ -942,6 +1010,31 @@ mod tests {
         assert!(dots
             .iter()
             .all(|v| (v.pos[0] as f64 - centre[0]).abs() < 6.0));
+    }
+
+    #[test]
+    fn slope_fields_and_solutions_reach_the_scene() {
+        let vp = Viewport::new(600.0, 600.0);
+        let slope = |x: f64, y: f64| x - y;
+        let field = SlopeField {
+            slope: &slope,
+            seeds: &[[0.0, 1.0]],
+            color: DESMOS_COLORS[0],
+            width: DEFAULT_CURVE_WIDTH,
+            style: LineStyle::Solid,
+        };
+        let plot = Plot {
+            fields: &[field],
+            ..Plot::default()
+        };
+        let verts = build_scene(&vp, 1.0, &plot, &mut TextAtlas::empty()).vertices;
+        let faint = |v: &&Vertex| v.color[3] < 1.0 && v.color[0] == DESMOS_COLORS[0][0];
+        assert!(verts.iter().filter(faint).count() > 1000, "slope marks");
+        // The solution y = x - 1 + 2e^{-x} passes through (1, 2/e).
+        let c = vp.to_screen(1.0, 2.0 / std::f64::consts::E);
+        assert!(verts.iter().any(|v| v.color == DESMOS_COLORS[0]
+            && (v.pos[0] as f64 - c[0]).abs() < 2.0
+            && (v.pos[1] as f64 - c[1]).abs() < 2.0));
     }
 
     #[test]
