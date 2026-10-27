@@ -852,3 +852,52 @@ fn long_sums_are_compiled_exactly() {
     assert_eq!(all[3].number(), Some(220.0));
     assert!(all[4].number().unwrap().abs() < 1e-12, "{:?}", all[4]);
 }
+
+#[test]
+fn long_list_arithmetic_is_compiled_exactly() {
+    // Arithmetic on long lists takes a compiled path; a comprehension goes
+    // the general way. The two must agree to the bit, and anything the
+    // compiled path cannot do (whole-list functions, indexing, complex
+    // numbers) must still give the general answer.
+    let last = |latex: &[&str]| rows(latex).pop().unwrap();
+    let base = [
+        "a=1.3",
+        "n=\\left[1...300\\right]",
+        "m=\\left[1...200\\right]",
+        "f\\left(k\\right)=k^2-\\sum_{j=1}^{3}j",
+    ];
+    let with = |e: &str| {
+        let mut all: Vec<&str> = base.to_vec();
+        all.push(e);
+        last(&all)
+    };
+    let same = |fast: &str, slow: &str| {
+        let (a, b) = (with(fast), with(slow));
+        assert!(a.error.is_none() && b.error.is_none(), "{a:?} {b:?}");
+        assert_eq!(a.value, b.value, "{fast}");
+        assert_eq!(a.points, b.points, "{fast}");
+    };
+    same(
+        "\\left(\\frac{n}{500}\\cos\\left(an\\right),\\frac{n}{500}\\sin\\left(an\\right)\\right)",
+        "\\left[\\left(\\frac{k}{500}\\cos\\left(ak\\right),\\frac{k}{500}\\sin\\left(ak\\right)\\right)\\operatorname{for}k=n\\right]",
+    );
+    same(
+        "f\\left(n\\right)+\\sqrt{n}",
+        "\\left[f\\left(k\\right)+\\sqrt{k}\\operatorname{for}k=n\\right]",
+    );
+    same(
+        "n+m",
+        "\\left[k+m\\left[k\\right]\\operatorname{for}k=\\left[1...200\\right]\\right]",
+    );
+    same(
+        "n-\\operatorname{total}\\left(n\\right)",
+        "\\left[k-45150\\operatorname{for}k=n\\right]",
+    );
+    same(
+        "n\\cdot n\\left[2\\right]",
+        "\\left[2k\\operatorname{for}k=n\\right]",
+    );
+    let complex = with("n\\cdot i\\cdot i");
+    assert!(complex.error.is_none(), "{complex:?}");
+    assert!(complex.points.is_empty());
+}

@@ -214,6 +214,60 @@ impl Expr {
         }
     }
 
+    /// Calls `f` on this expression and every expression inside it.
+    pub fn walk(&self, f: &mut dyn FnMut(&Expr)) {
+        f(self);
+        match self {
+            Expr::Num(_) | Expr::Var(_) => {}
+            Expr::Neg(a) | Expr::Factorial(a) | Expr::Coord(a, _) | Expr::Derivative(_, a) => {
+                a.walk(f)
+            }
+            Expr::Add(a, b)
+            | Expr::Sub(a, b)
+            | Expr::Mul(a, b)
+            | Expr::Div(a, b)
+            | Expr::Pow(a, b)
+            | Expr::Point(a, b)
+            | Expr::Index(a, b)
+            | Expr::Filter(a, b) => {
+                a.walk(f);
+                b.walk(f);
+            }
+            Expr::Update(_, a) => a.walk(f),
+            Expr::List(items)
+            | Expr::Call(_, items)
+            | Expr::Shape(_, items)
+            | Expr::Actions(items)
+            | Expr::Apply(_, items)
+            | Expr::Prime(_, _, items) => items.iter().for_each(|a| a.walk(f)),
+            Expr::Range(a, b, c) => {
+                a.walk(f);
+                if let Some(b) = b {
+                    b.walk(f);
+                }
+                c.walk(f);
+            }
+            Expr::Repeat(_, _, a, b, c) | Expr::Integral(_, a, b, c) => {
+                a.walk(f);
+                b.walk(f);
+                c.walk(f);
+            }
+            Expr::Comprehension(body, generators) => {
+                body.walk(f);
+                generators.iter().for_each(|(_, l)| l.walk(f));
+            }
+            Expr::Piecewise(branches, otherwise) => {
+                for (condition, value) in branches {
+                    condition.operands.iter().for_each(|a| a.walk(f));
+                    value.walk(f);
+                }
+                if let Some(e) = otherwise {
+                    e.walk(f);
+                }
+            }
+        }
+    }
+
     /// Whether this is an action by its form: `a \to 1`, several of them,
     /// or a piecewise choice between them. A name that refers to an action
     /// is only known once every row is.

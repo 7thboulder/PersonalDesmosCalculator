@@ -585,6 +585,7 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
     );
     // GRAPHCALC_SUITE=curves,points runs only those graphs.
     let only = std::env::var("GRAPHCALC_SUITE").unwrap_or_default();
+    let mut like_desmos = Vec::new();
     for (name, state) in SUITE {
         if !only.is_empty() && !only.split(',').any(|o| o.trim() == *name) {
             continue;
@@ -664,6 +665,9 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
             let n = frames.max(1);
             Ok::<_, String>((cpu / n, total / n))
         };
+        // An unchanged frame, which bench/desmos-bench.js takes off every
+        // Desmos time (as the cost of a screenshot of an unchanged graph).
+        let still_t = run(&mut engine, &mut |_, _, _| false)?;
         let slider_t = run(&mut engine, &mut |i, _, rows| {
             let a = 0.5 + 2.0 * f64::from(i) / f64::from(frames.max(1));
             rows[slider]["latex"] = json!(format!("a={a:.4}"));
@@ -693,6 +697,22 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
             cell(pan_t),
             cell(zoom_t)
         );
+        let less = |(_, total): (Duration, Duration)| ms(total.saturating_sub(still_t.1));
+        like_desmos.push(format!(
+            "{:<11} {:>8.1} {:>13.1} {:>13.1} {:>13.1}   (unchanged frame {:.1})",
+            name,
+            ms(open),
+            less(slider_t),
+            less(pan_t),
+            less(zoom_t),
+            ms(still_t.1)
+        ));
+    }
+    if !software {
+        println!("\nless an unchanged frame, as bench/desmos-bench.js measures Desmos:");
+        for line in &like_desmos {
+            println!("{line}");
+        }
     }
     if software {
         println!("software adapter: only the app's own (cpu) time is shown");

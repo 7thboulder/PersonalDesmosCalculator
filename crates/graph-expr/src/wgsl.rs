@@ -12,9 +12,25 @@ use crate::compile::{Arg, BinOp, Op, Program};
 // The helpers the generated code calls (`gc_pow`, `gc_mod` and friends) are
 // defined once per shader by the renderer, from `graph_core::shader`.
 
-/// The WGSL body of `fn f(x: f32, y: f32) -> f32`, or `None` when some part
-/// of the relation has no GPU equivalent.
-pub fn body(program: &Program) -> Option<String> {
+/// How many of a relation's numbers are passed in as uniforms. Any past
+/// this are written into the code.
+pub const MAX_CONSTANTS: usize = 256;
+
+/// A relation as WGSL. Its numbers are not in the code but read from
+/// `u.k`, an array of `MAX_CONSTANTS / 4` vec4s the renderer fills from
+/// `constants`, so moving a slider changes only the numbers and the
+/// compiled shader is reused.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shader {
+    /// The body of `fn relation(x: f32, y: f32) -> f32`, including `return`.
+    pub body: String,
+    pub constants: Vec<f32>,
+}
+
+/// The relation as WGSL, or `None` when some part of it has no GPU
+/// equivalent.
+pub fn body(program: &Program) -> Option<Shader> {
+    let mut constants = Vec::new();
     let mut stack: Vec<String> = Vec::new();
     let mut lines = String::new();
     let mut next = 0usize;
@@ -38,6 +54,10 @@ pub fn body(program: &Program) -> Option<String> {
                 // The largest finite float behaves like infinity in every
                 // comparison a relation makes.
                 if v > 0.0 { "3.4e38" } else { "-3.4e38" }.into()
+            } else if constants.len() < MAX_CONSTANTS {
+                let i = constants.len();
+                constants.push(v as f32);
+                format!("u.k[{}][{}]", i / 4, i % 4)
             } else {
                 float(v)
             }),
@@ -88,7 +108,10 @@ pub fn body(program: &Program) -> Option<String> {
         return None;
     }
     lines.push_str(&format!("    return {result};\n"));
-    Some(lines)
+    Some(Shader {
+        body: lines,
+        constants,
+    })
 }
 
 fn float(v: f64) -> String {
@@ -178,7 +201,24 @@ mod tests {
             ..Default::default()
         }];
         let region = analyze(&rows)[0].region()?.clone();
-        body(&region.program)
+        body(&region.program).map(|s| s.body)
+    }
+
+    fn shader(latex: &str) -> Shader {
+        let rows = [RowInput {
+            id: 0,
+            latex: latex.to_string(),
+            ..Default::default()
+        }];
+        body(&analyze(&rows)[0].region().unwrap().program).unwrap()
+    }
+
+    #[test]
+    fn numbers_are_uniforms_so_a_slider_keeps_the_shader() {
+        let (a, b) = (shader("x^2+y^2<2.5"), shader("x^2+y^2<7.25"));
+        assert_eq!(a.body, b.body);
+        assert!(a.constants.contains(&2.5) && b.constants.contains(&7.25));
+        assert!(!a.body.contains("2.5"), "{}", a.body);
     }
 
     #[test]
