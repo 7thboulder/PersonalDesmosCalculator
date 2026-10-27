@@ -947,13 +947,8 @@ fn three_d_surfaces() {
         vec![[1.0, 2.0, 0.0]],
         "a flat point sits on z = 0"
     );
-    for i in [8, 10] {
-        assert!(
-            r[i].error.is_some() && !r[i].graphed(),
-            "row {i}: {:?}",
-            r[i]
-        );
-    }
+    assert_eq!(r[8].implicits3.len(), 1, "y = x² is a wall in 3D");
+    assert!(r[10].error.is_some() && !r[10].graphed(), "{:?}", r[10]);
     // In 2D the same z = … defines a variable.
     assert_eq!(rows(&["z=3"])[0].kind, RowKind::Variable("z".into()));
 }
@@ -990,4 +985,48 @@ fn three_d_points_and_curves() {
     for row in &flat {
         assert!(row.error.is_some() && !row.graphed(), "{row:?}");
     }
+}
+
+#[test]
+fn three_d_equations_and_uv_surfaces() {
+    let r = rows_3d(&[
+        "x^2+y^2+z^2=25",
+        "y=x^2",
+        "\\rho=5",
+        "r=3",
+        "\\phi=1",
+        "\\left(u,v,uv\\right)",
+        "x^2+y^2+z^2<25",
+    ]);
+    let at = |i: usize, p: [f64; 3]| r[i].implicits3[0].program.eval3(p[0], p[1], p[2]);
+    assert!(close(at(0, [3.0, 4.0, 0.0]), 0.0));
+    assert!(close(at(0, [0.0, 0.0, 0.0]), -25.0));
+    assert!(
+        close(at(1, [2.0, 4.0, 7.0]), 0.0),
+        "a wall straight up through y = x²"
+    );
+    assert!(
+        close(at(2, [0.0, 3.0, 4.0]), 0.0),
+        "ρ is the distance from the origin"
+    );
+    assert!(
+        close(at(3, [3.0, 0.0, 9.0]), 0.0),
+        "r is the distance from the z axis"
+    );
+    assert!(
+        close(at(4, [1f64.sin(), 0.0, 1f64.cos()]), 0.0),
+        "φ is measured from +z"
+    );
+    let s = &r[5].param_surfaces[0];
+    assert!(close(s.z.eval2(0.5, 0.25), 0.125));
+    assert_eq!((s.u, s.v), ((0.0, 1.0), (0.0, 1.0)));
+    assert!(r[6].error.is_some() && !r[6].graphed(), "no 3D shading yet");
+    // A row that defines u fixes it, and the surface is traced by v alone.
+    let r = rows_3d(&["u=2", "\\left(u,v,1\\right)"]);
+    assert_eq!(r[0].slider, Some(2.0));
+    let s = &r[1].param_surfaces[0];
+    assert!(close(s.x.eval2(0.3, 0.6), 2.0));
+    assert!(close(s.y.eval2(0.3, 0.6), 0.6));
+    // In 2D, ρ and φ stay ordinary names.
+    assert_eq!(rows(&["\\rho=5"])[0].kind, RowKind::Variable("rho".into()));
 }

@@ -329,6 +329,235 @@ pub fn surface_mesh(
     mesh
 }
 
+/// Samples along each side of the box for an equation in space.
+pub const IMPLICIT_SAMPLES: usize = 72;
+/// Samples along u and along v for a parametric surface.
+pub const PARAMETRIC_SAMPLES: usize = 120;
+
+/// Fills `values` (laid out `[k][j][i]`, `side` to a side) with `f` at each
+/// grid point, one slab of k per thread.
+fn sample_grid(values: &mut [f64], side: usize, f: &(dyn Fn(usize, usize, usize) -> f64 + Sync)) {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let slabs_each = side.div_ceil(threads.clamp(1, 16));
+    std::thread::scope(|scope| {
+        for (chunk, slab) in values.chunks_mut(slabs_each * side * side).enumerate() {
+            scope.spawn(move || {
+                for (n, v) in slab.iter_mut().enumerate() {
+                    let k = chunk * slabs_each + n / (side * side);
+                    let (j, i) = ((n / side) % side, n % side);
+                    *v = f(i, j, k);
+                }
+            });
+        }
+    });
+}
+
+/// The surface where `f(x, y, z) = 0` inside the box, found by marching
+/// tetrahedra over a grid of `n` cells a side. Points where f is undefined
+/// break the surface there.
+pub fn implicit_mesh(
+    view: &View3,
+    f: &(dyn Fn(f64, f64, f64) -> f64 + Sync),
+    color: [f32; 4],
+    n: usize,
+) -> Mesh {
+    let n = n.max(2);
+    let side = n + 1;
+    let step = 2.0 / n as f64;
+    let coord = |i: usize| -1.0 + i as f64 * step;
+    let mut values = vec![f64::NAN; side * side * side];
+    sample_grid(&mut values, side, &|i, j, k| {
+        let x = view.center[0] + coord(i) * view.half[0];
+        let y = view.center[1] + coord(j) * view.half[1];
+        let z = view.center[2] + coord(k) * view.half[2];
+        f(x, y, z)
+    });
+    let at = |i: usize, j: usize, k: usize| values[(k * side + j) * side + i];
+    // The field's gradient at a grid point, in box units, from its
+    // neighbours.
+    let gradient = |p: [usize; 3]| -> [f64; 3] {
+        [0, 1, 2].map(|axis| {
+            let mut lo = p;
+            let mut hi = p;
+            if lo[axis] > 0 {
+                lo[axis] -= 1;
+            }
+            if hi[axis] + 1 < side {
+                hi[axis] += 1;
+            }
+            let span = (hi[axis] - lo[axis]) as f64 * step;
+            (at(hi[0], hi[1], hi[2]) - at(lo[0], lo[1], lo[2])) / span
+        })
+    };
+    const CORNERS: [[usize; 3]; 8] = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [0, 1, 1],
+        [1, 1, 1],
+    ];
+    // Six tetrahedra around the cube's diagonal from corner 0 to corner 7.
+    const TETS: [[usize; 4]; 6] = [
+        [0, 1, 3, 7],
+        [0, 3, 2, 7],
+        [0, 2, 6, 7],
+        [0, 6, 4, 7],
+        [0, 4, 5, 7],
+        [0, 5, 1, 7],
+    ];
+    let mut mesh = Mesh::default();
+    for k in 0..n {
+        for j in 0..n {
+            for i in 0..n {
+                let grid = CORNERS.map(|c| [i + c[0], j + c[1], k + c[2]]);
+                let v = grid.map(|g| at(g[0], g[1], g[2]));
+                if v.iter().any(|x| !x.is_finite()) {
+                    continue;
+                }
+                if v.iter().all(|&x| x < 0.0) || v.iter().all(|&x| x >= 0.0) {
+                    continue;
+                }
+                for tet in TETS {
+                    let inside: Vec<usize> = tet.iter().copied().filter(|&c| v[c] < 0.0).collect();
+                    let outside: Vec<usize> =
+                        tet.iter().copied().filter(|&c| v[c] >= 0.0).collect();
+                    // Where the field crosses zero along the edge a-b.
+                    let mut cross = |a: usize, b: usize| -> u32 {
+                        let t = v[a] / (v[a] - v[b]);
+                        let (ga, gb) = (grid[a], grid[b]);
+                        let pos = [0, 1, 2]
+                            .map(|d| (coord(ga[d]) + (coord(gb[d]) - coord(ga[d])) * t) as f32);
+                        let (na, nb) = (gradient(ga), gradient(gb));
+                        let mut normal = [0, 1, 2].map(|d| na[d] + (nb[d] - na[d]) * t);
+                        let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+                        if len.is_finite() && len > 0.0 {
+                            normal = normal.map(|c| c / len);
+                        } else {
+                            normal = [0.0, 0.0, 1.0];
+                        }
+                        mesh.vertices.push(Vertex3 {
+                            pos,
+                            normal: normal.map(|c| c as f32),
+                            color,
+                        });
+                        mesh.vertices.len() as u32 - 1
+                    };
+                    match (inside.as_slice(), outside.as_slice()) {
+                        ([a], [b, c, d]) | ([b, c, d], [a]) => {
+                            let t = [cross(*a, *b), cross(*a, *c), cross(*a, *d)];
+                            mesh.indices.extend(t);
+                        }
+                        ([a, b], [c, d]) => {
+                            let q = [cross(*a, *c), cross(*a, *d), cross(*b, *d), cross(*b, *c)];
+                            mesh.indices.extend([q[0], q[1], q[2], q[0], q[2], q[3]]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    mesh
+}
+
+/// The surface traced by `f(u, v)` for u and v over their domains, as a
+/// grid of `n` by `n` cells. Cells where f is undefined are left out.
+pub fn parametric_mesh(
+    view: &View3,
+    f: &(dyn Fn(f64, f64) -> [f64; 3] + Sync),
+    u: (f64, f64),
+    v: (f64, f64),
+    color: [f32; 4],
+    n: usize,
+) -> Mesh {
+    let n = n.max(2);
+    let side = n + 1;
+    let mut points = vec![[f64::NAN; 3]; side * side];
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let rows_each = side.div_ceil(threads.clamp(1, 16));
+    std::thread::scope(|scope| {
+        for (chunk, rows) in points.chunks_mut(rows_each * side).enumerate() {
+            scope.spawn(move || {
+                for (m, p) in rows.iter_mut().enumerate() {
+                    let (j, i) = (chunk * rows_each + m / side, m % side);
+                    let uu = u.0 + (u.1 - u.0) * i as f64 / n as f64;
+                    let vv = v.0 + (v.1 - v.0) * j as f64 / n as f64;
+                    let b = view.to_box(f(uu, vv));
+                    *p = if b.iter().all(|c| c.is_finite()) {
+                        b.map(|c| c.clamp(-HEIGHT_LIMIT, HEIGHT_LIMIT))
+                    } else {
+                        [f64::NAN; 3]
+                    };
+                }
+            });
+        }
+    });
+    let at = |i: usize, j: usize| points[j * side + i];
+    let ok = |p: [f64; 3]| p[0].is_finite();
+    // The change across a grid point along u (or v), from whichever
+    // neighbours are defined.
+    let along = |i: usize, j: usize, di: usize, dj: usize| -> Option<[f64; 3]> {
+        let before = (i >= di && j >= dj)
+            .then(|| at(i - di, j - dj))
+            .filter(|p| ok(*p));
+        let after = (i + di < side && j + dj < side)
+            .then(|| at(i + di, j + dj))
+            .filter(|p| ok(*p));
+        let (a, b) = match (before, after) {
+            (Some(a), Some(b)) => (a, b),
+            (Some(a), None) => (a, at(i, j)),
+            (None, Some(b)) => (at(i, j), b),
+            (None, None) => return None,
+        };
+        Some([b[0] - a[0], b[1] - a[1], b[2] - a[2]])
+    };
+    let mut mesh = Mesh::default();
+    let mut index = vec![u32::MAX; side * side];
+    for j in 0..side {
+        for i in 0..side {
+            let p = at(i, j);
+            if !ok(p) {
+                continue;
+            }
+            let normal = match (along(i, j, 1, 0), along(i, j, 0, 1)) {
+                (Some(du), Some(dv)) => {
+                    let c = cross(du, dv);
+                    let len = dot(c, c).sqrt();
+                    if len > 1e-12 {
+                        c.map(|x| x / len)
+                    } else {
+                        [0.0, 0.0, 1.0]
+                    }
+                }
+                _ => [0.0, 0.0, 1.0],
+            };
+            index[j * side + i] = mesh.vertices.len() as u32;
+            mesh.vertices.push(Vertex3 {
+                pos: p.map(|c| c as f32),
+                normal: normal.map(|c| c as f32),
+                color,
+            });
+        }
+    }
+    for j in 0..n {
+        for i in 0..n {
+            let a = index[j * side + i];
+            let b = index[j * side + i + 1];
+            let c = index[(j + 1) * side + i];
+            let d = index[(j + 1) * side + i + 1];
+            for t in [[a, b, c], [b, d, c]] {
+                if t.iter().all(|&x| x != u32::MAX) {
+                    mesh.indices.extend(t);
+                }
+            }
+        }
+    }
+    mesh
+}
+
 /// One corner of a line segment's quad. The GPU projects both ends and
 /// pushes this corner out sideways by half the width, so lines keep their
 /// width in pixels however the box is turned.
@@ -679,6 +908,42 @@ mod tests {
             .map(|c| c.a[2].max(c.b[2]))
             .fold(f32::MIN, f32::max);
         assert!(tops <= HEIGHT_LIMIT as f32 && !out.is_empty());
+    }
+
+    #[test]
+    fn implicit_sphere_lies_on_its_radius() {
+        let v = View3::new(600.0, 600.0);
+        let sphere = |x: f64, y: f64, z: f64| x * x + y * y + z * z - 25.0;
+        let mesh = implicit_mesh(&v, &sphere, [1.0; 4], 24);
+        assert!(mesh.indices.len() > 300, "{} indices", mesh.indices.len());
+        for p in &mesh.vertices {
+            // Back to graph units: the box is ±10 on every axis.
+            let r = p.pos.iter().map(|c| (c * 10.0).powi(2)).sum::<f32>().sqrt();
+            assert!((r - 5.0).abs() < 0.2, "a vertex at radius {r}");
+            // The normal points along the radius, one way or the other.
+            let along = p
+                .pos
+                .iter()
+                .zip(p.normal)
+                .map(|(c, n)| c * 10.0 / r * n)
+                .sum::<f32>();
+            assert!(along.abs() > 0.95, "normal {:?} at {:?}", p.normal, p.pos);
+        }
+    }
+
+    #[test]
+    fn parametric_cylinder_wraps_around() {
+        let v = View3::new(600.0, 600.0);
+        let tau = std::f64::consts::TAU;
+        let f = |u: f64, w: f64| [5.0 * (tau * u).cos(), 5.0 * (tau * u).sin(), 10.0 * w - 5.0];
+        let mesh = parametric_mesh(&v, &f, (0.0, 1.0), (0.0, 1.0), [1.0; 4], 12);
+        assert_eq!(mesh.vertices.len(), 13 * 13);
+        assert_eq!(mesh.indices.len(), 12 * 12 * 6);
+        for p in &mesh.vertices {
+            let r = (p.pos[0].powi(2) + p.pos[1].powi(2)).sqrt();
+            assert!((r - 0.5).abs() < 1e-5);
+            assert!(p.normal[2].abs() < 1e-3, "normals point out from the axis");
+        }
     }
 
     #[test]
