@@ -33,7 +33,7 @@ const DIGIT_HEIGHT: f32 = 0.716;
 const MINUS: char = '\u{2212}';
 
 /// Logical-pixel distance aimed for between major grid lines.
-const MAJOR_SPACING_LOGICAL: f64 = 100.0;
+pub const MAJOR_SPACING_LOGICAL: f64 = 100.0;
 /// Desmos's default line thickness, in logical pixels.
 pub const DEFAULT_CURVE_WIDTH: f32 = 2.5;
 /// Desmos's default point size: the diameter in logical pixels.
@@ -165,12 +165,14 @@ pub struct Plot<'a> {
     pub marks: &'a [Mark],
 }
 
-/// One frame's triangles, in two parts: the renderer draws `vertices` up to
-/// `shade_after` (paper, grid and axes), then any inequality shading, then
+/// One frame's triangles, in parts: the renderer draws `vertices` up to
+/// `grid_after` (paper and grid), then any complex function's coloring,
+/// then up to `shade_after` (the axes), then any inequality shading, then
 /// the rest (axis numbers and curves), so shading sits over the grid and
 /// under everything that has to stay readable.
 pub struct Scene {
     pub vertices: Vec<Vertex>,
+    pub grid_after: usize,
     pub shade_after: usize,
 }
 
@@ -434,6 +436,7 @@ pub fn build_scene_cached(
         }
     }
 
+    let grid_after = out.len();
     let axis_w = (1.5 * scale).round().max(1.0);
     let [ox, oy] = vp.to_screen(0.0, 0.0);
     let (ox, oy) = (snap(ox as f32, axis_w), snap(oy as f32, axis_w));
@@ -497,6 +500,7 @@ pub fn build_scene_cached(
     }
     Scene {
         vertices: out,
+        grid_after,
         shade_after,
     }
 }
