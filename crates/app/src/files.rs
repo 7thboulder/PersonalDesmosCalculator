@@ -315,6 +315,9 @@ fn from_desmos(state: &Value) -> (Value, Option<View>) {
                     .collect();
                 rows.push(json!({"latex": "", "table": columns}));
             }
+            Some("text") => {
+                rows.push(json!({"latex": "", "note": e["text"].as_str().unwrap_or("")}));
+            }
             _ => {}
         }
     }
@@ -547,7 +550,8 @@ mod tests {
             })
         );
         let rows = rows.as_array().unwrap();
-        assert_eq!(rows.len(), 4, "the folder and the note are left out");
+        assert_eq!(rows.len(), 5, "the folder is left out");
+        assert_eq!(rows[3], json!({"latex": "", "note": "a note"}));
         assert_eq!(rows[0]["ticker"]["step"], "50");
         assert_eq!(rows[0]["latex"], "a\\to a+1");
         assert_eq!(
@@ -558,8 +562,8 @@ mod tests {
         assert_eq!(rows[2]["style"], "dashed");
         assert_eq!(rows[2]["width"], 5.0);
         assert_eq!(rows[2]["domain"], json!(["-1", "\\pi"]));
-        assert_eq!(rows[3]["table"][1]["cells"], json!(["3", ""]));
-        assert_eq!(rows[3]["table"][1]["connect"], true);
+        assert_eq!(rows[4]["table"][1]["cells"], json!(["3", ""]));
+        assert_eq!(rows[4]["table"][1]["connect"], true);
 
         // The app's own files open as before.
         let own = r#"{"format":"graphcalc","version":1,"rows":[]}"#;

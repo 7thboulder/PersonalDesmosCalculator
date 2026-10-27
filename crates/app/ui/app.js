@@ -92,6 +92,7 @@
   function sendRows() {
     if (loading) return;
     var sent = rows.map(function (r) {
+        if (r.kind === 'note') return { id: r.id, latex: '', note: r.text.value };
         if (r.kind === 'table') {
           return {
             id: r.id, latex: '',
@@ -219,6 +220,12 @@
     if (!row) return;
     if (row.kind === 'table') {
       tableFocus(row, 0, fromBelow ? row.nrows - 1 : -1);
+      return;
+    }
+    if (row.kind === 'note') {
+      row.text.focus();
+      var end = atEnd === false ? 0 : row.text.value.length;
+      row.text.setSelectionRange(end, end);
       return;
     }
     row.field.focus();
@@ -720,6 +727,13 @@
     row.domainMin = MQ.MathField(el.querySelector('.dmin'), domainOptions());
     row.domainMax = MQ.MathField(el.querySelector('.dmax'), domainOptions());
     if (latex) row.field.latex(latex);
+    el.querySelector('.math').addEventListener('keydown', function (e) {
+      if (e.key === '"' && row.field.latex() === '') {
+        e.preventDefault();
+        e.stopPropagation();
+        replaceWithNote(row);
+      }
+    }, true);
 
     el.addEventListener('focusin', function (e) {
       if (!e.target.closest('.limits')) setActive(row);
@@ -767,6 +781,62 @@
     paintRow(row);
     renumber();
     return row;
+  }
+
+  // ---- Notes ---------------------------------------------------------------
+
+  // A note: a row of plain text between expressions, as in Desmos. The engine
+  // gets it as an empty row, so it draws nothing and has no result.
+  function addNote(at, text) {
+    var el = document.createElement('div');
+    el.className = 'row note-row';
+    el.innerHTML =
+      '<div class="tab"><span class="index"></span></div>' +
+      '<div class="body"><textarea class="note-text" rows="1" spellcheck="true"></textarea></div>' +
+      '<button class="remove" title="Delete">&#x2715;</button>';
+    var note = {
+      kind: 'note',
+      id: nextId++,
+      el: el,
+      indexEl: el.querySelector('.index'),
+      text: el.querySelector('.note-text')
+    };
+    var area = note.text;
+    area.value = text || '';
+    var fit = function () {
+      area.style.height = 'auto';
+      area.style.height = area.scrollHeight + 'px';
+    };
+    var target = rows[at];
+    if (target) list.insertBefore(el, target.el); else list.appendChild(el);
+    rows.splice(at, 0, note);
+    fit();
+    area.addEventListener('input', function () { fit(); sendRows(); });
+    area.addEventListener('keydown', function (e) {
+      var i = indexOf(note);
+      var start = area.selectionStart, end = area.selectionEnd;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        // Enter starts a new expression below; Shift+Enter breaks the line.
+        e.preventDefault();
+        addRow('', i + 1).field.focus();
+        sendRows();
+      } else if (e.key === 'ArrowUp' && start === end &&
+          area.value.lastIndexOf('\n', start - 1) < 0) {
+        e.preventDefault();
+        focusRow(i - 1, true, true);
+      } else if (e.key === 'ArrowDown' && start === end &&
+          area.value.indexOf('\n', start) < 0) {
+        e.preventDefault();
+        leaveDown(note);
+      } else if (e.key === 'Backspace' && area.value === '' && rows.length > 1) {
+        e.preventDefault();
+        removeRow(note);
+      }
+    });
+    el.addEventListener('focusin', function () { setActive(note); });
+    el.querySelector('.remove').addEventListener('click', function () { removeRow(note); });
+    renumber();
+    return note;
   }
 
   // ---- Tables --------------------------------------------------------------
@@ -1023,7 +1093,7 @@
     loading = true;
     updates.forEach(function (u) {
       var row = rows.filter(function (r) { return r.id === u.row; })[0];
-      if (!row || row.kind === 'table') return;
+      if (!row || row.kind) return;
       var latex = row.field.latex();
       var eq = latex.indexOf('=');
       if (eq < 0) return;
@@ -1433,6 +1503,17 @@
     return rows.filter(function (r) { return r.el === el; })[0] || rows[activeIndex()] || null;
   }
 
+  // Typing " into an empty expression makes it a note, as in Desmos.
+  function replaceWithNote(row) {
+    var i = indexOf(row);
+    row.el.parentNode.removeChild(row.el);
+    rows.splice(i, 1);
+    var note = addNote(i, '');
+    renumber();
+    note.text.focus();
+    sendRows();
+  }
+
   function replaceWithTable(row) {
     var i = indexOf(row);
     row.el.parentNode.removeChild(row.el);
@@ -1467,6 +1548,9 @@
       tableFocus(addTable(at), 0, 0);
       renumber();
       sendRows();
+    } else if (ctrl && e.altKey && k === 'o') {
+      addNote(at, '').text.focus();
+      sendRows();
     } else if (ctrl && e.altKey && k === 'e') {
       focusRow(Math.max(0, activeIndex()));
     } else if (ctrl && e.altKey && k === 'k') {
@@ -1499,6 +1583,9 @@
     var at = activeIndex() + 1 || rows.length;
     if (b.dataset.add === 'ticker') {
       addTicker('', '0').field.focus();
+      sendRows();
+    } else if (b.dataset.add === 'note') {
+      addNote(at, '').text.focus();
       sendRows();
     } else if (b.dataset.add === 'table') {
       var t = addTable(at);
@@ -1566,6 +1653,10 @@
       addTicker(s.latex || '', s.ticker.step || '0');
     });
     (saved || []).filter(function (s) { return !s.ticker; }).forEach(function (s, i) {
+      if (typeof s.note === 'string') {
+        addNote(i, s.note);
+        return;
+      }
       if (s.table) {
         var t = addTable(i, s.table.map(function (c) { return { header: c.header, cells: c.cells }; }));
         t.columns.forEach(function (c, ci) {
@@ -1615,7 +1706,7 @@
       if (ticker) showTickerResult(byId[ticker.id]);
       rows.forEach(function (row) {
         var r = byId[row.id];
-        if (!r) return;
+        if (!r || row.kind === 'note') return;
         if (row.kind === 'table') showTableResult(row, r); else showResult(row, r);
       });
     },
@@ -1632,7 +1723,7 @@
     setSliders: function (pairs) {
       pairs.forEach(function (p) {
         var row = rows.filter(function (r) { return r.id === p[0]; })[0];
-        if (!row || row.kind === 'table') return;
+        if (!row || row.kind) return;
         row.playPos = null;
         setSlider(row, p[1], true);
       });

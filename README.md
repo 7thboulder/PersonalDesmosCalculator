@@ -28,6 +28,9 @@ on the right. What you type is graphed as you type it:
   (type `sum` or `prod`, as in Desmos), and integrals such as
   `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Derivatives are
   exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
+- Notes (+ then **note**, Ctrl+Alt+O, or typing `"` in an empty row): a row
+  of plain text between expressions. Shift+Enter breaks the line; Enter
+  starts a new expression below.
 - Tables (+ then **table**): each column after the first is plotted against
   it, a column named `y_1` defines that list for other rows, and a column
   headed by a formula such as `x_1^2` fills itself in. Enter moves down,
@@ -71,8 +74,8 @@ on the right. What you type is graphed as you type it:
   it. Pasting the text `JSON.stringify(Calc.getState())` gives in Desmos's
   browser console works too, as does opening it saved as a `.json` or `.txt`
   file with Ctrl+O.
-  Expressions, tables, sliders, styles, the ticker and the view come across;
-  folders, notes and images are left out. Save writes a new `.gcalc` file.
+  Expressions, tables, notes, sliders, styles, the ticker and the view come
+  across; folders and images are left out. Save writes a new `.gcalc` file.
 - Variables (`a = 2`) and functions (`f(x) = x^2`, `g(a, b) = a - b`), defined
   in any order across rows.
 - Undefined names offer **add slider** buttons. Slider rows get a slider with
