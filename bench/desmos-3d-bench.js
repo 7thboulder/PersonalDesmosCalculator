@@ -12,11 +12,11 @@
 (async () => {
   const FRAMES = 60;
   const GRAPHS = {
-    surface: {"expressions":{"list":[{"color":"#c74440","id":"a","latex":"a=1","slider":{"hardMax":true,"hardMin":true,"max":"3","min":"0"},"type":"expression"},{"color":"#2d70b3","id":"2","latex":"z=a\\sin x\\cos y","type":"expression"},{"color":"#388c46","id":"3","latex":"z=\\frac{x^2-y^2}{10}-a","type":"expression"}]},"graph":{"threeDMode":true,"viewport":{"xmax":10,"xmin":-10,"ymax":10,"ymin":-10,"zmax":10,"zmin":-10}},"randomSeed":"0","version":11},
-    implicit: {"expressions":{"list":[{"color":"#c74440","id":"a","latex":"a=1","slider":{"hardMax":true,"hardMin":true,"max":"3","min":"0"},"type":"expression"},{"color":"#2d70b3","id":"2","latex":"\\sin x\\cos y+\\sin y\\cos z+\\sin z\\cos x=a-1.5","type":"expression"}]},"graph":{"threeDMode":true,"viewport":{"xmax":10,"xmin":-10,"ymax":10,"ymin":-10,"zmax":10,"zmin":-10}},"randomSeed":"0","version":11},
-    uvsurface: {"expressions":{"list":[{"color":"#c74440","id":"a","latex":"a=1","slider":{"hardMax":true,"hardMin":true,"max":"3","min":"0"},"type":"expression"},{"color":"#2d70b3","id":"2","latex":"\\left(\\left(6+a\\cos\\left(2\\pi v\\right)\\right)\\cos\\left(2\\pi u\\right),\\left(6+a\\cos\\left(2\\pi v\\right)\\right)\\sin\\left(2\\pi u\\right),a\\sin\\left(2\\pi v\\right)\\right)","type":"expression"}]},"graph":{"threeDMode":true,"viewport":{"xmax":10,"xmin":-10,"ymax":10,"ymin":-10,"zmax":10,"zmin":-10}},"randomSeed":"0","version":11},
-    solids: {"expressions":{"list":[{"color":"#c74440","id":"a","latex":"a=1","slider":{"hardMax":true,"hardMin":true,"max":"3","min":"0"},"type":"expression"},{"color":"#2d70b3","id":"2","latex":"x^2+y^2+z^2<25+5a","type":"expression"},{"color":"#388c46","id":"3","latex":"z<a\\sin x-6","type":"expression"}]},"graph":{"threeDMode":true,"viewport":{"xmax":10,"xmin":-10,"ymax":10,"ymin":-10,"zmax":10,"zmin":-10}},"randomSeed":"0","version":11},
-    curves3d: {"expressions":{"list":[{"color":"#c74440","id":"a","latex":"a=1","slider":{"hardMax":true,"hardMin":true,"max":"3","min":"0"},"type":"expression"},{"color":"#2d70b3","id":"2","latex":"L=\\left[1...30\\right]","type":"expression"},{"color":"#388c46","id":"3","latex":"\\left(\\frac{L}{3}\\cos\\left(6t+aL\\right),\\frac{L}{3}\\sin\\left(6t+aL\\right),10t-5\\right)","type":"expression"},{"color":"#6042a6","id":"4","latex":"\\left(\\frac{L}{3}\\cos\\left(aL\\right),\\frac{L}{3}\\sin\\left(aL\\right),\\frac{L}{3}-5\\right)","type":"expression"}]},"graph":{"threeDMode":true,"viewport":{"xmax":10,"xmin":-10,"ymax":10,"ymin":-10,"zmax":10,"zmin":-10}},"randomSeed":"0","version":11},
+    surface: [{"color":"#c74440","id":"a","latex":"a=1","sliderBounds":{"max":"3","min":"0","step":""}},{"color":"#2d70b3","id":"2","latex":"z=a\\sin x\\cos y"},{"color":"#388c46","id":"3","latex":"z=\\frac{x^2-y^2}{10}-a"}],
+    implicit: [{"color":"#c74440","id":"a","latex":"a=1","sliderBounds":{"max":"3","min":"0","step":""}},{"color":"#2d70b3","id":"2","latex":"\\sin x\\cos y+\\sin y\\cos z+\\sin z\\cos x=a-1.5"}],
+    uvsurface: [{"color":"#c74440","id":"a","latex":"a=1","sliderBounds":{"max":"3","min":"0","step":""}},{"color":"#2d70b3","id":"2","latex":"\\left(\\left(6+a\\cos\\left(2\\pi v\\right)\\right)\\cos\\left(2\\pi u\\right),\\left(6+a\\cos\\left(2\\pi v\\right)\\right)\\sin\\left(2\\pi u\\right),a\\sin\\left(2\\pi v\\right)\\right)"}],
+    solids: [{"color":"#c74440","id":"a","latex":"a=1","sliderBounds":{"max":"3","min":"0","step":""}},{"color":"#2d70b3","id":"2","latex":"x^2+y^2+z^2<25+5a"},{"color":"#388c46","id":"3","latex":"z<a\\sin x-6"}],
+    curves3d: [{"color":"#c74440","id":"a","latex":"a=1","sliderBounds":{"max":"3","min":"0","step":""}},{"color":"#2d70b3","id":"2","latex":"L=\\left[1...30\\right]"},{"color":"#388c46","id":"3","latex":"\\left(\\frac{L}{3}\\cos\\left(6t+aL\\right),\\frac{L}{3}\\sin\\left(6t+aL\\right),10t-5\\right)"},{"color":"#6042a6","id":"4","latex":"\\left(\\frac{L}{3}\\cos\\left(aL\\right),\\frac{L}{3}\\sin\\left(aL\\right),\\frac{L}{3}-5\\right)"}],
   };
   const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
   const shot = () => Calc.screenshot({ width: 320, height: 240, targetPixelRatio: 1 });
@@ -40,7 +40,8 @@
   let picture = shot();
   for (const [graph, state] of Object.entries(GRAPHS)) {
     let t = performance.now();
-    Calc.setState(state);
+    Calc.setBlank();
+    for (const e of state) Calc.setExpression(e);
     picture = await settle(picture);
     const open = performance.now() - t;
     // Watching an unchanged graph: three frames with a screenshot each.

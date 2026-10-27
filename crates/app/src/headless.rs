@@ -918,8 +918,23 @@ pub fn desmos_script_3d() -> String {
     let graphs: Vec<String> = SUITE_3D
         .iter()
         .map(|(name, state)| {
-            let compact: serde_json::Value = serde_json::from_str(state).expect("suite JSON");
-            format!("    {name}: {compact},")
+            // Just the expressions: Desmos 3D refuses states it didn't write.
+            let state: serde_json::Value = serde_json::from_str(state).expect("suite JSON");
+            let rows: Vec<serde_json::Value> = state["expressions"]["list"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| {
+                    let mut row = json!({"id": e["id"], "latex": e["latex"], "color": e["color"]});
+                    if let (Some(lo), Some(hi)) =
+                        (e["slider"]["min"].as_str(), e["slider"]["max"].as_str())
+                    {
+                        row["sliderBounds"] = json!({"min": lo, "max": hi, "step": ""});
+                    }
+                    row
+                })
+                .collect();
+            format!("    {name}: {},", serde_json::Value::Array(rows))
         })
         .collect();
     format!(
@@ -961,7 +976,8 @@ pub fn desmos_script_3d() -> String {
   let picture = shot();
   for (const [graph, state] of Object.entries(GRAPHS)) {{
     let t = performance.now();
-    Calc.setState(state);
+    Calc.setBlank();
+    for (const e of state) Calc.setExpression(e);
     picture = await settle(picture);
     const open = performance.now() - t;
     // Watching an unchanged graph: three frames with a screenshot each.
