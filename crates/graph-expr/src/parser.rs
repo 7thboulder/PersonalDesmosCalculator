@@ -95,6 +95,12 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Statement, String> {
+        if self.ode_start() {
+            if self.peek().is_none() {
+                return Err("Incomplete expression".into());
+            }
+            return Ok(Statement::Ode(self.expr()?));
+        }
         let mut condition = self.comparison()?;
         match condition.relations.len() {
             0 if self.eat(&Tok::Tilde) => {
@@ -114,6 +120,34 @@ impl Parser {
                 Ok(Statement::Chain(condition))
             }
         }
+    }
+
+    /// Eats `y' =` or `\frac{dy}{dx} =`, which start a differential
+    /// equation, and says whether it did.
+    fn ode_start(&mut self) -> bool {
+        let letter = |l: &str| Tok::Letter(l.into());
+        let starts = [
+            vec![letter("y"), Tok::Prime, Tok::Eq],
+            vec![
+                Tok::Frac,
+                Tok::LBrace,
+                letter("d"),
+                letter("y"),
+                Tok::RBrace,
+                Tok::LBrace,
+                letter("d"),
+                letter("x"),
+                Tok::RBrace,
+                Tok::Eq,
+            ],
+        ];
+        for start in starts {
+            if self.toks.get(self.pos..self.pos + start.len()) == Some(&start[..]) {
+                self.pos += start.len();
+                return true;
+            }
+        }
+        false
     }
 
     fn relation(&self) -> Option<Relation> {
@@ -822,6 +856,20 @@ mod tests {
             e("f\\left(x+1\\right)"),
             Expr::Apply("f".into(), vec![Expr::bin(Expr::Add, v("x"), n(1.0))])
         );
+    }
+
+    #[test]
+    fn differential_equations() {
+        let ode = |src: &str| match parse(src).unwrap() {
+            Statement::Ode(e) => e,
+            other => panic!("not a differential equation: {other:?}"),
+        };
+        let x_minus_y = Expr::bin(Expr::Sub, v("x"), v("y"));
+        assert_eq!(ode("y'=x-y"), x_minus_y);
+        assert_eq!(ode("\\frac{dy}{dx}=x-y"), x_minus_y);
+        assert_eq!(parse("y'="), Err("Incomplete expression".into()));
+        // f'(x) is still a derivative.
+        assert!(matches!(parse("f'(x)=2"), Ok(Statement::Relation(..))));
     }
 
     #[test]

@@ -5,12 +5,13 @@
 // Only the Windows window drives this outside tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use crate::engine::{Engine, GraphParametric};
+use crate::engine::{Engine, GraphParametric, GraphPoints};
 use graph_core::poi::PARAMETRIC_SAMPLES;
 use graph_core::{
     curve_pois, implicit_intersections, implicit_pois, intersections, parametric_intersections,
     parametric_pois, point_text, Axis, Mark, MarkKind, Poi, Viewport,
 };
+use graph_expr::format::value_latex;
 use graph_expr::{Compare, Program};
 
 /// How close, in logical pixels, the mouse has to be to grab something.
@@ -34,6 +35,8 @@ pub enum Effect {
     Deselect,
     /// Set slider rows to new values, as `(row, value)`.
     SetSliders(Vec<(u64, f64)>),
+    /// Rewrite a differential equation's initial points with this LaTeX.
+    SetSeeds(u64, String),
 }
 
 /// A curve the mouse can trace, by its place in the engine's lists.
@@ -58,6 +61,12 @@ enum Mode {
     /// Moving a point; the slider rows its x and y set.
     Drag {
         sliders: [Option<u64>; 2],
+    },
+    /// Moving a differential equation's initial point written as plain
+    /// numbers: its row and its place among the row's initial points.
+    MoveSeed {
+        row: u64,
+        index: usize,
     },
 }
 
@@ -96,6 +105,41 @@ impl Default for Interaction {
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Whether a press can pick up these points: one point made of sliders,
+/// or one of a differential equation's initial points.
+fn draggable(p: &GraphPoints) -> bool {
+    (p.drag.is_some() || p.seed.is_some()) && p.points.len() == 1
+}
+
+/// The world position under the mouse rounded to about a pixel's
+/// precision, as Desmos rounds dragged points.
+fn dragged_to(vp: &Viewport, at: [f64; 2]) -> [f64; 2] {
+    let places = ((-vp.units_per_px.log10()).ceil()).clamp(0.0, 12.0) as i32;
+    let k = 10f64.powi(places);
+    vp.to_world(at[0], at[1]).map(|v| (v * k).round() / k)
+}
+
+/// The LaTeX of a row's initial points with the one at `index` moved to
+/// `to`, as the panel writes them.
+fn seeds_latex(engine: &Engine, row: u64, index: usize, to: [f64; 2]) -> String {
+    let mut seeds: Vec<(usize, [f64; 2])> = engine
+        .points
+        .iter()
+        .filter(|p| p.row == row)
+        .filter_map(|p| Some((p.seed?, p.points[0])))
+        .collect();
+    seeds.sort_by_key(|s| s.0);
+    let point = |p: [f64; 2]| format!("\\left({},{}\\right)", value_latex(p[0]), value_latex(p[1]));
+    let all: Vec<String> = seeds
+        .iter()
+        .map(|&(i, p)| point(if i == index { to } else { p }))
+        .collect();
+    match &all[..] {
+        [one] => one.clone(),
+        _ => format!("\\left[{}\\right]", all.join(",")),
+    }
 }
 
 impl Interaction {
@@ -219,18 +263,22 @@ impl Interaction {
         let grabbed = engine
             .points
             .iter()
-            .filter(|p| p.drag.is_some() && p.points.len() == 1)
+            .filter(|p| draggable(p))
             .map(|p| (p, dist(vp.to_screen(p.points[0][0], p.points[0][1]), at)))
             .filter(|(_, d)| *d <= reach)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((p, _)) = grabbed {
-            let drag = p.drag.as_ref().expect("filtered");
+            self.trace = None;
+            let Some(drag) = p.drag.as_ref() else {
+                let index = p.seed.expect("draggable");
+                self.mode = Mode::MoveSeed { row: p.row, index };
+                return Effect::Select(p.row);
+            };
             let slider =
                 |n: &Option<String>| n.as_ref().and_then(|n| engine.sliders.get(n).copied());
             self.mode = Mode::Drag {
                 sliders: [slider(&drag[0]), slider(&drag[1])],
             };
-            self.trace = None;
             return Effect::Select(p.row);
         }
         if let Some(poi) = self.near_poi(engine, vp, at, GRAB_PX) {
@@ -274,18 +322,15 @@ impl Interaction {
                 self.trace = Some((p, target_style(engine, target).1));
                 Effect::Redraw
             }
+            Mode::MoveSeed { row, index } => {
+                Effect::SetSeeds(row, seeds_latex(engine, row, index, dragged_to(vp, at)))
+            }
             Mode::Drag { sliders } => {
-                let w = vp.to_world(at[0], at[1]);
-                // About a pixel's precision, as Desmos rounds dragged points.
-                let places = ((-vp.units_per_px.log10()).ceil()).clamp(0.0, 12.0) as i32;
-                let round = |v: f64| {
-                    let k = 10f64.powi(places);
-                    (v * k).round() / k
-                };
+                let w = dragged_to(vp, at);
                 let set: Vec<(u64, f64)> = sliders
                     .iter()
                     .zip(w)
-                    .filter_map(|(s, v)| s.map(|row| (row, round(v))))
+                    .filter_map(|(s, v)| s.map(|row| (row, v)))
                     .collect();
                 if set.is_empty() {
                     Effect::None
@@ -311,12 +356,10 @@ impl Interaction {
             return !matches!(self.mode, Mode::Pan);
         }
         let reach = DRAG_GRAB_PX * self.scale;
-        let draggable = engine.points.iter().any(|p| {
-            p.drag.is_some()
-                && p.points.len() == 1
-                && dist(vp.to_screen(p.points[0][0], p.points[0][1]), at) <= reach
+        let over_point = engine.points.iter().any(|p| {
+            draggable(p) && dist(vp.to_screen(p.points[0][0], p.points[0][1]), at) <= reach
         });
-        draggable
+        over_point
             || self.near_poi(engine, vp, at, GRAB_PX).is_some()
             || self.near_curve(engine, vp, at).is_some()
     }
@@ -627,6 +670,45 @@ mod tests {
         assert_eq!(
             ui.moved(&engine, &vp, to),
             Effect::SetSliders(vec![(1, 3.0), (2, -1.5)])
+        );
+    }
+
+    #[test]
+    fn dragging_an_initial_point_moves_its_solution() {
+        // Plain numbers are rewritten in place; the others stay put.
+        let (engine, vp) = setup(json!([
+            {"id": 1, "latex": "y'=x-y",
+             "seeds": "\\left[\\left(0,1\\right),\\left(2,-3\\right)\\right]"},
+        ]));
+        assert_eq!(engine.odes.len(), 1);
+        assert_eq!(engine.odes[0].seeds, vec![[0.0, 1.0], [2.0, -3.0]]);
+        let mut ui = Interaction::default();
+        let at = vp.to_screen(2.0, -3.0);
+        assert_eq!(ui.press(&engine, &vp, at), Effect::Select(1));
+        let to = vp.to_screen(-1.5, 2.004);
+        assert_eq!(
+            ui.moved(&engine, &vp, to),
+            Effect::SetSeeds(
+                1,
+                "\\left[\\left(0,1\\right),\\left(-1.5,2\\right)\\right]".into()
+            )
+        );
+        ui.release();
+
+        // A point made of sliders drags its sliders, as any point does.
+        let (engine, vp) = setup(json!([
+            {"id": 1, "latex": "a=1"},
+            {"id": 2, "latex": "b=2"},
+            {"id": 3, "latex": "y'=y", "seeds": "\\left(a,b\\right)"},
+        ]));
+        let mut ui = Interaction::default();
+        assert_eq!(
+            ui.press(&engine, &vp, vp.to_screen(1.0, 2.0)),
+            Effect::Select(3)
+        );
+        assert_eq!(
+            ui.moved(&engine, &vp, vp.to_screen(0.0, 0.5)),
+            Effect::SetSliders(vec![(1, 0.0), (2, 0.5)])
         );
     }
 }

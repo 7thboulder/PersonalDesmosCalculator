@@ -472,6 +472,10 @@ impl Running {
                     .collect();
                 self.run_script(&format!("window.engine.setSliders([{}])", pairs.join(",")));
             }
+            Effect::SetSeeds(row, latex) => {
+                let latex = serde_json::Value::String(latex).to_string();
+                self.run_script(&format!("window.engine.setSeeds({row},{latex})"));
+            }
         }
         self.window.request_redraw();
     }
@@ -633,6 +637,15 @@ impl Running {
                         self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
                     }
                 }
+            }
+            Some("exportDesmos") => {
+                let (state, warnings) = files::to_desmos(&self.rows, &self.viewport, &self.space());
+                let reply = serde_json::json!({
+                    "state": state.to_string(),
+                    "threeD": self.three_d(),
+                    "warnings": warnings,
+                });
+                self.run_script(&format!("window.engine.exported({reply})"));
             }
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
