@@ -17,7 +17,7 @@ pub mod wgsl;
 pub use analyze::{
     analyze, analyze_cached, analyze_mode, Axis, Cache, ColumnAnalysis, ColumnInput, Compare,
     Curve, Curve3, Fit, Implicit3, Mode, ParamSurface, Parameter, Parametric, Region, RowAnalysis,
-    RowInput, RowKind, Surface, Value,
+    RowInput, RowKind, Seed, Surface, Value,
 };
 pub use compile::Program;
 pub use interval::Interval;

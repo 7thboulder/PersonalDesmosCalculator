@@ -303,6 +303,12 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
         Statement::Regression(..) => {
             return Err("Regressions are fitted as you type; Solve has nothing to add".into())
         }
+        Statement::Ode(_) => {
+            return Err(
+                "Solve doesn't solve differential equations yet; the graph draws their slope field"
+                    .into(),
+            )
+        }
     })
 }
 

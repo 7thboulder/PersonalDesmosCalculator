@@ -23,6 +23,12 @@ on the right. What you type is graphed as you type it:
   `L[2]`, filters `L[L > 0]`, comprehensions `[n^2 for n = [1...5]]`, and `total`, `mean`,
   `length`, `min`, `max` and friends. A list in a curve draws one curve per
   element, as `y = [1, 2, 3]x` does in Desmos.
+- Differential equations `y' = f(x, y)` (or `dy/dx = f(x, y)`): a slope
+  field over the view, and a solution curve through each point in the
+  **through** box under the row, such as `(0, 1)` or `[(0, 1), (2, -3)]`.
+  Drag a point on the graph to move its solution; points written with
+  sliders, such as `(a, b)`, move those sliders. Solutions are integrated
+  with adaptive Runge-Kutta (Dormand-Prince) to a tenth of a pixel.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
 - Calculus: `d/dx sin(x^2)`, `f'(x)` and `f''(x)`, sums and products
   (type `sum` or `prod`, as in Desmos), and integrals such as

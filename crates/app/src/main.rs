@@ -42,6 +42,8 @@ USAGE:
                                        (try this if the editor panel looks wrong)
     graphcalc --dump-panel-html FILE   save the expression panel page, for testing
                                        it in a browser
+    graphcalc --export-desmos FILE     print a graph as Desmos's Calc.setState
+                                       takes it (warnings go to stderr)
     graphcalc --analyze                read the panel's rows as JSON on stdin and
                                        print the engine's reply, for testing
     graphcalc --solve LATEX [OP]       run the Solve button on one row and print
@@ -143,6 +145,21 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("--desmos-script") => {
             let path = args.get(1).ok_or("--desmos-script needs a file name")?;
             std::fs::write(path, headless::desmos_script()).map_err(|e| format!("{path}: {e}"))
+        }
+        Some("--export-desmos") => {
+            let path = args.get(1).ok_or("--export-desmos needs a file name")?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            let (rows, view, _) = files::open_any(&text)?;
+            let mut vp = graph_core::Viewport::new(1200.0, 800.0);
+            if let Some(view) = view {
+                view.apply(&mut vp);
+            }
+            let (state, warnings) = files::to_desmos(&rows, &vp, &files::space_of(&text));
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
+            println!("{state}");
+            Ok(())
         }
         Some("--dump-panel-html") => {
             let path = args.get(1).ok_or("--dump-panel-html needs a file name")?;
