@@ -483,6 +483,300 @@ fn from_desmos(state: &Value) -> (Value, Option<View>) {
     (Value::Array(rows), view)
 }
 
+/// The row settings `to_desmos` knows how to carry over. A row setting
+/// outside this list is an app-only feature: it is left out of the export
+/// with a warning, so a new kind of row should be added here only once it
+/// has a Desmos form.
+const DESMOS_ROW_KEYS: &[&str] = &[
+    "id",
+    "latex",
+    "color",
+    "hidden",
+    "style",
+    "width",
+    "opacity",
+    "fillOpacity",
+    "pointStyle",
+    "pointSize",
+    "dots",
+    "connect",
+    "domain",
+    "slider",
+    "ticker",
+    "note",
+    "table",
+];
+
+/// Function names Desmos (2D or 3D) knows, as `\operatorname{...}` writes
+/// them. A name outside this list still goes across, with a warning that
+/// Desmos may not know it.
+#[rustfmt::skip]
+const DESMOS_FUNCTIONS: &[&str] = &[
+    "sin", "cos", "tan", "csc", "sec", "cot", "arcsin", "arccos", "arctan", "arccsc",
+    "arcsec", "arccot", "sinh", "cosh", "tanh", "csch", "sech", "coth", "arcsinh", "arccosh",
+    "arctanh", "arccsch", "arcsech", "arccoth", "arsinh", "arcosh", "artanh", "arcsch",
+    "arsech", "arcoth", "ln", "log", "exp", "abs", "floor", "ceil", "round", "sign", "sgn",
+    "signum", "mod", "min", "max", "gcd", "gcf", "lcm", "nCr", "nPr", "mean", "median",
+    "total", "length", "count", "sort", "shuffle", "join", "unique", "stdev", "stddev",
+    "stdevp", "stddevp", "var", "variance", "varp", "cov", "covp", "corr", "spearman",
+    "quantile", "quartile", "mad", "random", "histogram", "dotplot", "boxplot", "ttest",
+    "tscore", "ittest", "normaldist", "tdist", "poissondist", "binomialdist",
+    "uniformdist", "pdf", "cdf", "erf", "real", "imag", "conj", "arg", "polygon",
+    "distance", "midpoint", "rgb", "hsv", "okhsv", "oklab", "oklch", "tone", "segment",
+    "circle", "arc", "line", "ray", "vector", "point", "angle", "directedangle",
+    "perpendicular", "parallel", "intersection", "translate", "rotate", "dilate",
+    "reflect", "glider", "start", "end", "center", "radius", "vertices", "width", "height",
+    "sphere", "cone", "cylinder", "triangle", "cross", "dot", "nthroot", "factorial",
+    "for", "with", "sum", "prod", "repeat",
+];
+
+/// Desmos's settings as latex: plain numbers, with no trailing `.0`.
+fn desmos_number(x: f64) -> String {
+    format!("{x}")
+}
+
+/// Desmos's style fields for a row or table column, leaving out what is
+/// already the default so the export reads like Desmos's own.
+fn desmos_style_of(r: &Value, out: &mut serde_json::Map<String, Value>) {
+    if let Some(c) = r["color"].as_str() {
+        out.insert("color".into(), json!(c));
+    }
+    if r["hidden"].as_bool() == Some(true) {
+        out.insert("hidden".into(), json!(true));
+    }
+    let line = match r["style"].as_str() {
+        Some("dashed") => Some("DASHED"),
+        Some("dotted") => Some("DOTTED"),
+        _ => None,
+    };
+    if let Some(l) = line {
+        out.insert("lineStyle".into(), json!(l));
+    }
+    let point = match r["pointStyle"].as_str() {
+        Some("open") => Some("OPEN"),
+        Some("cross") => Some("CROSS"),
+        _ => None,
+    };
+    if let Some(p) = point {
+        out.insert("pointStyle".into(), json!(p));
+    }
+    for (from, to, default) in [
+        ("width", "lineWidth", 2.5),
+        ("pointSize", "pointSize", 9.0),
+        ("opacity", "lineOpacity", 1.0),
+        ("fillOpacity", "fillOpacity", 0.4),
+    ] {
+        if let Some(x) = r[from].as_f64().filter(|x| x.is_finite() && *x != default) {
+            out.insert(to.into(), json!(desmos_number(x)));
+        }
+    }
+}
+
+/// How a row is named in a warning: its number in the list and its latex.
+fn row_name(number: usize, r: &Value) -> String {
+    match r["latex"].as_str().filter(|l| !l.is_empty()) {
+        Some(l) if l.chars().count() > 40 => {
+            format!("Row {number} ({}…)", l.chars().take(40).collect::<String>())
+        }
+        Some(l) => format!("Row {number} ({l})"),
+        None => format!("Row {number}"),
+    }
+}
+
+/// Function names in latex that Desmos may not know.
+fn unknown_functions(latex: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = latex;
+    while let Some(at) = rest.find("\\operatorname{") {
+        rest = &rest[at + "\\operatorname{".len()..];
+        let name: String = rest.chars().take_while(|c| *c != '}').collect();
+        if !DESMOS_FUNCTIONS.contains(&name.as_str()) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The graph as Desmos's `Calc.setState` takes it, for pasting into
+/// desmos.com (desmos.com/3d for a 3D graph), and a warning for each
+/// thing that had to be left out because Desmos has no equivalent.
+pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<String>) {
+    let mut list = Vec::new();
+    let mut warnings = Vec::new();
+    let mut ticker = None;
+    let mut next_id = 0u64;
+    let mut id = || {
+        next_id += 1;
+        json!(next_id.to_string())
+    };
+    let mut number = 0;
+    for r in rows.as_array().map_or(&[][..], Vec::as_slice) {
+        if let Some(t) = r.get("ticker").filter(|t| t.is_object()) {
+            let mut out = json!({
+                "handlerLatex": r["latex"].as_str().unwrap_or(""),
+                "minStepLatex": t["step"].as_str().unwrap_or("0"),
+                "open": true,
+            });
+            if t["playing"].as_bool() == Some(true) {
+                out["playing"] = json!(true);
+            }
+            ticker = Some(out);
+            continue;
+        }
+        number += 1;
+        let name = row_name(number, r);
+        if r["matrix"].is_array() {
+            warnings.push(format!(
+                "{name} is a matrix, and Desmos's graphing calculator has no matrices, so it was left out."
+            ));
+            continue;
+        }
+        let extra: Vec<&str> = r
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, v)| !DESMOS_ROW_KEYS.contains(&k.as_str()) && !v.is_null())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        let Some(latex) = r["latex"].as_str() else {
+            warnings.push(format!(
+                "{name} has no Desmos equivalent, so it was left out."
+            ));
+            continue;
+        };
+        for k in &extra {
+            warnings.push(format!(
+                "{name}: its \"{k}\" setting has no Desmos equivalent, so it was left out."
+            ));
+        }
+        if let Some(note) = r["note"].as_str() {
+            list.push(json!({"type": "text", "id": id(), "text": note}));
+            continue;
+        }
+        if let Some(columns) = r["table"].as_array() {
+            let table_id = id();
+            let columns: Vec<Value> = columns
+                .iter()
+                .map(|c| {
+                    let mut col = serde_json::Map::new();
+                    col.insert("id".into(), id());
+                    col.insert("latex".into(), json!(c["header"].as_str().unwrap_or("")));
+                    let cells: Vec<Value> = c["cells"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|v| json!(v.as_str().unwrap_or("")))
+                        .collect();
+                    col.insert("values".into(), Value::Array(cells));
+                    desmos_style_of(c, &mut col);
+                    col.insert("points".into(), json!(c["dots"].as_bool().unwrap_or(true)));
+                    col.insert(
+                        "lines".into(),
+                        json!(c["connect"].as_bool().unwrap_or(false)),
+                    );
+                    Value::Object(col)
+                })
+                .collect();
+            list.push(json!({"type": "table", "id": table_id, "columns": columns}));
+            continue;
+        }
+        // Desmos keeps no empty rows worth sending.
+        if latex.trim().is_empty() {
+            continue;
+        }
+        for f in unknown_functions(latex) {
+            warnings.push(format!(
+                "{name} uses {f}, which Desmos may not know; Desmos will show an error there."
+            ));
+        }
+        let mut out = serde_json::Map::new();
+        out.insert("type".into(), json!("expression"));
+        out.insert("id".into(), id());
+        out.insert("latex".into(), json!(latex));
+        desmos_style_of(r, &mut out);
+        // Curves always draw their line in the app, and "connect" only
+        // joins points, so only its "on" means anything to Desmos; Desmos's
+        // `lines: false` would hide a curve.
+        if r["connect"].as_bool() == Some(true) {
+            out.insert("lines".into(), json!(true));
+        }
+        if r["dots"].as_bool() == Some(false) {
+            out.insert("points".into(), json!(false));
+        }
+        let s = &r["slider"];
+        if s.is_object() {
+            let mut slider = json!({"hardMin": true, "hardMax": true});
+            for k in ["min", "max", "step"] {
+                if let Some(x) = s[k].as_f64().filter(|x| x.is_finite()) {
+                    slider[k] = json!(desmos_number(x));
+                }
+            }
+            slider["loopMode"] = json!(match s["loop"].as_str() {
+                Some("forward") => "LOOP_FORWARD",
+                Some("once") => "PLAY_ONCE",
+                Some("forever") => "PLAY_INDEFINITELY",
+                _ => "LOOP_FORWARD_REVERSE",
+            });
+            if let Some(speed) = s["speed"].as_f64().filter(|x| *x > 0.0 && x.is_finite()) {
+                slider["animationPeriod"] = json!((4000.0 / speed).round() as u64);
+            }
+            out.insert("slider".into(), slider);
+        }
+        if let Some([a, b]) = r["domain"].as_array().map(Vec::as_slice) {
+            if let (Some(a), Some(b)) = (a.as_str(), b.as_str()) {
+                out.insert("parametricDomain".into(), json!({"min": a, "max": b}));
+            }
+        }
+        list.push(Value::Object(out));
+    }
+
+    let mut expressions = json!({ "list": list });
+    if let Some(t) = ticker {
+        expressions["ticker"] = t;
+    }
+    let graph = if space.three_d {
+        let b = space
+            .view
+            .unwrap_or_else(|| BoxView::of(&View3::new(1.0, 1.0)));
+        let (sy, cy) = b.yaw.sin_cos();
+        let (sp, cp) = b.pitch.sin_cos();
+        // The inverse of `desmos_space`: minus the first column points
+        // toward the camera, the second runs level across the screen and
+        // the third is the screen's up.
+        json!({
+            "viewport": {
+                "xmin": b.center[0] - b.half[0], "xmax": b.center[0] + b.half[0],
+                "ymin": b.center[1] - b.half[1], "ymax": b.center[1] + b.half[1],
+                "zmin": b.center[2] - b.half[2], "zmax": b.center[2] + b.half[2],
+            },
+            "worldRotation3D": [
+                -cp * cy, sy, -sp * cy,
+                -cp * sy, -cy, -sp * sy,
+                -sp, 0.0, cp,
+            ],
+            "product": "graphing-3d",
+            "threeDMode": true,
+        })
+    } else {
+        let (w, h) = (
+            vp.units_per_px * vp.width_px,
+            vp.units_per_px * vp.height_px,
+        );
+        json!({
+            "viewport": {
+                "xmin": vp.center[0] - w / 2.0, "xmax": vp.center[0] + w / 2.0,
+                "ymin": vp.center[1] - h / 2.0, "ymax": vp.center[1] + h / 2.0,
+            },
+        })
+    };
+    let state = json!({
+        "version": 11,
+        "graph": graph,
+        "expressions": expressions,
+    });
+    (state, warnings)
+}
+
 /// Where the session is autosaved: the user's app data folder on Windows.
 pub fn autosave_path() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")
@@ -765,5 +1059,110 @@ mod tests {
         // The app's own files open as before.
         let own = r#"{"format":"graphcalc","version":1,"rows":[]}"#;
         assert_eq!(open_any(own).unwrap(), (json!([]), None, false));
+    }
+
+    #[test]
+    fn graphs_export_to_desmos_and_back() {
+        let rows = json!([
+            {"id": 9, "latex": "a\\to a+1", "hidden": true, "ticker": {"step": "50", "playing": false}},
+            {"id": 1, "latex": "a=1", "color": "#c74440", "hidden": false, "style": "solid",
+             "width": 2.5, "opacity": 1, "fillOpacity": 0.4, "pointStyle": "filled", "pointSize": 9,
+             "dots": true, "connect": false, "domain": null,
+             "slider": {"min": 0.0, "max": 10.0, "step": 0.01, "loop": "once", "speed": 0.1}},
+            {"id": 2, "latex": "(t,t^2)", "color": "#2d70b3", "style": "dashed", "width": 5,
+             "connect": false, "domain": ["-1", "\\pi"]},
+            {"id": 3, "latex": "", "note": "a note"},
+            {"id": 4, "latex": "", "table": [
+                {"header": "x_1", "cells": ["1", "2"], "color": "#000000", "dots": true, "connect": false},
+                {"header": "y_1", "cells": ["3", ""], "dots": false, "connect": true}
+            ]},
+            {"id": 5, "latex": ""},
+            {"id": 6, "latex": "y=\\operatorname{zeta}(x)"},
+            {"id": 7, "latex": "y'=y", "slopeField": true},
+            {"id": 8, "matrix": [[1, 2], [3, 4]]}
+        ]);
+        let mut vp = Viewport::new(400.0, 200.0);
+        View {
+            center: [10.0, 5.0],
+            width: 40.0,
+        }
+        .apply(&mut vp);
+        let (state, warnings) = to_desmos(&rows, &vp, &Space::default());
+        assert_eq!(
+            state["graph"]["viewport"],
+            json!({"xmin": -10.0, "xmax": 30.0, "ymin": -5.0, "ymax": 15.0})
+        );
+        let list = state["expressions"]["list"].as_array().unwrap();
+        assert_eq!(list.len(), 6, "the empty row and the matrix are left out");
+        // Defaults are left for Desmos to fill in, and a curve's lines stay on.
+        assert_eq!(
+            list[0],
+            json!({"type": "expression", "id": "1", "latex": "a=1", "color": "#c74440",
+                   "slider": {"hardMin": true, "hardMax": true, "min": "0", "max": "10",
+                              "step": "0.01", "loopMode": "PLAY_ONCE", "animationPeriod": 40000}})
+        );
+        assert_eq!(list[1]["lineWidth"], "5");
+        assert_eq!(list[5]["latex"], "y'=y");
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("zeta"));
+        assert!(warnings[1].contains("slopeField"));
+        assert!(warnings[2].starts_with("Row 8 is a matrix"));
+
+        // Importing the export gives the graph back.
+        let (back, view, _) = open_any(&state.to_string()).unwrap();
+        assert_eq!(
+            view,
+            Some(View {
+                center: [10.0, 5.0],
+                width: 40.0
+            })
+        );
+        assert_eq!(back[0]["ticker"]["step"], "50");
+        assert_eq!(back[0]["latex"], "a\\to a+1");
+        assert_eq!(back[1]["slider"], rows[1]["slider"]);
+        assert_eq!(back[2]["style"], "dashed");
+        assert_eq!(back[2]["domain"], json!(["-1", "\\pi"]));
+        assert_eq!(back[3]["note"], "a note");
+        assert_eq!(back[4]["table"][1]["cells"], json!(["3", ""]));
+        assert_eq!(back[4]["table"][1]["connect"], true);
+        assert_eq!(back[4]["table"][1]["dots"], false);
+        assert!(!space_of(&state.to_string()).three_d);
+    }
+
+    #[test]
+    fn graphs_export_to_desmos_3d_at_their_camera() {
+        let view = BoxView {
+            center: [1.0, 2.0, 3.0],
+            half: [4.0, 5.0, 6.0],
+            yaw: -1.7431,
+            pitch: 0.5917,
+        };
+        let space = Space {
+            three_d: true,
+            view: Some(view),
+        };
+        let rows = json!([{"latex": "z=x^2+y^2"}]);
+        let (state, warnings) = to_desmos(&rows, &Viewport::new(100.0, 100.0), &space);
+        assert!(warnings.is_empty());
+        assert_eq!(state["graph"]["threeDMode"], true);
+        assert_eq!(state["graph"]["viewport"]["zmax"], 9.0);
+        // Close to the rotation Desmos saved for Ezra's Riemann sum.
+        let m: Vec<f64> = state["graph"]["worldRotation3D"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let desmos = [
+            0.1423, -0.9852, 0.0956, 0.8177, 0.1715, 0.5496, -0.5578, 0.0, 0.83,
+        ];
+        for (a, b) in m.iter().zip(desmos) {
+            assert!((a - b).abs() < 1e-3, "{m:?}");
+        }
+        let back = space_of(&state.to_string());
+        assert!(back.three_d);
+        let b = back.view.unwrap();
+        assert_eq!((b.center, b.half), (view.center, view.half));
+        assert!((b.yaw - view.yaw).abs() < 1e-9 && (b.pitch - view.pitch).abs() < 1e-9);
     }
 }

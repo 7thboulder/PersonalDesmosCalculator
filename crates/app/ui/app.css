@@ -239,16 +239,18 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #shortcuts .tabs .close { margin-left: auto; font-size: 18px; padding: 0 6px; }
 #shortcuts .tab { display: none; }
 #shortcuts .tab.on { display: block; }
-#import textarea {
+#import textarea, #export textarea {
   box-sizing: border-box;
   width: 100%;
   height: 90px;
   font: 12px Consolas, monospace;
   resize: vertical;
 }
-#import .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-#import .buttons button { padding: 5px 14px; border: 1px solid #bbb; border-radius: 4px; background: #f4f4f4; cursor: pointer; }
-#import .buttons .go { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+#import .buttons, #export .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+#import .buttons button, #export .buttons button { padding: 5px 14px; border: 1px solid #bbb; border-radius: 4px; background: #f4f4f4; cursor: pointer; }
+#import .buttons .go, #export .buttons .go { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+#export .warnings { margin: 6px 0 0; padding-left: 18px; color: #a15c00; font-size: 12px; }
+#export .warnings:empty { display: none; }
 #toast {
   display: none;
   position: fixed;
@@ -501,6 +503,25 @@ button.icon:disabled { color: #bbb; cursor: default; }
 }
 .row .domain .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
 .row .domain.bad .bound { border-bottom-color: #e0832e; }
+
+/* A differential equation's initial points: through (0, 1). */
+.row .seeds {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px 12px;
+  color: #666;
+  font-size: 15px;
+}
+.row.has-seeds .seeds { display: flex; }
+.row .seeds .bound {
+  min-width: 60px;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  padding: 0 2px;
+}
+.row .seeds .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
+.row .seeds.bad .bound { border-bottom-color: #e0832e; }
 
 /* ---- Points and lines toggles ---- */
 #style-menu .toggles { display: none; gap: 12px; margin: 6px 0 2px; }
