@@ -634,6 +634,12 @@ impl Running {
                 let command = command.to_owned();
                 self.file_command(&command);
             }
+            Some("solve") => {
+                let id = value["id"].as_u64().unwrap_or(0);
+                let latex = value["latex"].as_str().unwrap_or_default();
+                let reply = crate::solve::reply(&self.rows, id, latex, value["op"].as_str());
+                self.run_script(&format!("window.engine.solved({reply})"));
+            }
             Some("rows") => {
                 self.rows = value["rows"].clone();
                 self.doc.rows_changed(&self.rows);

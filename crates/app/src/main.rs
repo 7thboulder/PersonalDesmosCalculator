@@ -7,6 +7,7 @@ mod files;
 mod gui;
 mod headless;
 mod interact;
+mod solve;
 mod ui;
 
 const USAGE: &str = "\
@@ -42,7 +43,10 @@ USAGE:
     graphcalc --dump-panel-html FILE   save the expression panel page, for testing
                                        it in a browser
     graphcalc --analyze                read the panel's rows as JSON on stdin and
-                                       print the engine's reply, for testing";
+                                       print the engine's reply, for testing
+    graphcalc --solve LATEX [OP]       run the Solve button on one row and print
+                                       the working as JSON (OP as in its choices,
+                                       such as factor or solve:x)";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -81,6 +85,17 @@ fn run(args: &[String]) -> Result<(), String> {
             let rows: serde_json::Value =
                 serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
             println!("{}", engine::Engine::default().update(&rows));
+            Ok(())
+        }
+        Some("--solve") => {
+            let latex = args.get(1).ok_or("--solve needs a row's LaTeX")?;
+            let reply = solve::reply(
+                &serde_json::json!([]),
+                0,
+                latex,
+                args.get(2).map(String::as_str),
+            );
+            println!("{reply:#}");
             Ok(())
         }
         Some("--bench" | "--bench-implicit") => {
