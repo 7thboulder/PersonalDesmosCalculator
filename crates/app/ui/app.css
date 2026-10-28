@@ -890,3 +890,99 @@ button.icon:disabled { color: #bbb; cursor: default; }
   background: currentColor;
   box-shadow: 5px 0 0 currentColor;
 }
+
+/* ---- Solve ---------------------------------------------------------------- */
+
+.row .solve-btn {
+  position: absolute;
+  right: 6px;
+  top: 3px;
+  padding: 0 6px;
+  height: 17px;
+  border: 1px solid #c9d6ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f72dc;
+  font: 11px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+  visibility: hidden;
+}
+.row:hover .solve-btn, .row.active .solve-btn { visibility: visible; }
+.row.has-steps .solve-btn { visibility: hidden; }
+.row .solve-btn:hover { background: #eef3fc; }
+
+.row .steps {
+  display: none;
+  margin: 0 36px 10px 12px;
+  padding: 8px 10px;
+  border: 1px solid #dde5f3;
+  border-radius: 6px;
+  background: #f8faff;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  color: #333;
+}
+.row.has-steps .steps { display: block; }
+.row.solving .steps { opacity: 0.6; }
+.steps-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.steps-head .chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+  border: 1px solid #ccd;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+.steps-head .chip.on { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+.steps-head .chip.on .mq-math-mode { color: #fff; }
+.steps-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: #999;
+  font-size: 14px;
+  cursor: pointer;
+}
+.steps-close:hover { color: #333; }
+.steps-list { margin: 0; padding-left: 22px; }
+.steps-list li { margin: 0 0 6px; }
+.step-note { color: #555; }
+.step-math { font-size: 15px; overflow-x: auto; padding: 2px 0; }
+.inline-math { font-size: 13px; }
+.steps-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #dde5f3;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-x: auto;
+}
+.steps-add {
+  margin-left: auto;
+  flex: none;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.steps-add:hover { background: #eef3fb; border-color: #9bb7e0; }
+.steps-error { color: #b3261e; margin-top: 4px; }
+.steps-wait { color: #777; }
+.steps-stale-note { display: none; color: #8a6d00; margin-bottom: 6px; }
+.row.steps-stale .steps-stale-note { display: block; }
+.row.steps-stale .steps-list, .row.steps-stale .steps-result { opacity: 0.45; }
+.steps-stale-note button {
+  font: inherit;
+  padding: 0 6px;
+  border: 1px solid #d9c37a;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+/* An indefinite ∫ has no limits; MathQuill would show empty boxes. */
+.steps .mq-math-mode .mq-empty { display: none; }
