@@ -33,6 +33,23 @@ pub fn value_latex(v: f64) -> String {
     trim(format!("{v:.digits$}"))
 }
 
+/// A matrix entry as Desmos's matrix calculator shows it: a fraction
+/// when the number is one with a small denominator (2/3 rather than
+/// 0.666666666667), otherwise as `value_latex` writes it.
+pub fn matrix_entry_latex(v: f64) -> String {
+    if v.is_finite() && v.fract() != 0.0 && v.abs() < 1e9 {
+        for d in 2..=1000u32 {
+            let n = v * d as f64;
+            if (n - n.round()).abs() < 1e-9 * n.abs().max(1.0) {
+                let n = n.round() as i64;
+                let sign = if n < 0 { "-" } else { "" };
+                return format!("{sign}\\frac{{{}}}{{{d}}}", n.abs());
+            }
+        }
+    }
+    value_latex(v)
+}
+
 /// Most list elements shown under a row before the rest are elided.
 const SHOWN_ELEMENTS: usize = 12;
 
@@ -222,5 +239,17 @@ mod tests {
         );
         let long = result_latex(&Value::Numbers((1..=20).map(f64::from).collect()));
         assert!(long.ends_with(",12,...\\right]"), "{long}");
+    }
+}
+
+#[cfg(test)]
+mod matrix_entry_tests {
+    #[test]
+    fn simple_fractions_show_as_fractions() {
+        use super::matrix_entry_latex as f;
+        assert_eq!(f(2.0 / 3.0), "\\frac{2}{3}");
+        assert_eq!(f(-1.5), "-\\frac{3}{2}");
+        assert_eq!(f(4.0), "4");
+        assert_eq!(f(std::f64::consts::PI), "3.14159265359");
     }
 }

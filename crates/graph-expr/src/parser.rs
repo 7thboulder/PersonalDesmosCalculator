@@ -719,6 +719,15 @@ impl Parser {
             }
             return Ok(Expr::Shape(shape, self.paren_args()?));
         }
+        // Matrix functions are worked out before anything else, by name.
+        if crate::matrix::is_function(name) {
+            if self.peek() != Some(&Tok::LParen) {
+                return Err(format!(
+                    "Function '{name}' needs parentheses, like {name}(A)"
+                ));
+            }
+            return Ok(Expr::Apply(name.to_owned(), self.paren_args()?));
+        }
         let mut builtin =
             builtins::from_name(name).ok_or_else(|| format!("'{name}' isn't supported yet"))?;
         let mut power = None;
