@@ -4955,7 +4955,7 @@ fn is_literal(e: &Expr) -> bool {
 /// For a statement with derivatives of y in it, as `y'' = -y`, the
 /// highest; 0 when it has only x' and y' as in a system. None when it is no
 /// differential equation.
-fn ode_order(statement: &Statement) -> Option<usize> {
+pub(crate) fn ode_order(statement: &Statement) -> Option<usize> {
     let mut order: Option<usize> = None;
     let mut see = |name: &str, _: bool| {
         if let Some(primes) = name.strip_prefix(['x', 'y']) {

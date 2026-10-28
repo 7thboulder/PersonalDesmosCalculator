@@ -207,6 +207,12 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
         return form;
     }
     let statement = crate::parse(latex)?;
+    if crate::analyze::ode_order(&statement).is_some() {
+        return Err(
+            "Solve doesn't solve differential equations yet; the graph draws their solutions"
+                .into(),
+        );
+    }
     Ok(match statement {
         Statement::Expr(Expr::Derivative(v, body)) => {
             // d/dx d/dx f counts as a second derivative.
@@ -302,12 +308,6 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
         }
         Statement::Regression(..) => {
             return Err("Regressions are fitted as you type; Solve has nothing to add".into())
-        }
-        Statement::Ode(_) => {
-            return Err(
-                "Solve doesn't solve differential equations yet; the graph draws their slope field"
-                    .into(),
-            )
         }
     })
 }
