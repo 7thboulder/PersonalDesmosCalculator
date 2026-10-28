@@ -39,7 +39,9 @@ on the right. What you type is graphed as you type it:
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
 - Calculus: `d/dx sin(x^2)`, `f'(x)` and `f''(x)`, sums and products
   (type `sum` or `prod`, as in Desmos), and integrals such as
-  `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Derivatives are
+  `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Type `infinity`
+  or `infty` for ∞ (or use ∞ under **functions** on the keypad), as in
+  `∫ from 0 to ∞ of e^-x dx` or a restriction `{x < ∞}`. Derivatives are
   exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
 - 3D graphs: the **2D / 3D** switch at the top of the list turns the graph
   into Desmos 3D's box. `z = f(x, y)` (or a bare expression in x and y) is
