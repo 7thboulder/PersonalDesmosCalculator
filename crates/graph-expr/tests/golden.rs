@@ -1082,6 +1082,67 @@ fn three_d_equations_and_uv_surfaces() {
     assert_eq!(rows(&["\\rho=5"])[0].kind, RowKind::Variable("rho".into()));
 }
 
+/// The real and imaginary parts of a complex plot at z = x + iy.
+fn complex_at(latex: &[&str], x: f64, y: f64) -> (f64, f64) {
+    let all = rows(latex);
+    let last = all.last().unwrap();
+    let plot = last
+        .complex
+        .first()
+        .unwrap_or_else(|| panic!("no complex plot: {last:?}"));
+    (plot.re.eval2(x, y), plot.im.eval2(x, y))
+}
+
+#[test]
+fn complex_plots() {
+    let at = |latex: &[&str], x: f64, y: f64| complex_at(latex, x, y);
+    let near = |(a, b): (f64, f64), (c, d): (f64, f64)| {
+        assert!(close(a, c) && close(b, d), "({a}, {b}) != ({c}, {d})")
+    };
+    // (1 + 2i)^2 = -3 + 4i
+    near(at(&["z^2"], 1.0, 2.0), (-3.0, 4.0));
+    near(at(&["\\frac{1}{z}"], 0.0, 2.0), (0.0, -0.5));
+    // sin(1 + i) = sin 1 cosh 1 + i cos 1 sinh 1
+    let (s, c) = (1f64.sin(), 1f64.cos());
+    near(
+        at(&["\\sin z"], 1.0, 1.0),
+        (s * 1f64.cosh(), c * 1f64.sinh()),
+    );
+    near(
+        at(&["\\cos z"], 1.0, 1.0),
+        (c * 1f64.cosh(), -s * 1f64.sinh()),
+    );
+    near(
+        at(&["\\ln z"], 0.0, 1.0),
+        (0.0, std::f64::consts::FRAC_PI_2),
+    );
+    near(at(&["e^{z}"], 0.0, std::f64::consts::PI), (-1.0, 0.0));
+    // Functions and sliders work as anywhere else.
+    near(
+        at(&["f\\left(t\\right)=t^2+1", "f\\left(z\\right)"], 0.0, 1.0),
+        (0.0, 0.0),
+    );
+    near(at(&["a=2", "az"], 1.0, 1.0), (2.0, 2.0));
+    // An undefined name is offered as a slider, as on any other row.
+    let slider = one("z^2+c");
+    assert_eq!(slider.missing, ["c"]);
+    // A list draws one plot per element.
+    assert_eq!(one("\\left[1,2\\right]z").complex.len(), 2);
+    // Real-valued functions of z are plots too.
+    near(at(&["\\left|z\\right|"], 3.0, 4.0), (5.0, 0.0));
+    assert!(one("z+x").error.is_some());
+    // A row defining z makes it an ordinary variable again.
+    let defined = rows(&["z=3", "z^2"]);
+    assert!(defined[1].complex.is_empty());
+    assert_eq!(defined[1].number(), Some(9.0));
+    // Bound by a comprehension, z is not free.
+    let list = one("\\left[z^2\\ \\operatorname{for}\\ z=\\left[1,2\\right]\\right]");
+    assert!(list.complex.is_empty() && list.error.is_none(), "{list:?}");
+    // Complex constants take the same functions.
+    let sin_i = one("\\sin i");
+    assert_eq!(sin_i.value, Some(Value::Complex(0.0, 1f64.sinh())));
+}
+
 fn ode(latex: &[&str], seeds: &str) -> RowAnalysis {
     ode_with(latex, seeds, &[])
 }

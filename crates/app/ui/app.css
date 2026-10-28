@@ -659,6 +659,9 @@ button.icon:disabled { color: #bbb; cursor: default; }
 
 #style-menu .fill-options { display: none; }
 #style-menu.has-fill .fill-options { display: block; }
+#style-menu .complex-options { display: none; }
+#style-menu.has-complex .complex-options { display: flex; }
+#style-menu .complex-options button { width: auto; flex: 1; font: inherit; font-size: 12px; }
 
 .row .run-box { display: none; margin: -6px 36px 10px 12px; }
 .row.action .run-box { display: block; }

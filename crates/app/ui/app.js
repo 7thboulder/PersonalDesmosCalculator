@@ -82,7 +82,7 @@
     return {
       color: t.color, hidden: t.hidden, style: t.style, width: t.width,
       opacity: t.opacity, pointStyle: t.pointStyle, pointSize: t.pointSize,
-      dots: t.dots, connect: t.connect, fillOpacity: t.fillOpacity
+      dots: t.dots, connect: t.connect, fillOpacity: t.fillOpacity, complex: t.complex
     };
   }
 
@@ -427,6 +427,7 @@
       if (t.dataset.color) menuRow.color = t.dataset.color;
       if (t.dataset.style) menuRow.style = t.dataset.style;
       if (t.dataset.point) menuRow.pointStyle = t.dataset.point;
+      if (t.dataset.complex) menuRow.complex = t.dataset.complex;
       paintTarget(menuRow);
       refreshMenu();
       sendRows();
@@ -472,6 +473,9 @@
       b.classList.toggle('chosen', b.dataset.style === menuRow.style);
       b.style.color = menuRow.color;
     });
+    menu.querySelectorAll('[data-complex]').forEach(function (b) {
+      b.classList.toggle('chosen', b.dataset.complex === menuRow.complex);
+    });
     menu.querySelectorAll('[data-point]').forEach(function (b) {
       b.classList.toggle('chosen', b.dataset.point === menuRow.pointStyle);
       b.style.color = menuRow.color;
@@ -489,6 +493,8 @@
     menu.querySelector('.width').value = String(menuRow.width);
     menu.querySelector('.opacity').value = String(menuRow.opacity);
     menu.classList.toggle('has-fill', !!r.polygons);
+    // A complex plot is drawn as colors or as a warped grid.
+    menu.classList.toggle('has-complex', !!r.complex);
     menu.querySelector('.fill-opacity').value = String(menuRow.fillOpacity);
   }
 
@@ -549,7 +555,8 @@
       opacity: 1,
       fillOpacity: 0.4,
       dots: true,
-      connect: false
+      connect: false,
+      complex: 'colors'
     };
   }
 
@@ -1569,7 +1576,9 @@
       ['3+2i,\\ e^{i\\pi}', 'i is the imaginary unit'],
       ['\\operatorname{real}\\left(z\\right)', 'Also imag'],
       ['\\operatorname{conj}\\left(z\\right)', 'Conjugate'],
-      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size']]]
+      ['\\operatorname{arg}\\left(z\\right)', 'Angle; |z| is the size'],
+      ['z^2+1', 'A row in z colors the plane by its value (hold the circle for Grid)'],
+      ['\\sin z,\\ \\ln z', 'Also cos, tan, sinh, cosh, tanh, log, exp, sqrt']]]
   ];
 
   var shortcuts = document.getElementById('shortcuts');
@@ -1756,7 +1765,7 @@
 
   function applyStyle(target, saved) {
     ['color', 'hidden', 'style', 'width', 'opacity', 'fillOpacity', 'pointStyle', 'pointSize',
-      'dots', 'connect']
+      'dots', 'connect', 'complex']
       .forEach(function (k) { if (saved[k] !== undefined && saved[k] !== null) target[k] = saved[k]; });
   }
 

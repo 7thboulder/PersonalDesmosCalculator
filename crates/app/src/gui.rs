@@ -534,9 +534,11 @@ impl Running {
         self.interact.scale = scale as f64;
         let marks = self.interact.marks(&self.engine, &self.viewport);
         let (viewport, text, lines) = (&self.viewport, &mut self.text, &mut self.lines);
-        let scene = self.engine.with_plot_marks(&marks, |plot| {
-            build_scene_cached(viewport, scale, plot, text, lines)
-        });
+        let scene = self
+            .engine
+            .with_plot_marks(viewport, scale, &marks, |plot| {
+                build_scene_cached(viewport, scale, plot, text, lines)
+            });
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
