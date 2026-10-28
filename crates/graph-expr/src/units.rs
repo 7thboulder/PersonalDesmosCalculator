@@ -624,7 +624,7 @@ pub fn row_units(statement: &Statement, defs: &Defs) -> Result<Option<Shown>, St
             }
             return Ok(None);
         }
-        Statement::Regression(..) | Statement::Ode(_) => return Ok(None),
+        Statement::Regression(..) => return Ok(None),
     };
     if let Statement::Relation(lhs, rel, _) = statement {
         let definition = *rel == crate::ast::Relation::Eq;
@@ -1094,7 +1094,6 @@ pub fn lower_statement(s: Statement) -> Statement {
             relations: c.relations,
         }),
         Statement::Regression(a, b) => Statement::Regression(lower(a), lower(b)),
-        Statement::Ode(e) => Statement::Ode(lower(e)),
     }
 }
 

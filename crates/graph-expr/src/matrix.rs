@@ -858,7 +858,7 @@ impl Layer {
 
     fn statement_mentions(&self, st: &Statement) -> bool {
         match st {
-            Statement::Expr(e) | Statement::Ode(e) => self.mentions(e),
+            Statement::Expr(e) => self.mentions(e),
             Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
                 self.mentions(a) || self.mentions(b)
             }
@@ -1040,7 +1040,6 @@ impl Layer {
                 let a = side(self, a)?;
                 Statement::Regression(a, side(self, b)?)
             }
-            Statement::Ode(e) => Statement::Ode(side(self, e)?),
             Statement::Chain(c) => {
                 let mut operands = Vec::with_capacity(c.operands.len());
                 for e in &c.operands {

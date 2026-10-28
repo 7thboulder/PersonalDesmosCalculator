@@ -16,10 +16,17 @@ pub enum Arg {
     /// The third coordinate, for relations in 3D.
     Z,
     Local(u8),
+    /// A further value the program reads, after x, y and z: a
+    /// differential equation's y'' and up.
+    Extra(u8),
 }
 
 /// How deeply integrals may nest.
 pub const MAX_LOCALS: usize = 4;
+/// How many further values a program can read, as [`Arg::Extra`].
+pub const MAX_EXTRA: usize = 6;
+/// Locals first, then the extra values.
+const SLOTS: usize = MAX_LOCALS + MAX_EXTRA;
 
 /// An expression with every name resolved: variables are numbers, functions
 /// are inlined and the graph variables are `Arg`s.
@@ -228,7 +235,7 @@ impl Low {
                     // Slot 0 holds this integral's variable, so integrals
                     // inside it start at slot 1.
                     if let Ok(p) = Program::compile_at(&inner, 1) {
-                        let mut locals = [f64::NAN; MAX_LOCALS];
+                        let mut locals = [f64::NAN; SLOTS];
                         return Low::Const(integrate(
                             &mut |t| {
                                 locals[0] = t;
@@ -334,7 +341,7 @@ impl Program {
 
     /// True when the program reads either graph variable.
     pub fn uses_arg(&self) -> bool {
-        self.reads(&|a| matches!(a, Arg::X | Arg::Y | Arg::Z))
+        self.reads(&|a| matches!(a, Arg::X | Arg::Y | Arg::Z | Arg::Extra(_)))
     }
 
     /// True when the program reads y, so it needs a two-dimensional plot.
@@ -365,7 +372,7 @@ impl Program {
                     stack[top] = match a {
                         Arg::X => x,
                         Arg::Y => y,
-                        Arg::Z | Arg::Local(_) => Interval::ANY,
+                        Arg::Z | Arg::Local(_) | Arg::Extra(_) => Interval::ANY,
                     };
                     top += 1;
                 }
@@ -400,8 +407,19 @@ impl Program {
 
     /// Evaluates a program of x, y and z.
     pub fn eval3(&self, x: f64, y: f64, z: f64) -> f64 {
-        let mut locals = [f64::NAN; MAX_LOCALS];
+        let mut locals = [f64::NAN; SLOTS];
         self.run(x, y, z, &mut locals)
+    }
+
+    /// Evaluates a program of x and a list of further values: the first
+    /// is read as y, the second as z and the rest as [`Arg::Extra`].
+    pub fn eval_n(&self, x: f64, values: &[f64]) -> f64 {
+        let mut locals = [f64::NAN; SLOTS];
+        let at = |i: usize| values.get(i).copied().unwrap_or(f64::NAN);
+        for (i, v) in values.iter().skip(2).take(MAX_EXTRA).enumerate() {
+            locals[MAX_LOCALS + i] = *v;
+        }
+        self.run(x, at(0), at(1), &mut locals)
     }
 
     /// True when the program reads z, so it is a relation in space.
@@ -409,7 +427,7 @@ impl Program {
         self.reads(&|a| a == Arg::Z)
     }
 
-    fn run(&self, x: f64, y: f64, z: f64, locals: &mut [f64; MAX_LOCALS]) -> f64 {
+    fn run(&self, x: f64, y: f64, z: f64, locals: &mut [f64; SLOTS]) -> f64 {
         // Clearing a full-size stack on every call cost as much as running
         // a short program.
         if self.depth <= SMALL_STACK {
@@ -419,13 +437,7 @@ impl Program {
         }
     }
 
-    fn run_on<const N: usize>(
-        &self,
-        x: f64,
-        y: f64,
-        z: f64,
-        locals: &mut [f64; MAX_LOCALS],
-    ) -> f64 {
+    fn run_on<const N: usize>(&self, x: f64, y: f64, z: f64, locals: &mut [f64; SLOTS]) -> f64 {
         let mut stack = [0.0f64; N];
         let mut top = 0usize;
         for op in &self.ops {
@@ -440,6 +452,7 @@ impl Program {
                         Arg::Y => y,
                         Arg::Z => z,
                         Arg::Local(s) => locals[s as usize],
+                        Arg::Extra(i) => locals[MAX_LOCALS + i as usize],
                     };
                     top += 1;
                 }

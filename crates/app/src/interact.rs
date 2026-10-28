@@ -681,7 +681,7 @@ mod tests {
              "seeds": "\\left[\\left(0,1\\right),\\left(2,-3\\right)\\right]"},
         ]));
         assert_eq!(engine.odes.len(), 1);
-        assert_eq!(engine.odes[0].seeds, vec![[0.0, 1.0], [2.0, -3.0]]);
+        assert_eq!(engine.odes[0].starts, vec![vec![0.0, 1.0], vec![2.0, -3.0]]);
         let mut ui = Interaction::default();
         let at = vp.to_screen(2.0, -3.0);
         assert_eq!(ui.press(&engine, &vp, at), Effect::Select(1));
