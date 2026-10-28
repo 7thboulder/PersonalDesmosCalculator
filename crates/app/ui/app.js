@@ -115,7 +115,7 @@
         return Object.assign(styleOf(r), {
           id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider,
           transform: transformOf(r),
-          seeds: r.seeds
+          seeds: r.seeds, derivs: r.derivs
         });
       });
     // The ticker goes first, as a hidden row the engine analyzes like any
@@ -654,6 +654,10 @@
       var seedsEl = el.querySelector('.seeds');
       seedsEl.classList.toggle('bad', !!ode.error);
       seedsEl.title = ode.error || '';
+      showDerivs(row, ode.order);
+      var derivsEl = el.querySelector('.derivs');
+      derivsEl.classList.toggle('bad', !!ode.derivsError);
+      derivsEl.title = ode.derivsError || '';
     }
 
     var missing = r.missing || [];
@@ -663,6 +667,42 @@
       row.missingButtons.appendChild(sliderButton(row, m.latex, [m]));
     });
     if (missing.length > 1) row.missingButtons.appendChild(sliderButton(row, null, missing, 'all'));
+  }
+
+  // An equation of order n starts from y'(x₀) to y⁽ⁿ⁻¹⁾(x₀) as well as
+  // its points: one box each, kept when the order drops so nothing typed
+  // is lost.
+  function showDerivs(row, order) {
+    var want = Math.max(0, order - 1);
+    if (row.derivFields.length === want) return;
+    var box = row.el.querySelector('.derivs');
+    box.innerHTML = '';
+    row.derivFields = [];
+    for (var i = 0; i < want; i++) {
+      var label = document.createElement('span');
+      MQ.StaticMath(label).latex('y' + "'".repeat(i + 1) + '\\left(x_0\\right)=');
+      var field = document.createElement('span');
+      field.className = 'bound';
+      box.appendChild(label);
+      box.appendChild(field);
+      (function (i) {
+        var mf = MQ.MathField(field, Object.assign({}, MATH_OPTIONS, {
+          handlers: {
+            edit: function () {
+              if (row.settingSeeds) return;
+              while (row.derivs.length <= i) row.derivs.push('');
+              row.derivs[i] = mf.latex();
+              sendRows();
+            },
+            enter: function () { row.field.focus(); }
+          }
+        }));
+        row.settingSeeds = true;
+        mf.latex(row.derivs[i] || '0');
+        row.settingSeeds = false;
+        row.derivFields.push(mf);
+      })(i);
+    }
   }
 
   function sliderButton(row, latex, names, label) {
@@ -701,7 +741,8 @@
       '<input class="lmax" size="5"> Step: <input class="lstep" size="4"></div>' +
       '<div class="domain"><span class="bound dmin"></span> ≤ <span class="dname"></span> ≤ ' +
       '<span class="bound dmax"></span></div>' +
-      '<div class="seeds" title="">through <span class="bound seeds-field"></span></div>' +
+      '<div class="seeds" title="">through <span class="bound seeds-field"></span>' +
+      '<span class="derivs"></span></div>' +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
       '<div class="steps"></div>' +
       '</div>' +
@@ -733,6 +774,8 @@
       domainMin: null,
       domainMax: null,
       seeds: null,
+      derivs: [],
+      derivFields: [],
       seedsShown: false,
       settingSeeds: false,
       seedsField: null,
@@ -1972,6 +2015,9 @@
       ['\\left\\{x<0:-x,x\\right\\}', 'Piecewise'],
       ['y_1\\sim mx_1+b', 'Regression: fits m and b'],
       ["y'=x-y", 'Slope field, with solution curves through the points under it (drag them)'],
+      ["y''=-y", "Any order up to 6; set y'(x\u2080) under it"],
+      ["\\left(y'\\right)^2+y^2=1", "Not solved for y': every branch is drawn"],
+      ["x'=y,y'=-x", 'System: direction field and trajectories from t = 0'],
       ['a\\to a+1', 'Action (type ->)']]],
     ['TRIG (RADIANS)', [
       ['\\sin x,\\ \\cos x,\\ \\tan x', 'Also csc, sec, cot'],
@@ -2274,6 +2320,7 @@
       if (s.domain && s.domain.length === 2) row.domain = s.domain;
       loadTransform(row, s);
       if (typeof s.seeds === 'string') row.seeds = s.seeds;
+      if (Array.isArray(s.derivs)) row.derivs = s.derivs.map(String);
       paintRow(row);
     });
     if (rows.length === 0) addRow('', 0);

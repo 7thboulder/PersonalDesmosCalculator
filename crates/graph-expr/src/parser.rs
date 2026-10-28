@@ -12,7 +12,7 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
 
 /// As `parse`, keeping units and conversions as written, for checking them.
 pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
-    let toks = tokenize(latex)?;
+    let toks = derivatives(tokenize(latex)?);
     let mut p = Parser {
         toks,
         pos: 0,
@@ -31,6 +31,25 @@ pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
             statement = Statement::Expr(Expr::Actions(actions));
         }
     }
+    // `x' = f, y' = g` is a system, as `(x', y') = (f, g)`.
+    if let Statement::Relation(Expr::Var(a), Relation::Eq, f) = &statement {
+        if (a == "x'" || a == "y'") && p.eat(&Tok::Comma) {
+            let Statement::Relation(Expr::Var(b), Relation::Eq, g) = p.statement()? else {
+                return Err(SYSTEM_HINT.into());
+            };
+            let (f, g) = match (a.as_str(), b.as_str()) {
+                ("x'", "y'") => (f.clone(), g),
+                ("y'", "x'") => (g, f.clone()),
+                _ => return Err(SYSTEM_HINT.into()),
+            };
+            let v = |n: &str| Expr::Var(n.into());
+            statement = Statement::Relation(
+                Expr::bin(Expr::Point, v("x'"), v("y'")),
+                Relation::Eq,
+                Expr::bin(Expr::Point, f, g),
+            );
+        }
+    }
     // `5 m/s · 3 h \text{in km}` shows the answer in km.
     if let Some(Tok::UnitTarget(text)) = p.peek().cloned() {
         p.pos += 1;
@@ -47,6 +66,88 @@ pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
         None => Ok(statement),
         Some(tok) => Err(unexpected(tok)),
     }
+}
+
+const SYSTEM_HINT: &str = "A system is written x'=f, y'=g or (x',y')=(f,g)";
+
+/// Reads derivatives in differential equations as names of their own:
+/// `y'`, `y''` and `\frac{dy}{dx}`, `\frac{d^2y}{dx^2}` become `y'` and
+/// `y''`, and `x'` or `\frac{dx}{dt}` becomes `x'`. A prime followed by
+/// brackets, as in `f'(x)`, is still a function's derivative.
+fn derivatives(toks: Vec<Tok>) -> Vec<Tok> {
+    let letter = |t: Option<&Tok>, names: &[&str]| match t {
+        Some(Tok::Letter(l)) if names.contains(&l.as_str()) => Some(l.clone()),
+        _ => None,
+    };
+    // `^2` or `^{2}` at `toks[i]`: the power and how many tokens it took.
+    let power = |toks: &[Tok], i: usize| -> Option<(usize, usize)> {
+        let whole = |v: &f64| (v.fract() == 0.0 && *v >= 1.0 && *v <= 9.0).then_some(*v as usize);
+        match (
+            toks.get(i),
+            toks.get(i + 1),
+            toks.get(i + 2),
+            toks.get(i + 3),
+        ) {
+            (Some(Tok::Caret), Some(Tok::Num(v)), _, _) => Some((whole(v)?, 2)),
+            (Some(Tok::Caret), Some(Tok::LBrace), Some(Tok::Num(v)), Some(Tok::RBrace)) => {
+                Some((whole(v)?, 4))
+            }
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity(toks.len());
+    let mut i = 0;
+    while i < toks.len() {
+        if let Some(v) = letter(toks.get(i), &["x", "y"]) {
+            let primes = toks[i + 1..]
+                .iter()
+                .take_while(|t| **t == Tok::Prime)
+                .count();
+            if primes > 0 && toks.get(i + 1 + primes) != Some(&Tok::LParen) {
+                out.push(Tok::Letter(format!("{v}{}", "'".repeat(primes))));
+                i += 1 + primes;
+                continue;
+            }
+        }
+        // \frac{d^n v}{d u^n}
+        if toks[i] == Tok::Frac && toks.get(i + 1) == Some(&Tok::LBrace) {
+            let mut j = i + 2;
+            let d = |j: usize| letter(toks.get(j), &["d"]).is_some();
+            let leibniz = (|| {
+                if !d(j) {
+                    return None;
+                }
+                j += 1;
+                let (top, used) = power(&toks, j).unwrap_or((1, 0));
+                j += used;
+                let v = letter(toks.get(j), &["x", "y"])?;
+                j += 1;
+                if toks.get(j) != Some(&Tok::RBrace) || toks.get(j + 1) != Some(&Tok::LBrace) {
+                    return None;
+                }
+                j += 2;
+                if !d(j) {
+                    return None;
+                }
+                let u = letter(toks.get(j + 1), &["x", "t"])?;
+                j += 2;
+                let (bottom, used) = power(&toks, j).unwrap_or((1, 0));
+                j += used;
+                if toks.get(j) != Some(&Tok::RBrace) || u == v || top != bottom {
+                    return None;
+                }
+                Some((v, top, j + 1))
+            })();
+            if let Some((v, order, next)) = leibniz {
+                out.push(Tok::Letter(format!("{v}{}", "'".repeat(order))));
+                i = next;
+                continue;
+            }
+        }
+        out.push(toks[i].clone());
+        i += 1;
+    }
+    out
 }
 
 struct Parser {
@@ -114,12 +215,6 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Statement, String> {
-        if self.ode_start() {
-            if self.peek().is_none() {
-                return Err("Incomplete expression".into());
-            }
-            return Ok(Statement::Ode(self.expr()?));
-        }
         let mut condition = self.comparison()?;
         match condition.relations.len() {
             0 if self.eat(&Tok::Tilde) => {
@@ -139,34 +234,6 @@ impl Parser {
                 Ok(Statement::Chain(condition))
             }
         }
-    }
-
-    /// Eats `y' =` or `\frac{dy}{dx} =`, which start a differential
-    /// equation, and says whether it did.
-    fn ode_start(&mut self) -> bool {
-        let letter = |l: &str| Tok::Letter(l.into());
-        let starts = [
-            vec![letter("y"), Tok::Prime, Tok::Eq],
-            vec![
-                Tok::Frac,
-                Tok::LBrace,
-                letter("d"),
-                letter("y"),
-                Tok::RBrace,
-                Tok::LBrace,
-                letter("d"),
-                letter("x"),
-                Tok::RBrace,
-                Tok::Eq,
-            ],
-        ];
-        for start in starts {
-            if self.toks.get(self.pos..self.pos + start.len()) == Some(&start[..]) {
-                self.pos += start.len();
-                return true;
-            }
-        }
-        false
     }
 
     fn relation(&self) -> Option<Relation> {
@@ -886,15 +953,30 @@ mod tests {
     #[test]
     fn differential_equations() {
         let ode = |src: &str| match parse(src).unwrap() {
-            Statement::Ode(e) => e,
-            other => panic!("not a differential equation: {other:?}"),
+            Statement::Relation(lhs, Relation::Eq, rhs) => (lhs, rhs),
+            other => panic!("not an equation: {other:?}"),
         };
         let x_minus_y = Expr::bin(Expr::Sub, v("x"), v("y"));
-        assert_eq!(ode("y'=x-y"), x_minus_y);
-        assert_eq!(ode("\\frac{dy}{dx}=x-y"), x_minus_y);
+        assert_eq!(ode("y'=x-y"), (v("y'"), x_minus_y.clone()));
+        assert_eq!(ode("\\frac{dy}{dx}=x-y"), (v("y'"), x_minus_y.clone()));
+        assert_eq!(ode("\\frac{d^2y}{dx^2}=-y").0, v("y''"));
+        assert_eq!(ode("\\frac{d^{3}y}{dx^{3}}=y").0, v("y'''"));
+        assert_eq!(ode("y''=-y'").1, Expr::Neg(Box::new(v("y'"))));
         assert_eq!(parse("y'="), Err("Incomplete expression".into()));
-        // f'(x) is still a derivative.
-        assert!(matches!(parse("f'(x)=2"), Ok(Statement::Relation(..))));
+        // f'(x) is still a derivative, and d/dx still differentiates.
+        assert!(matches!(ode("f'(x)=2").0, Expr::Prime(..)));
+        assert!(matches!(e("\\frac{d}{dx}x^2"), Expr::Derivative(..)));
+        // Systems, either way round.
+        let point = |a: Expr, b: Expr| Expr::bin(Expr::Point, a, b);
+        let system = (
+            point(v("x'"), v("y'")),
+            point(v("y"), Expr::Neg(Box::new(v("x")))),
+        );
+        assert_eq!(ode("x'=y,y'=-x"), system);
+        assert_eq!(ode("y'=-x,x'=y"), system);
+        assert_eq!(ode("\\frac{dx}{dt}=y,\\frac{dy}{dt}=-x"), system);
+        assert_eq!(ode("\\left(x',y'\\right)=\\left(y,-x\\right)"), system);
+        assert!(parse("x'=y,x'=1").is_err());
     }
 
     #[test]

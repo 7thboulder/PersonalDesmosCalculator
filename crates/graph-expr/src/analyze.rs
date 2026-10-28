@@ -27,6 +27,9 @@ pub struct RowInput {
     /// The LaTeX of a differential equation's initial points, such as
     /// `(0, 1)` or `[(0, 1), (a, b)]`.
     pub seeds: Option<String>,
+    /// The LaTeX of an equation of order n's initial derivatives, y' to
+    /// y⁽ⁿ⁻¹⁾, each a number or a list with one per initial point.
+    pub derivs: Vec<String>,
     /// Set when the row is a table instead of an expression.
     pub table: Option<Vec<ColumnInput>>,
     /// Set when the row is a matrix: the LaTeX of each cell, row by row.
@@ -139,7 +142,50 @@ pub struct Seed {
     /// For a point written with slider variables, as in `(a, b)`: the
     /// variable each coordinate drags.
     pub drag: Option<[Option<String>; 2]>,
+    /// For an equation of order n, y' to y⁽ⁿ⁻¹⁾ there.
+    pub derivs: Vec<f64>,
 }
+
+/// A differential equation, as its row draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ode {
+    /// `y⁽ⁿ⁾ = f`, where f reads x as `Arg::X` and y, y', …, y⁽ⁿ⁻¹⁾ in
+    /// order, as [`Program::eval_n`] passes them.
+    Explicit { order: usize, f: Program },
+    /// `F = 0` where F reads y⁽ⁿ⁾ too, so it has to be solved for it.
+    Implicit { order: usize, f: Program },
+    /// `(x', y') = (f, g)`, each reading x, y and t as `Arg::X`, `Arg::Y`
+    /// and `Arg::Z`.
+    System { f: Program, g: Program },
+}
+
+impl Ode {
+    /// How many initial values past (x, y) a start needs, plus one.
+    pub fn order(&self) -> usize {
+        match self {
+            Ode::Explicit { order, .. } | Ode::Implicit { order, .. } => *order,
+            Ode::System { .. } => 1,
+        }
+    }
+}
+
+/// Highest order of differential equation drawn.
+pub const MAX_ODE_ORDER: usize = 6;
+
+/// What the graph variables of a differential equation in y(x) read: x,
+/// then y and its derivatives.
+const ODE_FREE: &[(&str, Arg)] = &[
+    ("x", Arg::X),
+    ("y", Arg::Y),
+    ("y'", Arg::Z),
+    ("y''", Arg::Extra(0)),
+    ("y'''", Arg::Extra(1)),
+    ("y''''", Arg::Extra(2)),
+    ("y'''''", Arg::Extra(3)),
+    ("y''''''", Arg::Extra(4)),
+];
+/// And of a system: x, y and t.
+const SYSTEM_FREE: &[(&str, Arg)] = &[("x", Arg::X), ("y", Arg::Y), ("t", Arg::Z)];
 
 /// How a relation compares its two sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,15 +332,16 @@ pub struct RowAnalysis {
     pub picture: Vec<Stroke>,
     /// The unit the value is shown in, as LaTeX, when it has one.
     pub unit: Option<String>,
-    /// For a differential equation `y' = f(x, y)`: the slope, one program
-    /// per list element, reading x as `Arg::X` and y as `Arg::Y`.
-    pub odes: Vec<Program>,
-    /// Set for a differential equation, whose initial points the panel
-    /// shows under it.
-    pub ode: bool,
-    /// Where its solution curves start, with what is wrong with them.
+    /// For a differential equation: one per list element.
+    pub odes: Vec<Ode>,
+    /// Set for a differential equation to its order, so the panel shows
+    /// its initial points and the initial derivatives it needs.
+    pub ode: Option<usize>,
+    /// Where its solution curves start, with what is wrong with them and
+    /// with the initial derivatives.
     pub seeds: Vec<Seed>,
     pub seeds_error: Option<String>,
+    pub derivs_error: Option<String>,
     /// Whether every initial point is written as plain numbers, so
     /// dragging one can rewrite them.
     pub seeds_fixed: bool,
@@ -344,9 +391,10 @@ impl RowAnalysis {
             picture: Vec::new(),
             unit: None,
             odes: Vec::new(),
-            ode: false,
+            ode: None,
             seeds: Vec::new(),
             seeds_error: None,
+            derivs_error: None,
             seeds_fixed: false,
         }
     }
@@ -1431,7 +1479,7 @@ fn into_3d(row: &mut RowAnalysis) {
     }
     row.curves.clear();
     row.odes.clear();
-    row.ode = false;
+    row.ode = None;
     row.seeds.clear();
     row.regions.clear();
     row.polygons.clear();
@@ -1532,7 +1580,10 @@ fn def_name(def: &Def) -> &str {
 }
 
 fn definable(name: &str) -> bool {
-    !GRAPH_VARIABLES.contains(&name) && !CONSTANTS.iter().any(|(c, _)| *c == name)
+    // `y'` is a derivative in a differential equation, never a variable.
+    !name.contains('\'')
+        && !GRAPH_VARIABLES.contains(&name)
+        && !CONSTANTS.iter().any(|(c, _)| *c == name)
 }
 
 fn definition(statement: &Statement) -> Option<Result<Def, String>> {
@@ -2020,6 +2071,12 @@ impl Env {
 
     fn other_row(&mut self, input: &RowInput, statement: &Statement) -> RowAnalysis {
         let id = input.id;
+        if let Some(order) = ode_order(statement) {
+            if self.mode == Mode::ThreeD {
+                return RowAnalysis::error(id, "Differential equations are drawn in 2D graphs");
+            }
+            return self.ode_row(input, statement, order);
+        }
         if self.mode == Mode::ThreeD {
             return self.other_row_3d(input, statement);
         }
@@ -2058,61 +2115,158 @@ impl Env {
             Statement::Chain(condition) => self.chain_row(id, condition),
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
             Statement::Expr(e) => self.expression_row(input, e),
-            Statement::Ode(rhs) => self.ode_row(input, rhs),
         }
     }
 
-    /// `y' = f(x, y)`: a slope field, with a solution through each of the
-    /// row's initial points.
-    fn ode_row(&mut self, input: &RowInput, rhs: &Expr) -> RowAnalysis {
-        let mut row = RowAnalysis::new(input.id, RowKind::Curve);
-        row.ode = true;
+    /// A differential equation: `y⁽ⁿ⁾ = f(x, y, …)`, an equation in x, y
+    /// and its derivatives not solved for the highest, or a system
+    /// `(x', y') = (f, g)`. `order` is the highest derivative of y, or 0
+    /// for a system.
+    fn ode_row(&mut self, input: &RowInput, statement: &Statement, order: usize) -> RowAnalysis {
+        let id = input.id;
+        let Statement::Relation(lhs, rel, rhs) = statement else {
+            return RowAnalysis::error(id, "Write a differential equation like y' = x - y");
+        };
+        if *rel != Relation::Eq {
+            return RowAnalysis::error(id, "Differential equations are written with =");
+        }
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
         let mut problems = Problems::default();
-        let val = self.lower_plane(rhs, &mut problems);
-        row.missing = slider_names(&problems.missing);
-        row.error = problems.first_message();
-        if row.error.is_none() && val.has_points() {
-            row.error = Some("y' can't equal a point".into());
+        let is_system =
+            |e: &Expr| matches!(e, Expr::Point(a, b) if is_var(a, "x'") && is_var(b, "y'"));
+        if is_system(lhs) || is_system(rhs) {
+            let f = if is_system(lhs) { rhs } else { lhs };
+            if ode_order(&Statement::Expr(f.clone())).is_some() {
+                return RowAnalysis::error(id, "x' and y' can't depend on x' or y'");
+            }
+            row.ode = Some(1);
+            let val = self.lower(f, &HashMap::new(), SYSTEM_FREE, &mut problems);
+            row.missing = slider_names(&problems.missing);
+            row.error = problems.first_message();
+            for item in &val.items {
+                if row.error.is_some() {
+                    break;
+                }
+                let Item::Point(a, b) = item else {
+                    row.error = Some("A system needs a point of slopes, like (y, -x)".into());
+                    break;
+                };
+                match (Program::compile(a), Program::compile(b)) {
+                    (Ok(f), Ok(g)) => row.odes.push(Ode::System { f, g }),
+                    (Err(e), _) | (_, Err(e)) => row.error = Some(e),
+                }
+            }
+        } else {
+            let mentions_x = |e: &Expr| {
+                let mut found = false;
+                e.visit_names(&mut |n, _| found |= n.starts_with("x'"));
+                found
+            };
+            if mentions_x(lhs) || mentions_x(rhs) {
+                return RowAnalysis::error(id, "x' belongs in a system, like (x', y') = (y, -x)");
+            }
+            if order > MAX_ODE_ORDER {
+                return RowAnalysis::error(
+                    id,
+                    format!("Differential equations go up to order {MAX_ODE_ORDER}"),
+                );
+            }
+            row.ode = Some(order);
+            let top = format!("y{}", "'".repeat(order));
+            let explicit = if is_var(lhs, &top) && !rhs.mentions(&top) {
+                Some(rhs)
+            } else if is_var(rhs, &top) && !lhs.mentions(&top) {
+                Some(lhs)
+            } else {
+                None
+            };
+            let (e, free) = match explicit {
+                Some(f) => (f.clone(), &ODE_FREE[..order + 1]),
+                None => (
+                    Expr::bin(Expr::Sub, lhs.clone(), rhs.clone()),
+                    &ODE_FREE[..order + 2],
+                ),
+            };
+            let val = self.lower(&e, &HashMap::new(), free, &mut problems);
+            row.missing = slider_names(&problems.missing);
+            row.error = problems.first_message();
+            if row.error.is_none() && val.has_points() {
+                row.error = Some(format!("{top} can't equal a point"));
+            }
+            if row.error.is_none() {
+                row.odes = compile_all(&val, &mut row.error, |f| match explicit {
+                    Some(_) => Ode::Explicit { order, f },
+                    None => Ode::Implicit { order, f },
+                });
+            }
         }
-        if row.error.is_none() {
-            row.odes = compile_all(&val, &mut row.error, |program| program);
-        }
+        self.read_seeds(input, &mut row);
+        row
+    }
+
+    /// A differential equation's initial points and derivatives.
+    fn read_seeds(&mut self, input: &RowInput, row: &mut RowAnalysis) {
+        let order = row.ode.unwrap_or(1);
         let latex = input.seeds.as_deref().unwrap_or("").trim();
         if latex.is_empty() {
             row.seeds_fixed = true;
-            return row;
+            return;
         }
-        let seeds = match parse(latex) {
-            Ok(Statement::Expr(e)) => e,
+        let mut missing = Vec::new();
+        let mut value_of = |env: &mut Env, latex: &str| -> Result<(Expr, Option<Value>), String> {
+            let e = match parse(latex)? {
+                Statement::Expr(e) => e,
+                _ => return Err(SEEDS_HINT.into()),
+            };
+            let mut problems = Problems::default();
+            let val = env.lower(&e, &HashMap::new(), NO_FREE, &mut problems);
+            missing.extend(slider_names(&problems.missing));
+            match problems.first_message() {
+                Some(m) => Err(m),
+                None => Ok((e, val.constant())),
+            }
+        };
+        let (seeds, at) = match value_of(self, latex) {
+            Ok((e, Some(Value::Point(x, y)))) => (e, vec![[x, y]]),
+            Ok((e, Some(Value::Points(ps)))) => (e, ps),
+            Ok((e, Some(Value::Numbers(ns)))) if ns.is_empty() => (e, Vec::new()),
             Ok(_) => {
                 row.seeds_error = Some(SEEDS_HINT.into());
-                return row;
+                (Expr::List(Vec::new()), Vec::new())
             }
             Err(e) => {
                 row.seeds_error = Some(e);
-                return row;
+                (Expr::List(Vec::new()), Vec::new())
             }
         };
-        let mut problems = Problems::default();
-        let val = self.lower(&seeds, &HashMap::new(), NO_FREE, &mut problems);
-        for name in slider_names(&problems.missing) {
+        // y'(x₀), y''(x₀), …: a number for every point, or a list with one
+        // for each.
+        let mut derivs: Vec<Vec<f64>> = Vec::new();
+        for i in 0..order.saturating_sub(1) {
+            let latex = input.derivs.get(i).map_or("", |l| l.trim());
+            let values = if latex.is_empty() {
+                Ok(vec![0.0])
+            } else {
+                match value_of(self, latex) {
+                    Ok((_, Some(Value::Number(v)))) => Ok(vec![v]),
+                    Ok((_, Some(Value::Numbers(vs)))) if !vs.is_empty() => Ok(vs),
+                    Ok(_) => Err("Initial derivatives are numbers, or a list of them".into()),
+                    Err(e) => Err(e),
+                }
+            };
+            match values {
+                Ok(vs) => derivs.push(vs),
+                Err(e) => {
+                    row.derivs_error.get_or_insert(e);
+                    derivs.push(vec![f64::NAN]);
+                }
+            }
+        }
+        for name in missing {
             if !row.missing.contains(&name) {
                 row.missing.push(name);
             }
         }
-        if let Some(e) = problems.first_message() {
-            row.seeds_error = Some(e);
-            return row;
-        }
-        let at: Vec<[f64; 2]> = match val.constant() {
-            Some(Value::Point(x, y)) => vec![[x, y]],
-            Some(Value::Points(ps)) => ps,
-            Some(Value::Numbers(ns)) if ns.is_empty() => Vec::new(),
-            _ => {
-                row.seeds_error = Some(SEEDS_HINT.into());
-                return row;
-            }
-        };
         let drags: Vec<Option<[Option<String>; 2]>> = match &seeds {
             Expr::List(items) if items.len() == at.len() => {
                 items.iter().map(|e| self.drag_of(e)).collect()
@@ -2120,13 +2274,23 @@ impl Env {
             e if at.len() == 1 => vec![self.drag_of(e)],
             _ => vec![None; at.len()],
         };
-        row.seeds_fixed = is_literal(&seeds);
+        row.seeds_fixed = row.seeds_error.is_none() && is_literal(&seeds);
         row.seeds = at
             .into_iter()
             .zip(drags)
-            .map(|(at, drag)| Seed { at, drag })
+            .enumerate()
+            .map(|(i, (at, drag))| Seed {
+                at,
+                drag,
+                derivs: derivs
+                    .iter()
+                    .map(|vs| match vs.len() {
+                        1 => vs[0],
+                        _ => vs.get(i).copied().unwrap_or(f64::NAN),
+                    })
+                    .collect(),
+            })
             .collect();
-        row
     }
 
     /// A row of a 3D graph that defines nothing: `z = f(x, y)` (either way
@@ -2163,7 +2327,6 @@ impl Env {
                 self.solid_row(id, &condition)
             }
             Statement::Chain(condition) => self.solid_row(id, condition),
-            Statement::Ode(_) => RowAnalysis::error(id, "Slope fields are drawn in 2D graphs"),
             Statement::Regression(..) => unreachable!("regressions have their own rows"),
         }
     }
@@ -4994,6 +5157,43 @@ fn is_literal(e: &Expr) -> bool {
         Expr::Point3(a, b, c) => [a, b, c].iter().all(|e| e.as_literal().is_some()),
         other => other.as_literal().is_some(),
     }
+}
+
+/// For a statement with derivatives of y in it, as `y'' = -y`, the
+/// highest; 0 when it has only x' and y' as in a system. None when it is no
+/// differential equation.
+pub(crate) fn ode_order(statement: &Statement) -> Option<usize> {
+    let mut order: Option<usize> = None;
+    let mut see = |name: &str, _: bool| {
+        if let Some(primes) = name.strip_prefix(['x', 'y']) {
+            if !primes.is_empty() && primes.chars().all(|c| c == '\'') {
+                let n = if name.starts_with('y') {
+                    primes.len()
+                } else {
+                    0
+                };
+                order = Some(order.map_or(n, |o| o.max(n)));
+            }
+        }
+    };
+    match statement {
+        Statement::Expr(e) => e.visit_names(&mut see),
+        Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
+            a.visit_names(&mut see);
+            b.visit_names(&mut see);
+        }
+        Statement::Chain(c) => c.operands.iter().for_each(|e| e.visit_names(&mut see)),
+    }
+    // A system's y' counts as order 0, as its x' does.
+    order.map(|o| if is_system_statement(statement) { 0 } else { o })
+}
+
+fn is_system_statement(statement: &Statement) -> bool {
+    let Statement::Relation(a, _, b) = statement else {
+        return false;
+    };
+    let is = |e: &Expr| matches!(e, Expr::Point(p, q) if is_var(p, "x'") && is_var(q, "y'"));
+    is(a) || is(b)
 }
 
 fn is_var(e: &Expr, name: &str) -> bool {

@@ -14,6 +14,7 @@ pub mod three;
 pub mod viewport;
 
 pub use implicit::{trace_implicit, Field};
+pub use ode::Equation;
 pub use poi::{
     curve_pois, implicit_intersections, implicit_pois, intersections, parametric_intersections,
     parametric_pois, point_text, Poi, PoiKind,

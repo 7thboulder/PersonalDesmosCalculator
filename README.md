@@ -29,6 +29,13 @@ on the right. What you type is graphed as you type it:
   Drag a point on the graph to move its solution; points written with
   sliders, such as `(a, b)`, move those sliders. Solutions are integrated
   with adaptive Runge-Kutta (Dormand-Prince) to a tenth of a pixel.
+  Higher orders work up to 6, such as `y'' = -0.3y' - y` or
+  `\frac{d^3y}{dx^3} = -y`, with a box for each of y'(x₀) to y⁽ⁿ⁻¹⁾(x₀)
+  (a number, or a list with one per point). Equations not solved for the
+  highest derivative, such as `(y')^2 + y^2 = 1` or `x y' + y = 0`, are
+  solved for it numerically, drawing every branch. Systems
+  `x' = f, y' = g` (or `(x', y') = (f, g)`, or with `dx/dt`) in x, y and t
+  draw a direction field and the trajectory through each point from t = 0.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
 - Calculus: `d/dx sin(x^2)`, `f'(x)` and `f''(x)`, sums and products
   (type `sum` or `prod`, as in Desmos), and integrals such as
