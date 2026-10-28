@@ -16,6 +16,12 @@
   var rows = [];
   var list = document.getElementById('list');
 
+  // The Greek letters typing turns into symbols, as in Desmos. Desmos has
+  // no capitals that look like Latin ones (A, B, E, ...).
+  var GREEK_LETTERS = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ' +
+    'mu nu xi rho sigma upsilon phi chi psi omega ' +
+    'Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega';
+
   // Options matching how Desmos's editor behaves when typing.
   var MATH_OPTIONS = {
     spaceBehavesLikeTab: false,
@@ -25,7 +31,8 @@
     supSubsRequireOperand: true,
     charsThatBreakOutOfSupSub: '+-=<>',
     autoSubscriptNumerals: true,
-    autoCommands: 'pi theta tau phi alpha beta gamma delta sqrt sum prod int nthroot',
+    // Every Greek letter Desmos spells out, so typing omega gives ω.
+    autoCommands: 'sqrt sum prod int nthroot pi tau ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
@@ -71,6 +78,49 @@
     if (cursor.nextElementSibling || !block.classList.contains('mq-sub')) return;
     var field = MQ(root);
     if (field) field.keystroke('Right');
+  }, true);
+
+  // MathQuill turns the psi inside epsilon and upsilon into ψ before the
+  // whole word is typed. Writing that i as a plain letter skips the
+  // shortcut, so finishing the word still gives ε or υ.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'i' || e.ctrlKey || e.metaKey || e.altKey) return;
+    var root = e.target.closest && e.target.closest('.mq-editable-field');
+    var cursor = root && root.querySelector('.mq-cursor');
+    if (!cursor) return;
+    var typed = '';
+    for (var n = cursor.previousElementSibling; n && typed.length < 3; n = n.previousElementSibling) {
+      if (n.tagName !== 'VAR' || n.classList.contains('mq-operator-name')) break;
+      typed = n.textContent + typed;
+    }
+    if (typed !== 'eps' && typed !== 'ups') return;
+    var field = MQ(root);
+    if (!field) return;
+    e.preventDefault();
+    e.stopPropagation();
+    field.write('i');
+  }, true);
+
+  // A Greek keyboard types the character itself. The field writes the
+  // letter's command instead, the same as typing its name. Pasted Greek
+  // stays as characters, which the engine reads as the same letters.
+  var GREEK_KEYS = {
+    'α': 'alpha', 'β': 'beta', 'γ': 'gamma', 'δ': 'delta', 'ε': 'epsilon', 'ζ': 'zeta',
+    'η': 'eta', 'θ': 'theta', 'ι': 'iota', 'κ': 'kappa', 'λ': 'lambda', 'μ': 'mu',
+    'ν': 'nu', 'ξ': 'xi', 'π': 'pi', 'ρ': 'rho', 'σ': 'sigma', 'ς': 'sigma', 'τ': 'tau',
+    'υ': 'upsilon', 'φ': 'phi', 'χ': 'chi', 'ψ': 'psi', 'ω': 'omega', 'Γ': 'Gamma',
+    'Δ': 'Delta', 'Θ': 'Theta', 'Λ': 'Lambda', 'Ξ': 'Xi', 'Π': 'Pi', 'Σ': 'Sigma',
+    'Υ': 'Upsilon', 'Φ': 'Phi', 'Ψ': 'Psi', 'Ω': 'Omega'
+  };
+  document.addEventListener('beforeinput', function (e) {
+    var name = e.inputType === 'insertText' && GREEK_KEYS[e.data];
+    if (!name) return;
+    var root = e.target.closest && e.target.closest('.mq-editable-field');
+    var field = root && MQ(root);
+    if (!field) return;
+    e.preventDefault();
+    e.stopPropagation();
+    field.cmd('\\' + name);
   }, true);
 
   function send(message) {
