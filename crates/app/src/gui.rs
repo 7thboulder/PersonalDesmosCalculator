@@ -534,9 +534,11 @@ impl Running {
         self.interact.scale = scale as f64;
         let marks = self.interact.marks(&self.engine, &self.viewport);
         let (viewport, text, lines) = (&self.viewport, &mut self.text, &mut self.lines);
-        let scene = self.engine.with_plot_marks(&marks, |plot| {
-            build_scene_cached(viewport, scale, plot, text, lines)
-        });
+        let scene = self
+            .engine
+            .with_plot_marks(viewport, scale, &marks, |plot| {
+                build_scene_cached(viewport, scale, plot, text, lines)
+            });
         let scene_time = start.elapsed();
 
         let view = frame.texture.create_view(&Default::default());
@@ -650,6 +652,12 @@ impl Running {
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
+            }
+            Some("solve") => {
+                let id = value["id"].as_u64().unwrap_or(0);
+                let latex = value["latex"].as_str().unwrap_or_default();
+                let reply = crate::solve::reply(&self.rows, id, latex, value["op"].as_str());
+                self.run_script(&format!("window.engine.solved({reply})"));
             }
             Some("rows") => {
                 self.rows = value["rows"].clone();

@@ -11,6 +11,7 @@ use crate::ast::{Condition, Coord, Expr, Relation, Repeat, ShapeFn, Statement};
 use crate::builtins::Builtin;
 use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
+use crate::matrix::{self, Matrix, Stroke};
 use crate::parser::parse;
 use crate::units;
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,12 @@ pub struct RowInput {
     pub seeds: Option<String>,
     /// Set when the row is a table instead of an expression.
     pub table: Option<Vec<ColumnInput>>,
+    /// Set when the row is a matrix: the LaTeX of each cell, row by row.
+    /// `latex` is then the matrix's name.
+    pub matrix: Option<Vec<Vec<String>>>,
+    /// How far along a 2×2 matrix's transformation view is, from 0 (the
+    /// plane as it is) to 1 (the plane after the matrix), when it is on.
+    pub transform: Option<f64>,
 }
 
 /// One column of a table: its header and the LaTeX of each cell.
@@ -117,6 +124,15 @@ pub struct ParamSurface {
     pub z: Program,
     pub u: (f64, f64),
     pub v: (f64, f64),
+}
+
+/// A complex function `w = f(z)` over the plane, with z = x + iy: the
+/// real and imaginary parts of w, each reading x as `Arg::X` and y as
+/// `Arg::Y`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplexPlot {
+    pub re: Program,
+    pub im: Program,
 }
 
 /// A point a differential equation's solution passes through.
@@ -252,6 +268,8 @@ pub struct RowAnalysis {
     /// by constants: the low and high end on each axis (infinite where
     /// unbounded).
     pub boxes3: Vec<[[f64; 2]; 3]>,
+    /// Complex functions of z to color the plane by, one per list element.
+    pub complex: Vec<ComplexPlot>,
     /// For an action row: what each variable becomes when it runs, worked
     /// out from the current values.
     pub updates: Vec<(String, Value)>,
@@ -268,6 +286,11 @@ pub struct RowAnalysis {
     pub fractals: Vec<Fractal>,
     /// Lines through points in order, such as a cobweb diagram.
     pub paths: Vec<Vec<[f64; 2]>>,
+    /// A matrix value to show under the row.
+    pub matrix: Option<Matrix>,
+    /// Lines and shapes a matrix draws: its transformation view, or its
+    /// eigenvectors.
+    pub picture: Vec<Stroke>,
     /// The unit the value is shown in, as LaTeX, when it has one.
     pub unit: Option<String>,
     /// For a differential equation `y' = f(x, y)`: the slope, one program
@@ -318,6 +341,7 @@ impl RowAnalysis {
             polygons: Vec::new(),
             polygons3: Vec::new(),
             boxes3: Vec::new(),
+            complex: Vec::new(),
             updates: Vec::new(),
             parameter: None,
             columns: Vec::new(),
@@ -325,6 +349,8 @@ impl RowAnalysis {
             fit: None,
             fractals: Vec::new(),
             paths: Vec::new(),
+            matrix: None,
+            picture: Vec::new(),
             unit: None,
             odes: Vec::new(),
             ode: false,
@@ -375,6 +401,8 @@ impl RowAnalysis {
             && self.polygons.is_empty()
             && self.polygons3.is_empty()
             && self.boxes3.is_empty()
+            && self.picture.is_empty()
+            && self.complex.is_empty()
             && self.odes.is_empty()
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
@@ -786,6 +814,99 @@ fn complex_exp(a: Low, b: Low) -> Item {
     )
 }
 
+/// Whether `complex_call` knows the function.
+fn has_complex_form(f: Builtin) -> bool {
+    use Builtin::*;
+    matches!(
+        f,
+        Abs | Exp | Sqrt | Sin | Cos | Tan | Csc | Sec | Cot | Sinh | Cosh | Tanh | Ln | Log
+    )
+}
+
+/// A built-in function of the complex number a + bi, for the functions
+/// that have a complex form.
+fn complex_call(f: Builtin, a: Low, b: Low) -> Option<Result<Item, String>> {
+    use Builtin::*;
+    let (sin, cos, sinh, cosh) = (
+        || call1(Sin, a.clone()),
+        || call1(Cos, a.clone()),
+        || call1(Sinh, b.clone()),
+        || call1(Cosh, b.clone()),
+    );
+    let mul = |x: Low, y: Low| bin(BinOp::Mul, x, y);
+    let one = (Low::Const(1.0), Low::Const(0.0));
+    let ratio = |n: Item, d: Item| complex_op(BinOp::Div, n.parts()?, d.parts()?).ok();
+    let sine = || Item::complex(mul(sin(), cosh()), mul(cos(), sinh()));
+    let cosine = || {
+        Item::complex(
+            mul(cos(), cosh()),
+            shallow(Low::Neg(Box::new(mul(sin(), sinh())))),
+        )
+    };
+    // sinh(a + bi) = -i sin(i(a + bi)) = sinh a cos b + i cosh a sin b.
+    let hyper = |cosine: bool| {
+        let (sa, ca) = (call1(Sinh, a.clone()), call1(Cosh, a.clone()));
+        let (sb, cb) = (call1(Sin, b.clone()), call1(Cos, b.clone()));
+        if cosine {
+            Item::complex(mul(ca, cb), mul(sa, sb))
+        } else {
+            Item::complex(mul(sa, cb), mul(ca, sb))
+        }
+    };
+    let ln = || {
+        let modulus = call1(
+            Sqrt,
+            bin(
+                BinOp::Add,
+                mul(a.clone(), a.clone()),
+                mul(b.clone(), b.clone()),
+            ),
+        );
+        (
+            call1(Ln, modulus),
+            shallow(Low::Call(Arctan, vec![b.clone(), a.clone()])),
+        )
+    };
+    let inverse = |w: Item| complex_op(BinOp::Div, one.clone(), w.parts()?).ok();
+    Some(Ok(match f {
+        Abs => Item::Num(call1(
+            Sqrt,
+            bin(
+                BinOp::Add,
+                mul(a.clone(), a.clone()),
+                mul(b.clone(), b.clone()),
+            ),
+        )),
+        Exp => complex_exp(a, b),
+        Sqrt => {
+            return Some(complex_op(
+                BinOp::Pow,
+                (a, b),
+                (Low::Const(0.5), Low::Const(0.0)),
+            ))
+        }
+        Sin => sine(),
+        Cos => cosine(),
+        Tan => ratio(sine(), cosine())?,
+        Csc => inverse(sine())?,
+        Sec => inverse(cosine())?,
+        Cot => ratio(cosine(), sine())?,
+        Sinh => hyper(false),
+        Cosh => hyper(true),
+        Tanh => ratio(hyper(false), hyper(true))?,
+        Ln => {
+            let (re, im) = ln();
+            Item::complex(re, im)
+        }
+        Log => {
+            let (re, im) = ln();
+            let ten = Low::Const(std::f64::consts::LN_10);
+            Item::complex(bin(BinOp::Div, re, ten.clone()), bin(BinOp::Div, im, ten))
+        }
+        _ => return None,
+    }))
+}
+
 /// The arithmetic of complex numbers, on real and imaginary parts.
 fn complex_op(op: BinOp, (a, b): (Low, Low), (c, d): (Low, Low)) -> Result<Item, String> {
     let (add, sub, mul, div) = (
@@ -912,7 +1033,8 @@ fn scalar_item(item: &Item) -> Option<Scalar> {
 }
 
 /// A built-in function of plain numbers, as `Env::call` works it out: real
-/// arguments directly, and a complex one for abs, exp and sqrt.
+/// arguments directly, and a complex one for the functions that have a
+/// complex form.
 pub(crate) fn scalar_call(f: Builtin, parts: &[Scalar]) -> Option<Scalar> {
     if f == Builtin::Length || parts.is_empty() {
         return None;
@@ -922,19 +1044,7 @@ pub(crate) fn scalar_call(f: Builtin, parts: &[Scalar]) -> Option<Scalar> {
         let [(a, b)] = parts[..] else {
             return None;
         };
-        return scalar_item(&match f {
-            Builtin::Abs => Item::Num(call1(
-                Builtin::Sqrt,
-                bin(
-                    BinOp::Add,
-                    bin(BinOp::Mul, k(a), k(a)),
-                    bin(BinOp::Mul, k(b), k(b)),
-                ),
-            )),
-            Builtin::Exp => complex_exp(k(a), k(b)),
-            Builtin::Sqrt => complex_op(BinOp::Pow, (k(a), k(b)), (k(0.5), k(0.0))).ok()?,
-            _ => return None,
-        });
+        return scalar_item(&complex_call(f, k(a), k(b))?.ok()?);
     }
     if let [(a, _)] = parts {
         return Some((f.eval(&[*a]), 0.0));
@@ -993,7 +1103,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
     let written: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| {
-            (r.table.is_none() && !r.latex.trim().is_empty())
+            (r.table.is_none() && r.matrix.is_none() && !r.latex.trim().is_empty())
                 .then(|| crate::parser::parse_with_units(&r.latex))
         })
         .collect();
@@ -1008,9 +1118,13 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             })
             .collect()
     };
-    let parsed: Vec<Option<Result<Statement, String>>> = written
+    let mut parsed: Vec<Option<Result<Statement, String>>> = written
         .into_iter()
         .map(|w| w.map(|r| r.map(units::lower_statement)))
+        .collect();
+    let grids: Vec<Option<Result<matrix::Grid, String>>> = rows
+        .iter()
+        .map(|r| r.matrix.as_ref().map(|cells| read_grid(&r.latex, cells)))
         .collect();
     let mut tables: Vec<Option<Table>> = rows
         .iter()
@@ -1018,18 +1132,16 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         .collect();
 
     // Collect definitions, refusing duplicates and reserved names.
-    let mut defs: Vec<Option<Result<Def, String>>> = parsed
-        .iter()
-        .map(|p| match p {
-            // In 3D, z = … is a surface rather than a variable, and ρ and φ
-            // are spherical coordinates.
-            Some(Ok(statement)) => definition(statement).filter(|d| {
-                !(mode == Mode::ThreeD
-                    && matches!(d, Ok(Def::Var(n, _)) if SPACE_VARIABLES.contains(&n.as_str())))
-            }),
-            _ => None,
-        })
-        .collect();
+    let define = |p: &Option<Result<Statement, String>>| match p {
+        // In 3D, z = … is a surface rather than a variable, and ρ and φ
+        // are spherical coordinates.
+        Some(Ok(statement)) => definition(statement).filter(|d| {
+            !(mode == Mode::ThreeD
+                && matches!(d, Ok(Def::Var(n, _)) if SPACE_VARIABLES.contains(&n.as_str())))
+        }),
+        _ => None,
+    };
+    let mut defs: Vec<Option<Result<Def, String>>> = parsed.iter().map(define).collect();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for def in defs.iter().flatten().flatten() {
         *counts.entry(def_name(def).to_owned()).or_default() += 1;
@@ -1038,6 +1150,9 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         for name in table.defined_names() {
             *counts.entry(name.to_owned()).or_default() += 1;
         }
+    }
+    for grid in grids.iter().flatten().flatten() {
+        *counts.entry(grid.name.clone()).or_default() += 1;
     }
     let twice = |name: &str| format!("'{}' is defined more than once", name);
     for def in defs.iter_mut() {
@@ -1057,6 +1172,18 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             }
         }
     }
+
+    let grids: Vec<Option<Result<matrix::Grid, String>>> = grids
+        .into_iter()
+        .map(|g| {
+            g.map(|g| {
+                g.and_then(|g| match counts[&g.name] {
+                    1 => Ok(g),
+                    _ => Err(twice(&g.name)),
+                })
+            })
+        })
+        .collect();
 
     let mut env = Env {
         vars: FastMap::default(),
@@ -1095,6 +1222,79 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
                     }),
                 };
                 env.funcs.insert(name.clone(), def);
+            }
+        }
+    }
+
+    // Matrices are worked out first, and every row that mentions one is
+    // rewritten without it, or finished here when its value is a matrix.
+    let mut finished: HashMap<u64, RowAnalysis> = HashMap::new();
+    {
+        let mut ok_grids = Vec::new();
+        for (row, grid) in rows.iter().zip(&grids) {
+            match grid {
+                Some(Ok(g)) => ok_grids.push(matrix::Grid {
+                    name: g.name.clone(),
+                    cells: g.cells.clone(),
+                }),
+                Some(Err(e)) => {
+                    finished.insert(row.id, RowAnalysis::error(row.id, e.clone()));
+                }
+                None => {}
+            }
+        }
+        let vars: Vec<(String, Expr)> = defs
+            .iter()
+            .flatten()
+            .flatten()
+            .filter_map(|d| match d {
+                Def::Var(n, e) => Some((n.clone(), e.clone())),
+                Def::Func(..) => None,
+            })
+            .collect();
+        let funcs: Vec<(String, Vec<String>, Expr)> = defs
+            .iter()
+            .flatten()
+            .flatten()
+            .filter_map(|d| match d {
+                Def::Func(n, f) => Some((n.clone(), f.params.clone(), f.body.clone())),
+                Def::Var(..) => None,
+            })
+            .collect();
+        let mut layer = matrix::Layer::new(ok_grids, vars, funcs);
+        if layer.active() || rows.iter().any(|r| matrix::may_mention(&r.latex)) {
+            for (i, row) in rows.iter().enumerate() {
+                if let Some(Ok(g)) = &grids[i] {
+                    let out = match layer.grid(&g.name, &mut env) {
+                        Ok(m) => matrix_row(row, Some(&g.name), m, false, mode),
+                        Err(f) => failed_row(row.id, f),
+                    };
+                    finished.insert(row.id, out);
+                    continue;
+                }
+                if matches!(defs[i], Some(Err(_))) {
+                    continue;
+                }
+                let Some(Ok(statement)) = &parsed[i] else {
+                    continue;
+                };
+                match layer.row(statement, &mut env) {
+                    None => {}
+                    Some(matrix::Outcome::Rewritten(st)) => {
+                        parsed[i] = Some(Ok(st));
+                        defs[i] = define(&parsed[i]);
+                    }
+                    Some(matrix::Outcome::Matrix { matrix, eigen }) => {
+                        let name = match &defs[i] {
+                            Some(Ok(Def::Var(n, _))) => Some(n.as_str()),
+                            _ => None,
+                        };
+                        finished.insert(row.id, matrix_row(row, name, matrix, eigen, mode));
+                    }
+                    Some(matrix::Outcome::Failed(f)) => {
+                        finished.insert(row.id, failed_row(row.id, f));
+                    }
+                }
             }
         }
     }
@@ -1140,6 +1340,9 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         .zip(shown)
         .map(|((((row, parsed), def), table), shown)| {
             let mut point = None;
+            if let Some(done) = finished.remove(&row.id) {
+                return done;
+            }
             let mut out = match (parsed, def) {
                 _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
                 (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
@@ -1273,6 +1476,68 @@ fn flat(row: &mut RowAnalysis) {
     if row.error.is_none() {
         row.error = Some("Points with three coordinates need a 3D graph".into());
     }
+}
+
+/// A matrix row's name and cells, read.
+fn read_grid(name: &str, cells: &[Vec<String>]) -> Result<matrix::Grid, String> {
+    let name = match parse(name) {
+        _ if name.trim().is_empty() => return Err("Name this matrix, like A".into()),
+        Ok(Statement::Expr(Expr::Var(n))) if definable(&n) => n,
+        _ => return Err("A matrix's name is a letter, like A or M_1".into()),
+    };
+    let cells = cells
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| {
+                    (!c.trim().is_empty()).then(|| match parse(c) {
+                        Ok(Statement::Expr(e)) => Ok(e),
+                        Ok(_) => Err("Each entry of a matrix is a number".into()),
+                        Err(e) => Err(e),
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    Ok(matrix::Grid { name, cells })
+}
+
+/// A row whose value is a matrix: a matrix row, `B = A^{-1}`, or
+/// `\operatorname{rref}(A)`.
+fn matrix_row(
+    input: &RowInput,
+    name: Option<&str>,
+    m: Matrix,
+    eigen: bool,
+    mode: Mode,
+) -> RowAnalysis {
+    let kind = match name {
+        Some(n) => RowKind::Variable(n.to_owned()),
+        None => RowKind::Value,
+    };
+    let mut row = RowAnalysis::new(input.id, kind);
+    let flat = m.rows == 2 && m.cols == 2 && !eigen;
+    match input.transform {
+        Some(_) if !flat => {}
+        Some(_) if mode == Mode::ThreeD => {
+            row.error = Some("The transformation view needs a 2D graph".into());
+        }
+        Some(t) if m.data.iter().all(|v| v.is_finite()) => {
+            row.picture = matrix::transformation(&m, t);
+        }
+        _ => {}
+    }
+    if eigen && mode == Mode::Flat {
+        row.picture = matrix::eigen_picture(&m);
+    }
+    row.matrix = Some(m);
+    row
+}
+
+fn failed_row(id: u64, f: matrix::Failure) -> RowAnalysis {
+    let mut row = RowAnalysis::error(id, f.message);
+    row.missing = slider_names(&f.missing);
+    row
 }
 
 fn def_name(def: &Def) -> &str {
@@ -1529,6 +1794,43 @@ impl Problems {
 
 /// Graph variables in scope, each with the program argument it reads.
 type Free<'a> = &'a [(&'static str, Arg)];
+
+impl matrix::Scalars for Env {
+    fn value(&mut self, e: &Expr) -> Result<Value, matrix::Failure> {
+        let mut problems = Problems::default();
+        let val = self.lower(e, &HashMap::new(), NO_FREE, &mut problems);
+        if let Some(message) = problems.first_message() {
+            return Err(matrix::Failure {
+                message,
+                missing: problems.missing,
+            });
+        }
+        val.constant()
+            .ok_or_else(|| "Matrix entries can't depend on x or y".into())
+    }
+
+    fn defines(&self, name: &str) -> bool {
+        self.vars.contains_key(name)
+    }
+
+    fn define(&mut self, name: &str, e: Option<Expr>) {
+        self.values.remove(name);
+        match e {
+            Some(e) => self.vars.insert(name.to_owned(), e),
+            None => self.vars.remove(name),
+        };
+    }
+
+    fn define_func(&mut self, name: &str, params: &[String], body: Expr) {
+        self.funcs.insert(
+            name.to_owned(),
+            Rc::new(FuncDef {
+                params: params.to_vec(),
+                body,
+            }),
+        );
+    }
+}
 
 impl Env {
     /// The slider variables a point's coordinates are, when it is written
@@ -2047,6 +2349,11 @@ impl Env {
                 return self.fractal_row(id, *f, args);
             }
         }
+        if self.mode == Mode::Flat && e.mentions("z") && !self.vars.contains_key("z") {
+            if let Some(row) = self.complex_row(id, e) {
+                return row;
+            }
+        }
         // First see what the expression is and which graph variables it
         // reads, with t free unless a row defines it.
         let t_free = !self.vars.contains_key("t");
@@ -2071,6 +2378,52 @@ impl Env {
             return self.curve_row(id, e, Axis::X);
         }
         self.value_row(id, e)
+    }
+
+    /// A bare expression in z, such as `z^2 + 1`, colors the plane by its
+    /// value at z = x + iy. `None` when z turns out not to be free, as in
+    /// `[z^2 for z = [1...3]]`, so the row is read as usual.
+    fn complex_row(&mut self, id: u64, e: &Expr) -> Option<RowAnalysis> {
+        let z = Val {
+            items: vec![Item::Complex(Low::Arg(Arg::X), Low::Arg(Arg::Y))],
+            list: false,
+        };
+        let bindings: HashMap<String, Val> = [("z".to_owned(), z)].into_iter().collect();
+        let mut problems = Problems::default();
+        let val = self.lower(e, &bindings, &[("x", Arg::X), ("y", Arg::Y)], &mut problems);
+        let reads_z = val.items.iter().any(|i| match i {
+            Item::Num(l) => l.uses_arg(),
+            Item::Complex(a, b) | Item::Point(a, b) => a.uses_arg() || b.uses_arg(),
+            _ => false,
+        });
+        if !reads_z && problems.errors.is_empty() {
+            return None;
+        }
+        let mut row = RowAnalysis::new(id, RowKind::Curve);
+        row.missing = slider_names(&problems.missing);
+        row.error = problems.first_message();
+        if row.error.is_none() && (problems.uses("x") || problems.uses("y")) {
+            row.error = Some("A complex plot reads only z; write x + iy as z".into());
+        }
+        if row.error.is_some() {
+            return Some(row);
+        }
+        for item in &val.items {
+            let Some((re, im)) = item.parts() else {
+                row.error = Some("A complex plot needs a number, not a point".into());
+                row.complex.clear();
+                break;
+            };
+            match (Program::compile(&re), Program::compile(&im)) {
+                (Ok(re), Ok(im)) => row.complex.push(ComplexPlot { re, im }),
+                (Err(e), _) | (_, Err(e)) => {
+                    row.error = Some(e);
+                    row.complex.clear();
+                    break;
+                }
+            }
+        }
+        Some(row)
     }
 
     fn curve_row(&mut self, id: u64, expr: &Expr, axis: Axis) -> RowAnalysis {
@@ -4475,21 +4828,10 @@ impl Env {
                 list: false,
             };
         }
-        if complex && matches!(f, Builtin::Abs | Builtin::Exp | Builtin::Sqrt) {
+        if complex && args.len() == 1 && has_complex_form(f) {
             return self.broadcast(&args, problems, |items| {
                 let (a, b) = items[0].parts().ok_or_else(point_error)?;
-                Ok(match f {
-                    Builtin::Abs => Item::Num(call1(
-                        Builtin::Sqrt,
-                        bin(
-                            BinOp::Add,
-                            bin(BinOp::Mul, a.clone(), a),
-                            bin(BinOp::Mul, b.clone(), b),
-                        ),
-                    )),
-                    Builtin::Exp => complex_exp(a, b),
-                    _ => complex_op(BinOp::Pow, (a, b), (Low::Const(0.5), Low::Const(0.0)))?,
-                })
+                complex_call(f, a, b).expect("has a complex form")
             });
         }
         if complex {

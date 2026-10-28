@@ -30,88 +30,113 @@ pub struct Shader {
 /// The relation as WGSL, or `None` when some part of it has no GPU
 /// equivalent.
 pub fn body(program: &Program) -> Option<Shader> {
-    let mut constants = Vec::new();
-    let mut stack: Vec<String> = Vec::new();
-    let mut lines = String::new();
-    let mut next = 0usize;
-    // Longer expressions are bound to a name, so the source stays readable
-    // and the shader compiler is not handed one enormous expression.
-    let mut push = |expr: String, stack: &mut Vec<String>, lines: &mut String| {
+    let mut emitter = Emitter::default();
+    let result = emitter.emit(program)?;
+    emitter.lines.push_str(&format!("    return {result};\n"));
+    Some(Shader {
+        body: emitter.lines,
+        constants: emitter.constants,
+    })
+}
+
+/// A complex function as WGSL: the body of
+/// `fn complex_value(x: f32, y: f32) -> vec2<f32>`, returning the real and
+/// imaginary parts, with its numbers read from `u.k` as in [`body`].
+pub fn complex_body(re: &Program, im: &Program) -> Option<Shader> {
+    let mut emitter = Emitter::default();
+    let re = emitter.emit(re)?;
+    let im = emitter.emit(im)?;
+    emitter
+        .lines
+        .push_str(&format!("    return vec2<f32>({re}, {im});\n"));
+    Some(Shader {
+        body: emitter.lines,
+        constants: emitter.constants,
+    })
+}
+
+/// Writes programs as WGSL statements, sharing one list of numbers.
+#[derive(Default)]
+struct Emitter {
+    constants: Vec<f32>,
+    lines: String,
+    next: usize,
+}
+
+impl Emitter {
+    /// Writes the statements for `program` and returns the expression for
+    /// its value.
+    fn emit(&mut self, program: &Program) -> Option<String> {
+        let mut stack: Vec<String> = Vec::new();
+        for op in program.ops() {
+            match *op {
+                Op::Const(v) => stack.push(if v.is_nan() {
+                    "gc_nan()".into()
+                } else if v.is_infinite() {
+                    // The largest finite float behaves like infinity in every
+                    // comparison a relation makes.
+                    if v > 0.0 { "3.4e38" } else { "-3.4e38" }.into()
+                } else if self.constants.len() < MAX_CONSTANTS {
+                    let i = self.constants.len();
+                    self.constants.push(v as f32);
+                    format!("u.k[{}][{}]", i / 4, i % 4)
+                } else {
+                    float(v)
+                }),
+                Op::Arg(Arg::X) => stack.push("x".into()),
+                Op::Arg(Arg::Y) => stack.push("y".into()),
+                // Integrals are evaluated on the CPU.
+                Op::Arg(Arg::Local(_) | Arg::Z) | Op::Integral { .. } => return None,
+                Op::Neg => {
+                    let a = stack.pop()?;
+                    self.push(format!("-({a})"), &mut stack);
+                }
+                Op::Bin(bin) => {
+                    let b = stack.pop()?;
+                    let a = stack.pop()?;
+                    let expr = match bin {
+                        BinOp::Add => format!("({a}) + ({b})"),
+                        BinOp::Sub => format!("({a}) - ({b})"),
+                        BinOp::Mul => format!("({a}) * ({b})"),
+                        BinOp::Div => format!("({a}) / ({b})"),
+                        BinOp::Pow => format!("gc_pow({a}, {b})"),
+                        BinOp::Lt => format!("gc_truth({a}, {b}, ({a}) < ({b}))"),
+                        BinOp::Le => format!("gc_truth({a}, {b}, ({a}) <= ({b}))"),
+                        BinOp::Gt => format!("gc_truth({a}, {b}, ({a}) > ({b}))"),
+                        BinOp::Ge => format!("gc_truth({a}, {b}, ({a}) >= ({b}))"),
+                        BinOp::Eq => format!("gc_truth({a}, {b}, ({a}) == ({b}))"),
+                    };
+                    self.push(expr, &mut stack);
+                }
+                Op::Call(f, n) => {
+                    let at = stack.len().checked_sub(n as usize)?;
+                    let args: Vec<String> = stack.split_off(at);
+                    self.push(call(f, &args)?, &mut stack);
+                }
+                Op::Select => {
+                    let otherwise = stack.pop()?;
+                    let then = stack.pop()?;
+                    let c = stack.pop()?;
+                    self.push(format!("gc_select({c}, {then}, {otherwise})"), &mut stack);
+                }
+            }
+        }
+        let result = stack.pop()?;
+        stack.is_empty().then_some(result)
+    }
+
+    /// Longer expressions are bound to a name, so the source stays readable
+    /// and the shader compiler is not handed one enormous expression.
+    fn push(&mut self, expr: String, stack: &mut Vec<String>) {
         if expr.len() <= 24 {
             stack.push(expr);
         } else {
-            let name = format!("t{next}");
-            lines.push_str(&format!("    let {name} = {expr};\n"));
+            let name = format!("t{}", self.next);
+            self.lines.push_str(&format!("    let {name} = {expr};\n"));
             stack.push(name);
-            next += 1;
-        }
-    };
-    for op in program.ops() {
-        match *op {
-            Op::Const(v) => stack.push(if v.is_nan() {
-                "gc_nan()".into()
-            } else if v.is_infinite() {
-                // The largest finite float behaves like infinity in every
-                // comparison a relation makes.
-                if v > 0.0 { "3.4e38" } else { "-3.4e38" }.into()
-            } else if constants.len() < MAX_CONSTANTS {
-                let i = constants.len();
-                constants.push(v as f32);
-                format!("u.k[{}][{}]", i / 4, i % 4)
-            } else {
-                float(v)
-            }),
-            Op::Arg(Arg::X) => stack.push("x".into()),
-            Op::Arg(Arg::Y) => stack.push("y".into()),
-            // Integrals are evaluated on the CPU.
-            Op::Arg(Arg::Local(_) | Arg::Z) | Op::Integral { .. } => return None,
-            Op::Neg => {
-                let a = stack.pop()?;
-                push(format!("-({a})"), &mut stack, &mut lines);
-            }
-            Op::Bin(bin) => {
-                let b = stack.pop()?;
-                let a = stack.pop()?;
-                let expr = match bin {
-                    BinOp::Add => format!("({a}) + ({b})"),
-                    BinOp::Sub => format!("({a}) - ({b})"),
-                    BinOp::Mul => format!("({a}) * ({b})"),
-                    BinOp::Div => format!("({a}) / ({b})"),
-                    BinOp::Pow => format!("gc_pow({a}, {b})"),
-                    BinOp::Lt => format!("gc_truth({a}, {b}, ({a}) < ({b}))"),
-                    BinOp::Le => format!("gc_truth({a}, {b}, ({a}) <= ({b}))"),
-                    BinOp::Gt => format!("gc_truth({a}, {b}, ({a}) > ({b}))"),
-                    BinOp::Ge => format!("gc_truth({a}, {b}, ({a}) >= ({b}))"),
-                    BinOp::Eq => format!("gc_truth({a}, {b}, ({a}) == ({b}))"),
-                };
-                push(expr, &mut stack, &mut lines);
-            }
-            Op::Call(f, n) => {
-                let at = stack.len().checked_sub(n as usize)?;
-                let args: Vec<String> = stack.split_off(at);
-                push(call(f, &args)?, &mut stack, &mut lines);
-            }
-            Op::Select => {
-                let otherwise = stack.pop()?;
-                let then = stack.pop()?;
-                let c = stack.pop()?;
-                push(
-                    format!("gc_select({c}, {then}, {otherwise})"),
-                    &mut stack,
-                    &mut lines,
-                );
-            }
+            self.next += 1;
         }
     }
-    let result = stack.pop()?;
-    if !stack.is_empty() {
-        return None;
-    }
-    lines.push_str(&format!("    return {result};\n"));
-    Some(Shader {
-        body: lines,
-        constants,
-    })
 }
 
 fn float(v: f64) -> String {
@@ -238,6 +263,19 @@ mod tests {
             region_body("\\sin\\left(xy\\right)+\\cos\\left(x+y\\right)>\\tan\\left(xy\\right)")
                 .expect("WGSL");
         assert!(code.contains("let t0 ="), "{code}");
+    }
+
+    #[test]
+    fn complex_functions_share_their_numbers() {
+        let rows = [RowInput {
+            id: 0,
+            latex: "z^2+3".to_string(),
+            ..Default::default()
+        }];
+        let plot = analyze(&rows)[0].complex[0].clone();
+        let shader = complex_body(&plot.re, &plot.im).expect("WGSL");
+        assert!(shader.body.contains("return vec2<f32>("), "{}", shader.body);
+        assert!(shader.constants.contains(&3.0));
     }
 
     #[test]

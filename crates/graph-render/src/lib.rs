@@ -362,7 +362,13 @@ impl GraphRenderer {
             area,
             &scene.vertices,
             text,
-            Middle::Shade(scene.shade_after, shadings, fractals, shader),
+            Middle::Shade(
+                scene.grid_after,
+                scene.shade_after,
+                shadings,
+                fractals,
+                shader,
+            ),
         );
     }
 
@@ -439,15 +445,18 @@ impl GraphRenderer {
             return;
         }
         let linearize = self.format.is_srgb();
-        let shade_after = match &middle {
-            Middle::Shade(at, ..) => (*at).min(vertices.len()),
-            Middle::Three(..) => 0,
-            Middle::None => vertices.len(),
+        let (grid_after, shade_after) = match &middle {
+            Middle::Shade(grid, at, ..) => {
+                let at = (*at).min(vertices.len());
+                ((*grid).min(at), at)
+            }
+            Middle::Three(..) => (0, 0),
+            Middle::None => (vertices.len(), vertices.len()),
         };
         let mut encoder = device.create_command_encoder(&Default::default());
-        // Up to three passes over the same attachment: only the first
-        // clears, so shading lands between the scene's background and its
-        // foreground.
+        // Several passes over the same attachment: only the first clears,
+        // so colorings land on the grid under the axes, and shading
+        // between the scene's background and its foreground.
         let mut first = true;
         macro_rules! begin_pass {
             () => {{
@@ -498,19 +507,29 @@ impl GraphRenderer {
                 }
             }};
         }
-        draw_scene_part!(0..shade_after as u32);
         match middle {
-            Middle::Shade(_, shadings, fractals, shader)
+            Middle::Shade(_, _, shadings, fractals, shader)
                 if !shadings.is_empty() || !fractals.is_empty() =>
             {
                 shader.prepare(gpu, self.format, self.samples, shadings);
-                let fractal = shader.fractals(gpu);
-                fractal.prepare(gpu, self.format, self.samples, target_size, fractals);
-                let mut rp = begin_pass!();
-                shader.fractals(gpu).draw(&mut rp);
-                shader.draw(&mut rp, shadings);
+                shader
+                    .fractals(gpu)
+                    .prepare(gpu, self.format, self.samples, target_size, fractals);
+                draw_scene_part!(0..grid_after as u32);
+                // Fractals and complex colorings lie on the grid, under the axes.
+                if !fractals.is_empty() || shadings.iter().any(|s| s.complex) {
+                    let mut rp = begin_pass!();
+                    shader.fractals(gpu).draw(&mut rp);
+                    shader.draw(&mut rp, shadings, true);
+                }
+                draw_scene_part!(grid_after as u32..shade_after as u32);
+                if shadings.iter().any(|s| !s.complex) {
+                    let mut rp = begin_pass!();
+                    shader.draw(&mut rp, shadings, false);
+                }
             }
             Middle::Three(frame, renderer) => {
+                draw_scene_part!(0..shade_after as u32);
                 renderer.prepare(gpu, frame, target_size, area, linearize);
                 // Its own pass, the only one with a depth buffer.
                 let load = if first {
@@ -553,7 +572,7 @@ impl GraphRenderer {
                 rp.set_scissor_rect(ax, ay, aw, ah);
                 renderer.draw(&mut rp, frame);
             }
-            _ => {}
+            _ => draw_scene_part!(0..shade_after as u32),
         }
         draw_scene_part!(shade_after as u32..count as u32);
         if first {
@@ -568,8 +587,15 @@ impl GraphRenderer {
 /// What a frame draws between the scene's background and its foreground.
 enum Middle<'a, 'b> {
     None,
-    /// Fractals and shaded regions, after this many of the scene's vertices.
-    Shade(usize, &'a [Shading], &'a [Fractal], &'b mut ShadingRenderer),
+    /// Complex colorings and fractals after the first count of the scene's
+    /// vertices, and shaded regions after the second.
+    Shade(
+        usize,
+        usize,
+        &'a [Shading],
+        &'a [Fractal],
+        &'b mut ShadingRenderer,
+    ),
     Three(&'a Frame3<'a>, &'b mut Renderer3),
 }
 
@@ -722,6 +748,7 @@ mod tests {
                 vp.to_world(0.0, 0.0)[1] as f32,
             ],
             units_per_px: vp.units_per_px as f32,
+            complex: false,
         };
         let px = render_offscreen(&gpu, w, h, &scene, &text, &[shading], &[]);
         let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
@@ -777,11 +804,11 @@ mod tests {
         let scene = build_scene(&vp, 1.0, &Plot::default(), &mut text);
         let px = render_offscreen(gpu, size, size, &scene, &text, &[], &[fractal]);
         let solid = [45, 112, 179];
-        let gpu_inside = px
+        let gpu_inside: Vec<bool> = px
             .chunks(4)
             .map(|p| (0..3).all(|i| (p[i] as i32 - solid[i]).abs() <= 2))
             .collect();
-        let cpu_inside = (0..size * size)
+        let cpu_inside: Vec<bool> = (0..size * size)
             .map(|i| {
                 let c = [
                     origin[0] + ((i % size) as f64 + 0.5) * upp,
@@ -812,7 +839,7 @@ mod tests {
         // The whole set: the middle of the cardioid is in it, the corners
         // are not.
         let (gpu_inside, cpu_inside) = mandelbrot_both_ways(&gpu, [-0.5, 0.0], 3.0, 64, 200);
-        assert!(gpu_inside[32 * 64 + 40] && !gpu_inside[0]);
+        assert!(cpu_inside[25 * 64 + 40] && gpu_inside[25 * 64 + 40] && !gpu_inside[0]);
         let (share, _) = agree((gpu_inside, cpu_inside));
         // (Less where the axes cross it.)
         assert!(share > 0.95, "agrees on {share}");
@@ -821,6 +848,44 @@ mod tests {
         let (share, inside) = agree(mandelbrot_both_ways(&gpu, deep, 1e-11, 48, 3000));
         assert!(inside > 50, "the view has some of the set in it: {inside}");
         assert!(share > 0.98, "agrees on {share}");
+    }
+
+    #[test]
+    fn complex_function_colors_by_angle() {
+        let Ok(gpu) = Gpu::new(&new_instance(), None) else {
+            return;
+        };
+        let (w, h) = (200, 200);
+        let vp = Viewport::new(w as f64, h as f64);
+        let mut text = graph_core::TextAtlas::empty();
+        let scene = build_scene(&vp, 1.0, &Plot::default(), &mut text);
+        // w = z: red along the positive real axis, cyan along the negative.
+        let shading = Shading {
+            body: "    return vec2<f32>(x, y);\n".into(),
+            constants: Vec::new(),
+            test: None,
+            color: [0.0; 4],
+            fill_opacity: 1.0,
+            line_px: 0.0,
+            origin: [
+                vp.to_world(0.0, 0.0)[0] as f32,
+                vp.to_world(0.0, 0.0)[1] as f32,
+            ],
+            units_per_px: vp.units_per_px as f32,
+            complex: true,
+        };
+        let px = render_offscreen(&gpu, w, h, &scene, &text, &[shading], &[]);
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        let right = at(170, 97);
+        let left = at(30, 97);
+        assert!(
+            right[0] > right[1] + 60 && right[0] > right[2] + 60,
+            "red: {right:?}"
+        );
+        assert!(
+            left[1] > left[0] + 60 && left[2] > left[0] + 60,
+            "cyan: {left:?}"
+        );
     }
 
     #[test]

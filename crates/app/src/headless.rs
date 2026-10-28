@@ -145,7 +145,9 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         interact.moved(&engine, &vp, vp.to_screen(x, y));
     }
     let marks = interact.marks(&engine, &vp);
-    let scene = engine.with_plot_marks(&marks, |plot| build_scene(&vp, 1.0, plot, &mut text));
+    let scene = engine.with_plot_marks(&vp, 1.0, &marks, |plot| {
+        build_scene(&vp, 1.0, plot, &mut text)
+    });
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
     let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
@@ -365,7 +367,7 @@ impl Frame {
         let text = &mut self.text;
         let scene = self
             .engine
-            .with_plot(|plot| build_scene(&vp, 1.0, plot, text));
+            .with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, text));
         let shadings = self
             .engine
             .shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
@@ -440,7 +442,7 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
         latex[0] = format!("a={a:.2}");
         let start = Instant::now();
         engine.update(&rows(&latex));
-        let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+        let scene = engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text));
         let built = start.elapsed();
         let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
         let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
@@ -490,7 +492,8 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
                 latex[0] = format!("a={a:.2}");
                 let start = Instant::now();
                 engine.update(&rows(&latex));
-                let scene = engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+                let scene =
+                    engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text));
                 *best = (*best).min(start.elapsed());
                 std::hint::black_box(scene);
             }
@@ -561,7 +564,7 @@ pub fn bench_ticker(path: &str, ticks: u32) -> Result<(), String> {
         let start = Instant::now();
         let reply = engine.update(&serde_json::Value::Array(rows.clone()));
         analysis += start.elapsed();
-        engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text));
+        engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text));
         times.push(start.elapsed());
         if let Some(e) = reply[ticker]["error"].as_str() {
             return Err(format!("the ticker failed: {e}"));
@@ -688,7 +691,9 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
             let start = Instant::now();
             let mut engine = Engine::default();
             engine.update(&serde_json::Value::Array(rows.clone()));
-            std::hint::black_box(engine.with_plot(|plot| build_scene(&vp, 1.0, plot, &mut text)));
+            std::hint::black_box(
+                engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text)),
+            );
             open = open.min(start.elapsed());
         }
 
@@ -703,8 +708,9 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
             if let Some(rows) = update {
                 engine.update(&serde_json::Value::Array(rows.to_vec()));
             }
-            let scene =
-                engine.with_plot(|plot| build_scene_cached(vp, 1.0, plot, &mut text, &mut lines));
+            let scene = engine.with_plot(vp, 1.0, |plot| {
+                build_scene_cached(vp, 1.0, plot, &mut text, &mut lines)
+            });
             let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
             let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
             let cpu = start.elapsed();

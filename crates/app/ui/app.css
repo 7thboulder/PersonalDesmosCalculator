@@ -655,6 +655,9 @@ button.icon:disabled { color: #bbb; cursor: default; }
 
 #style-menu .fill-options { display: none; }
 #style-menu.has-fill .fill-options { display: block; }
+#style-menu .complex-options { display: none; }
+#style-menu.has-complex .complex-options { display: flex; }
+#style-menu .complex-options button { width: auto; flex: 1; font: inherit; font-size: 12px; }
 
 .row .run-box { display: none; margin: -6px 36px 10px 12px; }
 .row.action .run-box { display: block; }
@@ -731,3 +734,255 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #ticker.has-error .tick-error { display: block; }
 #ticker .remove { position: absolute; top: 8px; right: 6px; }
 #ticker:hover .remove { visibility: visible; }
+
+/* ---- Matrices ---- */
+.matrix-row .body { padding: 8px 36px 8px 12px; }
+.mx-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 19px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.mx-name { min-width: 1em; border: 0 !important; box-shadow: none !important; }
+.mx-equals { color: #333; }
+/* Square brackets drawn by the borders, as a matrix is written. */
+.mx-bracket {
+  position: relative;
+  padding: 2px 6px;
+}
+.mx-bracket::before, .mx-bracket::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  border: 1.5px solid #333;
+}
+.mx-bracket::before { left: 0; border-right: 0; }
+.mx-bracket::after { right: 0; border-left: 0; }
+.mx-grid { border-collapse: separate; border-spacing: 4px 3px; }
+.mx-grid td { text-align: center; padding: 0; }
+.matrix-row .mx-grid td {
+  min-width: 34px;
+  height: 30px;
+  background: #f4f4f4;
+  border-radius: 3px;
+  cursor: text;
+}
+.matrix-row .mx-cell {
+  display: inline-block;
+  min-width: 26px;
+  border: 0 !important;
+  box-shadow: none !important;
+  font-size: 17px;
+}
+.matrix-row .mx-grid td:focus-within { background: #eef3fc; }
+.mx-size {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #777;
+}
+.matrix-row.active .mx-size { display: flex; }
+.mx-size button {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #fff;
+  color: #555;
+  font: inherit;
+  cursor: pointer;
+}
+.mx-size button:hover { background: #eee; }
+.mx-size .mx-dim { margin-right: 2px; }
+.mx-size .mx-dim + button { margin-right: 10px; }
+.mx-size-label { margin-left: auto; }
+
+/* A matrix value under an expression row. */
+.row .matrix-value {
+  display: none;
+  align-self: flex-end;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 36px 8px 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #f2f2f2;
+  color: #555;
+  font-size: 16px;
+  max-width: calc(100% - 48px);
+  box-sizing: border-box;
+  overflow-x: auto;
+}
+.row.has-matrix .matrix-value { display: flex; }
+.row .matrix-value .mx-bracket::before, .row .matrix-value .mx-bracket::after { border-color: #555; }
+.row .matrix-value .mx-grid td { padding: 0 4px; }
+
+/* The transformation view's switch, play button and t slider. */
+.row .transform-box {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 36px 8px 12px;
+  font-size: 12px;
+  color: #555;
+}
+.row.can-transform .transform-box { display: flex; }
+.row .tf-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.row .tf-check {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #888;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.row.transforming .tf-check { background: #2f72dc; border-color: #2f72dc; }
+.row .tf-controls { display: none; flex: 1; align-items: center; gap: 6px; min-width: 0; }
+.row.transforming .tf-controls { display: flex; }
+.row .tf-t { flex: 1; min-width: 0; accent-color: #2f72dc; }
+.row .tf-label { min-width: 52px; color: #777; }
+.row .tf-play {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid #2f72dc;
+  border-radius: 50%;
+  background: #fff;
+  color: #2f72dc;
+  cursor: pointer;
+}
+.row .tf-play .tri {
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  border-style: solid;
+  border-width: 5px 0 5px 8px;
+  border-color: transparent transparent transparent currentColor;
+}
+.row .tf-play .bars { display: none; }
+.row.tf-playing .tf-play .tri { display: none; }
+.row.tf-playing .tf-play .bars {
+  display: block;
+  position: absolute;
+  left: 5px;
+  top: 4px;
+  width: 3px;
+  height: 10px;
+  background: currentColor;
+  box-shadow: 5px 0 0 currentColor;
+}
+
+/* ---- Solve ---------------------------------------------------------------- */
+
+.row .solve-btn {
+  position: absolute;
+  right: 6px;
+  top: 3px;
+  padding: 0 6px;
+  height: 17px;
+  border: 1px solid #c9d6ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f72dc;
+  font: 11px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+  visibility: hidden;
+}
+.row:hover .solve-btn, .row.active .solve-btn { visibility: visible; }
+.row.has-steps .solve-btn { visibility: hidden; }
+.row .solve-btn:hover { background: #eef3fc; }
+
+.row .steps {
+  display: none;
+  margin: 0 36px 10px 12px;
+  padding: 8px 10px;
+  border: 1px solid #dde5f3;
+  border-radius: 6px;
+  background: #f8faff;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  color: #333;
+}
+.row.has-steps .steps { display: block; }
+.row.solving .steps { opacity: 0.6; }
+.steps-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.steps-head .chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+  border: 1px solid #ccd;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+.steps-head .chip.on { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+.steps-head .chip.on .mq-math-mode { color: #fff; }
+.steps-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: #999;
+  font-size: 14px;
+  cursor: pointer;
+}
+.steps-close:hover { color: #333; }
+.steps-list { margin: 0; padding-left: 22px; }
+.steps-list li { margin: 0 0 6px; }
+.step-note { color: #555; }
+.step-math { font-size: 15px; overflow-x: auto; padding: 2px 0; }
+.inline-math { font-size: 13px; }
+.steps-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #dde5f3;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-x: auto;
+}
+.steps-add {
+  margin-left: auto;
+  flex: none;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.steps-add:hover { background: #eef3fb; border-color: #9bb7e0; }
+.steps-error { color: #b3261e; margin-top: 4px; }
+.steps-wait { color: #777; }
+.steps-stale-note { display: none; color: #8a6d00; margin-bottom: 6px; }
+.row.steps-stale .steps-stale-note { display: block; }
+.row.steps-stale .steps-list, .row.steps-stale .steps-result { opacity: 0.45; }
+.steps-stale-note button {
+  font: inherit;
+  padding: 0 6px;
+  border: 1px solid #d9c37a;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+/* An indefinite ∫ has no limits; MathQuill would show empty boxes. */
+.steps .mq-math-mode .mq-empty { display: none; }

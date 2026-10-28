@@ -332,7 +332,8 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         }
         n if GREEK.contains(&n) => Tok::Letter(n.to_string()),
         n if crate::builtins::is_operator_name(n)
-            || crate::ast::ShapeFn::from_name(n).is_some() =>
+            || crate::ast::ShapeFn::from_name(n).is_some()
+            || crate::matrix::is_function(n) =>
         {
             Tok::OpName(n.to_string())
         }

@@ -61,11 +61,36 @@ on the right. What you type is graphed as you type it:
   arrow keys move between cells, and moving right from the last column adds
   one. Each column has its own color circle and style, including **Points**
   and **Lines** toggles (point lists in expressions get them too).
+- Matrices (+ then **matrix**, or type `matrix` in an empty row): a name
+  and a grid of entries, which can use sliders. Enter moves to the next
+  row of the grid, and the buttons under it add or remove rows and columns.
+  Other rows use a matrix by name: `\det(A)`, `A^{-1}` (or `inv(A)`),
+  `A^T`, `AB`, `2A`, `A^3`, `rref(A)`, `rank`, `trace`, `A[2, 1]`,
+  `identity(3)`, and `[[1, 2], [3, 4]]` written out. Matrix results show
+  under the row, with simple fractions as fractions. `eigenvalues(A)` lists
+  them (complex ones too) and `eigenvectors(A)` gives them as columns and
+  draws each as an arrow on its dashed line. `A(1, 2)` moves a point and
+  `A(\cos t, \sin t)` a curve. A 2×2 matrix has **Show transformation**:
+  the grid, the unit square and the arrows for (1, 0) and (0, 1) move from
+  where they are to where the matrix sends them, with a play button and a
+  t slider, and the eigenvector lines dashed.
 - Points of interest: select a row and its curve shows grey dots where it
   crosses the axes, turns, and meets other curves; hover or click one for
   its coordinates. Press and drag on any curve (explicit, parametric, polar
   or implicit) to trace it, and drag a point such as `(a, b)` to move its
   sliders.
+- Solve with working (the **Solve** button at a row's top right, or
+  Ctrl+Alt+S): exact algebra that runs only when asked, never while you
+  type. An equation or inequality is solved for x (or any other letter),
+  with each step written out: undoing operations, clearing fractions,
+  factoring, the quadratic formula, rational roots, general solutions of
+  trig equations with k, sign charts for inequalities, and a check that
+  drops answers squaring added. An expression can be simplified (exact
+  fractions and roots such as 5√2), expanded, factored, differentiated
+  (each rule shown) or integrated (substitution, partial fractions, by
+  parts, definite integrals and improper ones); `y = …` and `f(x) = …`
+  rows also offer their roots. **Add to graph** puts the answer in a new
+  row, and functions from other rows can be used.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
 - On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
   opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
@@ -92,7 +117,18 @@ on the right. What you type is graphed as you type it:
   `f(r, x) = rx(1-x)`, `bifurcation(f)` draws where x settles for each r
   along the x axis (`bifurcation(f, x_0)` starts the orbits at x_0).
 - Complex numbers, always on: `i`, `e^{iθ}`, `3+2i` arithmetic and powers,
-  and `real`, `imag`, `conj`, `arg` and `abs`, in lists too.
+  `real`, `imag`, `conj`, `arg` and `abs`, and `sin`, `cos`, `tan` (and
+  their reciprocals), `sinh`, `cosh`, `tanh`, `ln`, `log`, `exp` and `sqrt`,
+  in lists too.
+- Complex function plots: a row in z, such as `z^2 + 1`, `\sin z` or
+  `f(z)` for a function f, colors the plane by its value at z = x + iy
+  (domain coloring, drawn by the GPU). The hue is the angle of f(z), red
+  where it is a positive real number, and the shade goes dark at zeros and
+  light at poles, with faint steps where |f(z)| doubles. Hold the row's
+  circle and pick **Grid** to see instead where the view's grid lines go
+  under f, with the lines of constant real part brighter than those of
+  constant imaginary part. A row that defines z makes it an ordinary
+  variable again.
 - List tools: `sort(L, keys)`, `join`, `unique`, `distance`, `midpoint`,
   comprehensions written `f(n) for n = L`, and `L[n].x`.
 - Polygons: `polygon((0,0), (4,0), (2,3))`, or one per element with `for`,

@@ -62,10 +62,15 @@
   <button data-add="expression"><span class="glyph">/x</span> expression</button>
   <button data-add="note"><span class="glyph">&#x201C;</span> note</button>
   <button data-add="table"><span class="glyph">&#x229E;</span> table</button>
+  <button data-add="matrix"><span class="glyph">[&#x2237;]</span> matrix</button>
   <button data-add="ticker"><span class="glyph">&#x23F1;</span> ticker</button>
 </div>
 <div id="style-menu">
   <div class="colors"></div>
+  <div class="complex-options styles">
+    <button data-complex="colors" title="Color the plane by the value of f(z)">Colors</button>
+    <button data-complex="grid" title="Draw where the grid lines go under f(z)">Grid</button>
+  </div>
   <div class="line-options">
   <div class="styles">
     <button data-style="solid" title="Solid"><svg viewBox="0 0 40 10"><line x1="2" y1="5" x2="38" y2="5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button>
@@ -101,6 +106,7 @@
       <tr><td>Ctrl+Shift+D</td><td>Delete the current expression</td></tr>
       <tr><td>Ctrl+Alt+E</td><td>Focus the expression list</td></tr>
       <tr><td>Ctrl+Alt+K</td><td>Show or hide the keypad</td></tr>
+      <tr><td>Ctrl+Alt+S, or the row's <b>Solve</b> button</td><td>Solve, simplify, factor, differentiate or integrate the current expression, with the working</td></tr>
       <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
       <tr><td>Ctrl+S / Ctrl+Shift+S / Ctrl+O</td><td>Save / save as / open</td></tr>
       <tr><td>Enter, Up, Down</td><td>New expression, move between rows</td></tr>

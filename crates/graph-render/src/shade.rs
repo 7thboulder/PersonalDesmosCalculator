@@ -10,6 +10,11 @@
 //! thickness, however densely the curve folds. The pipeline for a given
 //! body is compiled once and reused while the expression stays the same, so
 //! dragging a slider only rewrites a uniform.
+//!
+//! Complex functions are drawn the same way, as domain coloring: the body
+//! then gives w = f(x + iy), and each pixel is colored by w's angle (red
+//! where w is a positive real) and darkened towards zeros and lightened
+//! towards poles, with faint bands where |w| doubles.
 
 use std::collections::HashMap;
 
@@ -61,6 +66,11 @@ pub struct Shading {
     pub origin: [f32; 2],
     /// World units per physical pixel.
     pub units_per_px: f32,
+    /// Set when `body` is a complex function to color the plane by: the
+    /// body of `fn complex_value(x: f32, y: f32) -> vec2<f32>`. `test`,
+    /// `color` and `line_px` are then unused and `fill_opacity` is how
+    /// opaque the coloring is.
+    pub complex: bool,
 }
 
 #[repr(C)]
@@ -94,7 +104,8 @@ struct Pipeline {
 
 pub struct ShadingRenderer {
     layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<String, Pipeline>,
+    /// By whether the body is a complex function, and the body.
+    pipelines: HashMap<(bool, String), Pipeline>,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     capacity: u64,
@@ -185,18 +196,18 @@ impl ShadingRenderer {
             self.bind_group = bind_group;
         }
         for (i, s) in shadings.iter().enumerate() {
-            let body = &s.body;
-            if !self.pipelines.contains_key(body) {
-                let pipeline = self.compile(gpu, format, samples, body);
+            let key = (s.complex, s.body.clone());
+            if !self.pipelines.contains_key(&key) {
+                let pipeline = self.compile(gpu, format, samples, s);
                 self.pipelines.insert(
-                    body.clone(),
+                    key.clone(),
                     Pipeline {
                         pipeline,
                         last_used: self.frame,
                     },
                 );
             }
-            if let Some(p) = self.pipelines.get_mut(body) {
+            if let Some(p) = self.pipelines.get_mut(&key) {
                 p.last_used = self.frame;
             }
             let mut k = [[0.0; 4]; MAX_CONSTANTS / 4];
@@ -208,7 +219,7 @@ impl ShadingRenderer {
                 origin: s.origin,
                 units_per_px: s.units_per_px,
                 sense: s.test.map_or(0.0, Test::sense),
-                fill_opacity: if s.test.is_some() {
+                fill_opacity: if s.test.is_some() || s.complex {
                     s.fill_opacity
                 } else {
                     0.0
@@ -228,10 +239,14 @@ impl ShadingRenderer {
             .retain(|_, p| frame - p.last_used < PIPELINE_LIFETIME);
     }
 
-    /// Draws every region prepared this frame, one full-area triangle each.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, shadings: &[Shading]) {
+    /// Draws the complex colorings prepared this frame, or else the
+    /// regions, one full-area triangle each.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, shadings: &[Shading], complex: bool) {
         for (i, s) in shadings.iter().enumerate() {
-            let Some(p) = self.pipelines.get(&s.body) else {
+            if s.complex != complex {
+                continue;
+            }
+            let Some(p) = self.pipelines.get(&(s.complex, s.body.clone())) else {
                 continue;
             };
             pass.set_pipeline(&p.pipeline);
@@ -245,9 +260,13 @@ impl ShadingRenderer {
         gpu: &crate::Gpu,
         format: wgpu::TextureFormat,
         samples: u32,
-        body: &str,
+        shading: &Shading,
     ) -> wgpu::RenderPipeline {
-        let source = shader_source(body, format.is_srgb());
+        let source = if shading.complex {
+            complex_source(&shading.body, format.is_srgb())
+        } else {
+            shader_source(&shading.body, format.is_srgb())
+        };
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -293,7 +312,9 @@ impl ShadingRenderer {
     }
 }
 
-fn shader_source(body: &str, srgb: bool) -> String {
+/// What every shading shader starts with: the uniforms, the helpers and
+/// the vertex stage, which covers the viewport with one triangle.
+fn common() -> String {
     format!(
         r#"
 struct Uniforms {{
@@ -310,9 +331,6 @@ struct Uniforms {{
 
 {prelude}
 
-fn relation(x: f32, y: f32) -> f32 {{
-{body}}}
-
 fn to_linear(c: vec3<f32>) -> vec3<f32> {{
     let lo = c / 12.92;
     let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
@@ -326,6 +344,66 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
         vec2<f32>(-1.0, -3.0), vec2<f32>(-1.0, 1.0), vec2<f32>(3.0, 1.0));
     return vec4<f32>(p[i], 0.0, 1.0);
 }}
+"#,
+        prelude = graph_core::shader::PRELUDE,
+        constants = MAX_CONSTANTS / 4,
+    )
+}
+
+fn complex_source(body: &str, srgb: bool) -> String {
+    format!(
+        r#"{common}
+fn complex_value(x: f32, y: f32) -> vec2<f32> {{
+{body}}}
+
+fn hue_rgb(h: f32) -> vec3<f32> {{
+    let k = fract(vec3<f32>(h, h + 2.0 / 3.0, h + 1.0 / 3.0)) * 6.0;
+    return clamp(abs(k - 3.0) - 1.0, vec3<f32>(0.0), vec3<f32>(1.0));
+}}
+
+@fragment
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
+    let x = u.origin.x + pos.x * u.units_per_px;
+    let y = u.origin.y - pos.y * u.units_per_px;
+    let w = complex_value(x, y);
+    if (w.x != w.x || w.y != w.y) {{
+        discard; // Undefined here.
+    }}
+    // Scaled first, so |w| does not overflow before it reaches 1e38.
+    let big = max(abs(w.x), abs(w.y));
+    var m = 0.0;
+    if (big > 0.0) {{
+        m = big * length(w / big);
+    }}
+    let hue = fract(atan2(w.y, w.x) / 6.2831853 + 1.0);
+    // 0 at a zero, 0.5 where |w| = 1, and 1 towards a pole.
+    let level = 0.6366198 * atan(sqrt(m));
+    // A faint step each time |w| doubles, faded out where the steps are
+    // closer together than a few pixels, so zeros and poles don't shimmer.
+    let octaves = log2(max(m, 1e-30));
+    let crowd = clamp(1.5 - 0.5 * fwidth(octaves) * 8.0, 0.0, 1.0);
+    let band = mix(1.0, 0.86 + 0.14 * fract(octaves), crowd);
+    let lightness = (0.04 + 0.8 * level) * mix(1.0, band, 1.0 - abs(2.0 * level - 1.0));
+    // HSL to RGB at full saturation.
+    let chroma = 1.0 - abs(2.0 * lightness - 1.0);
+    var rgb = lightness + chroma * (hue_rgb(hue) - 0.5);
+    if ({linearize}) {{
+        rgb = to_linear(rgb);
+    }}
+    return vec4<f32>(rgb, u.fill_opacity);
+}}
+"#,
+        common = common(),
+        body = body,
+        linearize = if srgb { "true" } else { "false" },
+    )
+}
+
+fn shader_source(body: &str, srgb: bool) -> String {
+    format!(
+        r#"{common}
+fn relation(x: f32, y: f32) -> f32 {{
+{body}}}
 
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
@@ -359,9 +437,8 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
     return vec4<f32>(rgb, u.color.a * alpha);
 }}
 "#,
-        prelude = graph_core::shader::PRELUDE,
+        common = common(),
         body = body,
         linearize = if srgb { "true" } else { "false" },
-        constants = MAX_CONSTANTS / 4,
     )
 }

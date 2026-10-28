@@ -10,15 +10,18 @@ mod fastsum;
 pub mod format;
 pub mod interval;
 pub mod lexer;
+pub mod matrix;
 pub mod parser;
+pub mod symbolic;
 pub mod units;
 pub mod wgsl;
 
 pub use analyze::{
     analyze, analyze_cached, analyze_mode, Axis, Cache, ColumnAnalysis, ColumnInput, Compare,
-    Curve, Curve3, Fit, Fractal, Implicit3, Mode, ParamSurface, Parameter, Parametric, Region,
-    RowAnalysis, RowInput, RowKind, Seed, Surface, Value,
+    ComplexPlot, Curve, Curve3, Fit, Fractal, Implicit3, Mode, ParamSurface, Parameter, Parametric,
+    Region, RowAnalysis, RowInput, RowKind, Seed, Surface, Value,
 };
 pub use compile::Program;
 pub use interval::Interval;
+pub use matrix::{Ink, Matrix, Stroke};
 pub use parser::parse;
