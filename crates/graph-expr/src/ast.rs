@@ -76,6 +76,12 @@ pub enum ShapeFn {
     Imag,
     Conj,
     Arg,
+    /// Rows that draw iteration: the Mandelbrot and Julia sets, a cobweb
+    /// diagram and a bifurcation diagram. Each is a whole row.
+    Mandelbrot,
+    Julia,
+    Cobweb,
+    Bifurcation,
 }
 
 impl ShapeFn {
@@ -91,6 +97,10 @@ impl ShapeFn {
             "imag" => ShapeFn::Imag,
             "conj" => ShapeFn::Conj,
             "arg" => ShapeFn::Arg,
+            "mandelbrot" => ShapeFn::Mandelbrot,
+            "julia" => ShapeFn::Julia,
+            "cobweb" => ShapeFn::Cobweb,
+            "bifurcation" => ShapeFn::Bifurcation,
             _ => return None,
         })
     }

@@ -44,12 +44,20 @@ fn write_png(path: &str, width: u32, height: u32, pixels: &[u8]) -> Result<(), S
 
 pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Result<(), String> {
     let gpu = Gpu::new(&new_instance(), None)?;
-    let vp = Viewport::new(width as f64, height as f64);
+    let mut vp = Viewport::new(width as f64, height as f64);
     let flag = |name: &str| {
         latex
             .iter()
             .find_map(|l| l.strip_prefix(name).map(str::to_owned))
     };
+    // --view=X,Y,WIDTH centres the graph on (X, Y), WIDTH units across.
+    if let Some(view) = flag("--view=") {
+        let parts: Vec<f64> = view.split(',').filter_map(|v| v.parse().ok()).collect();
+        if let [x, y, w] = parts[..] {
+            vp.center = [x, y];
+            vp.units_per_px = w / width as f64;
+        }
+    }
     let select = flag("--select=").and_then(|n| n.parse::<u64>().ok());
     let hover = flag("--hover=").and_then(|xy| {
         let (x, y) = xy.split_once(',')?;
@@ -142,7 +150,8 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     });
     let build = start.elapsed();
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
-    let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings);
+    let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
+    let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings, &fractals);
 
     write_png(path, width, height, &pixels)?;
 
@@ -362,6 +371,9 @@ impl Frame {
         let shadings = self
             .engine
             .shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+        let fractals = self
+            .engine
+            .fractals(vp.to_world(0.0, 0.0), vp.units_per_px, self.size);
         let cpu = start.elapsed();
         self.renderer.draw_scene(
             gpu,
@@ -376,6 +388,7 @@ impl Frame {
             &scene,
             &self.text,
             &shadings,
+            &fractals,
             &mut self.shader,
         );
         gpu.device
@@ -432,6 +445,7 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
         let scene = engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text));
         let built = start.elapsed();
         let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+        let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
         renderer.draw_scene(
             &gpu,
             &view,
@@ -440,6 +454,7 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
             &scene,
             &text,
             &shadings,
+            &fractals,
             &mut shader,
         );
         gpu.device
@@ -686,32 +701,35 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
         engine.update(&serde_json::Value::Array(rows.clone()));
         // As in the app, lines carry over from frame to frame.
         let mut lines = LineCache::default();
-        let mut frame =
-            |engine: &mut Engine, vp: &Viewport, update: Option<&[serde_json::Value]>| {
-                let start = Instant::now();
-                if let Some(rows) = update {
-                    engine.update(&serde_json::Value::Array(rows.to_vec()));
-                }
-                let scene = engine.with_plot(vp, 1.0, |plot| {
-                    build_scene_cached(vp, 1.0, plot, &mut text, &mut lines)
-                });
-                let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
-                let cpu = start.elapsed();
-                renderer.draw_scene(
-                    &gpu,
-                    &target,
-                    (width, height),
-                    area,
-                    &scene,
-                    &text,
-                    &shadings,
-                    &mut shader,
-                );
-                gpu.device
-                    .poll(wgpu::PollType::wait_indefinitely())
-                    .map_err(|e| e.to_string())?;
-                Ok::<_, String>((cpu, start.elapsed()))
-            };
+        let mut frame = |engine: &mut Engine,
+                         vp: &Viewport,
+                         update: Option<&[serde_json::Value]>| {
+            let start = Instant::now();
+            if let Some(rows) = update {
+                engine.update(&serde_json::Value::Array(rows.to_vec()));
+            }
+            let scene = engine.with_plot(vp, 1.0, |plot| {
+                build_scene_cached(vp, 1.0, plot, &mut text, &mut lines)
+            });
+            let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+            let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
+            let cpu = start.elapsed();
+            renderer.draw_scene(
+                &gpu,
+                &target,
+                (width, height),
+                area,
+                &scene,
+                &text,
+                &shadings,
+                &fractals,
+                &mut shader,
+            );
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((cpu, start.elapsed()))
+        };
         let mut run = |engine: &mut Engine,
                        each: &mut dyn FnMut(
             u32,

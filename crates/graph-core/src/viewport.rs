@@ -14,7 +14,9 @@ pub struct Viewport {
     pub height_px: f64,
 }
 
-const MIN_UNITS_PER_PX: f64 = 1e-12;
+/// About as fine as f64 can place a pixel near 1, which fractal rows zoom
+/// all the way down to.
+const MIN_UNITS_PER_PX: f64 = 1e-15;
 const MAX_UNITS_PER_PX: f64 = 1e12;
 
 impl Viewport {

@@ -30,7 +30,8 @@
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
-      'det inv transpose rref trace rank eigenvalues eigenvectors identity'
+      'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
+      'mandelbrot julia cobweb bifurcation'
   };
 
   // Desmos subscripts hold only letters and digits, so typing anything else
@@ -1812,7 +1813,8 @@
     ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
     ['COMPLEX', named('real imag conj arg')],
-    ['MATRICES', named('det inv transpose rref trace rank eigenvalues eigenvectors identity')]
+    ['MATRICES', named('det inv transpose rref trace rank eigenvalues eigenvectors identity')],
+    ['FRACTALS', named('mandelbrot julia cobweb bifurcation')]
   ];
 
   var keypad = document.getElementById('keypad');
@@ -2077,7 +2079,12 @@
       ['A\\left(1,2\\right),\\ A\\left(\\cos t,\\sin t\\right)', 'A point or curve moved by A'],
       ['A\\left[2,1\\right]', 'Entry in row 2, column 1'],
       ['\\operatorname{identity}\\left(3\\right)', 'Identity matrix'],
-      ['B=\\left[\\left[1,2\\right],\\left[3,4\\right]\\right]', 'A matrix written out, row by row']]]
+      ['B=\\left[\\left[1,2\\right],\\left[3,4\\right]\\right]', 'A matrix written out, row by row']]],
+    ['FRACTALS AND ITERATION', [
+      ['\\operatorname{mandelbrot}\\left(\\right)', 'Mandelbrot set, sharp however far you zoom; mandelbrot(n) sets the iterations'],
+      ['\\operatorname{julia}\\left(-0.8+0.156i\\right)', 'Julia set of z^2+c; julia(c, n) sets the iterations'],
+      ['\\operatorname{cobweb}\\left(f,0.2,30\\right)', 'Cobweb of x \u2192 f(x) from 0.2, 30 steps; f(x) = \u2026 on its own row'],
+      ['\\operatorname{bifurcation}\\left(f,0.5\\right)', 'Where x \u2192 f(r, x) settles, r along the x axis; f(r, x) = \u2026 on its own row']]]
   ];
 
   var shortcuts = document.getElementById('shortcuts');

@@ -112,6 +112,17 @@ on the right. What you type is graphed as you type it:
   graphs as `.gcalc` files with their view, and `graphcalc FILE` opens one.
   The session is autosaved, so the next launch carries on where you left
   off, unsaved changes included; New and Open ask before dropping them.
+- Fractals and iteration: `mandelbrot()` draws the Mandelbrot set and
+  `julia(-0.8+0.156i)` a Julia set (sliders work: `julia(a+bi)`), in the
+  row's colour, on the GPU. They stay sharp zoomed in as far as the view
+  goes (about 10¹³ times): the GPU's floats run out of digits much sooner,
+  so the app iterates one point exactly and the GPU only each pixel's
+  offset from it (perturbation). The iteration count rises with the zoom;
+  `mandelbrot(5000)` or `julia(c, 5000)` sets it. With `f(x) = 3.7x(1-x)`
+  defined, `cobweb(f, 0.2, 30)` draws the cobweb of 30 steps from 0.2 (add
+  `y = f(x)` and `y = x` to see it against the curve); with
+  `f(r, x) = rx(1-x)`, `bifurcation(f)` draws where x settles for each r
+  along the x axis (`bifurcation(f, x_0)` starts the orbits at x_0).
 - Complex numbers, always on: `i`, `e^{iθ}`, `3+2i` arithmetic and powers,
   `real`, `imag`, `conj`, `arg` and `abs`, and `sin`, `cos`, `tan` (and
   their reciprocals), `sinh`, `cosh`, `tanh`, `ln`, `log`, `exp` and `sqrt`,

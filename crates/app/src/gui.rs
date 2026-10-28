@@ -550,6 +550,9 @@ impl Running {
         let shadings = self
             .engine
             .shadings(origin, self.viewport.units_per_px, scale);
+        let fractals = self
+            .engine
+            .fractals(origin, self.viewport.units_per_px, size);
         self.renderer.draw_scene(
             &self.gpu,
             &view,
@@ -558,6 +561,7 @@ impl Running {
             &scene,
             &self.text,
             &shadings,
+            &fractals,
             &mut self.shader,
         );
         self.present(frame, start, scene_time, scene.vertices.len());

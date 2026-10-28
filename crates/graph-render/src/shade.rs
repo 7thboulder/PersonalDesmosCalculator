@@ -110,6 +110,8 @@ pub struct ShadingRenderer {
     bind_group: wgpu::BindGroup,
     capacity: u64,
     frame: u64,
+    /// Made the first time a graph has a fractal row.
+    fractals: Option<crate::FractalRenderer>,
 }
 
 /// Pipelines unused for this many frames are dropped.
@@ -142,7 +144,14 @@ impl ShadingRenderer {
             bind_group,
             capacity: INITIAL_REGIONS,
             frame: 0,
+            fractals: None,
         }
+    }
+
+    /// What draws fractal rows, which shares these passes.
+    pub fn fractals(&mut self, gpu: &crate::Gpu) -> &mut crate::FractalRenderer {
+        self.fractals
+            .get_or_insert_with(|| crate::FractalRenderer::new(gpu))
     }
 
     fn buffer(
