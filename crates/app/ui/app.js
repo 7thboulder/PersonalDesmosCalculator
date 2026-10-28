@@ -682,7 +682,9 @@
       '<span class="bound dmax"></span></div>' +
       '<div class="seeds" title="">through <span class="bound seeds-field"></span></div>' +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
+      '<div class="steps"></div>' +
       '</div>' +
+      '<button class="solve-btn" title="Solve with steps (Ctrl+Alt+S)">Solve</button>' +
       '<button class="remove" title="Delete">&#x2715;</button>';
     var row = {
       id: nextId++,
@@ -700,6 +702,9 @@
       speedEl: el.querySelector('.speed'),
       loopEl: el.querySelector('.loop'),
       missingButtons: el.querySelector('.missing .buttons'),
+      stepsEl: el.querySelector('.steps'),
+      solveLatex: null,
+      solveOp: null,
       valueMath: null,
       domain: null,
       domainShown: false,
@@ -727,6 +732,7 @@
           // Typing table into an empty row makes a table there, as in Desmos.
           if (!loading && row.field.latex() === 'table') { replaceWithTable(row); return; }
           if (!row.settingSlider) row.playPos = null;
+          markStepsStale(row);
           sendRows();
         },
         enter: function () { addRow('', indexOf(row) + 1).field.focus(); },
@@ -785,6 +791,8 @@
       if (e.target === e.currentTarget) { e.preventDefault(); row.field.focus(); }
     });
     el.querySelector('.remove').addEventListener('click', function () { removeRow(row); });
+    el.querySelector('.solve-btn').addEventListener('mousedown', function (e) { e.preventDefault(); });
+    el.querySelector('.solve-btn').addEventListener('click', function () { requestSolve(row, null); });
     el.querySelector('.run').addEventListener('mousedown', function (e) { e.preventDefault(); });
     el.querySelector('.run').addEventListener('click', function () {
       if (row.result) runUpdates(row.result.updates);
@@ -824,6 +832,126 @@
     paintRow(row);
     renumber();
     return row;
+  }
+
+  // ---- Solve ---------------------------------------------------------------
+
+  // Symbolic algebra runs only when the Solve button (or Ctrl+Alt+S) asks for
+  // it, never while typing. The engine sends back the working, step by step.
+  function requestSolve(row, op) {
+    if (!row || row.kind) return;
+    var latex = row.field.latex();
+    row.solveLatex = latex;
+    row.solveOp = op;
+    row.el.classList.add('has-steps', 'solving');
+    row.el.classList.remove('steps-stale');
+    if (!row.stepsEl.firstChild) row.stepsEl.innerHTML = '<div class="steps-wait">Solving…</div>';
+    send({ type: 'solve', id: row.id, latex: latex, op: op });
+  }
+
+  function closeSteps(row) {
+    row.el.classList.remove('has-steps', 'solving', 'steps-stale');
+    row.stepsEl.innerHTML = '';
+    row.solveLatex = null;
+  }
+
+  function markStepsStale(row) {
+    if (row.solveLatex == null) return;
+    row.el.classList.toggle('steps-stale', row.field.latex() !== row.solveLatex);
+  }
+
+  // Words with maths between $ signs, as the engine writes its notes.
+  function richText(el, text) {
+    text.split('$').forEach(function (part, i) {
+      var span = document.createElement('span');
+      if (i % 2) {
+        span.className = 'inline-math';
+        el.appendChild(span);
+        MQ.StaticMath(span).latex(part);
+      } else {
+        span.textContent = part;
+        el.appendChild(span);
+      }
+    });
+  }
+
+  function mathBlock(className, latex) {
+    var div = document.createElement('div');
+    div.className = className;
+    var span = document.createElement('span');
+    div.appendChild(span);
+    MQ.StaticMath(span).latex(latex);
+    return div;
+  }
+
+  function showSteps(row, r) {
+    row.el.classList.remove('solving');
+    var box = row.stepsEl;
+    box.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'steps-head';
+    (r.choices || []).forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'chip' + (c.op === r.op ? ' on' : '');
+      richText(b, c.label);
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.addEventListener('click', function () { requestSolve(row, c.op); });
+      head.appendChild(b);
+    });
+    var close = document.createElement('button');
+    close.className = 'steps-close';
+    close.title = 'Close the working';
+    close.innerHTML = '&#x2715;';
+    close.addEventListener('click', function () { closeSteps(row); });
+    head.appendChild(close);
+    box.appendChild(head);
+
+    var stale = document.createElement('div');
+    stale.className = 'steps-stale-note';
+    stale.textContent = 'The expression changed. ';
+    var again = document.createElement('button');
+    again.textContent = 'Solve again';
+    again.addEventListener('click', function () { requestSolve(row, row.solveOp); });
+    stale.appendChild(again);
+    box.appendChild(stale);
+
+    var list = document.createElement('ol');
+    list.className = 'steps-list';
+    (r.steps || []).forEach(function (st) {
+      var li = document.createElement('li');
+      if (st.note) {
+        var note = document.createElement('div');
+        note.className = 'step-note';
+        richText(note, st.note);
+        li.appendChild(note);
+      }
+      if (st.latex) li.appendChild(mathBlock('step-math', st.latex));
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+
+    if (r.result) {
+      var res = mathBlock('steps-result', r.result);
+      if (r.answer) {
+        var add = document.createElement('button');
+        add.className = 'steps-add';
+        add.textContent = 'Add to graph';
+        add.title = 'Add the answer as a new expression below';
+        add.addEventListener('click', function () {
+          addRow(r.answer, indexOf(row) + 1);
+          sendRows();
+        });
+        res.appendChild(add);
+      }
+      box.appendChild(res);
+    }
+    if (r.error) {
+      var err = document.createElement('div');
+      err.className = 'steps-error';
+      richText(err, r.error);
+      box.appendChild(err);
+    }
+    markStepsStale(row);
   }
 
   // ---- Notes ---------------------------------------------------------------
@@ -1070,6 +1198,9 @@
       indexEl: el.querySelector('.index'),
       grid: el.querySelector('.grid'),
       missingButtons: el.querySelector('.missing .buttons'),
+      stepsEl: el.querySelector('.steps'),
+      solveLatex: null,
+      solveOp: null,
       columns: [],
       nrows: 0,
       filling: false,
@@ -1639,6 +1770,8 @@
       sendRows();
     } else if (ctrl && e.altKey && k === 'e') {
       focusRow(Math.max(0, activeIndex()));
+    } else if (ctrl && e.altKey && k === 's') {
+      requestSolve(row, null);
     } else if (ctrl && e.altKey && k === 'k') {
       showKeypad(!keypad.classList.contains('open'));
     } else if (ctrl && e.shiftKey && !e.altKey && k === 'd') {
@@ -1834,6 +1967,11 @@
         row.playPos = null;
         setSlider(row, p[1], true);
       });
+    },
+    // The working for a row, after its Solve button was pressed.
+    solved: function (r) {
+      var row = rows.filter(function (x) { return x.id === r.id; })[0];
+      if (row && !row.kind && row.solveLatex != null) showSteps(row, r);
     },
     // Dragging a differential equation's initial point on the graph
     // rewrites its initial points.

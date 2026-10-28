@@ -11,6 +11,7 @@ pub mod format;
 pub mod interval;
 pub mod lexer;
 pub mod parser;
+pub mod symbolic;
 pub mod units;
 pub mod wgsl;
 

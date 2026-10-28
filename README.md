@@ -66,6 +66,18 @@ on the right. What you type is graphed as you type it:
   its coordinates. Press and drag on any curve (explicit, parametric, polar
   or implicit) to trace it, and drag a point such as `(a, b)` to move its
   sliders.
+- Solve with working (the **Solve** button at a row's top right, or
+  Ctrl+Alt+S): exact algebra that runs only when asked, never while you
+  type. An equation or inequality is solved for x (or any other letter),
+  with each step written out: undoing operations, clearing fractions,
+  factoring, the quadratic formula, rational roots, general solutions of
+  trig equations with k, sign charts for inequalities, and a check that
+  drops answers squaring added. An expression can be simplified (exact
+  fractions and roots such as 5√2), expanded, factored, differentiated
+  (each rule shown) or integrated (substitution, partial fractions, by
+  parts, definite integrals and improper ones); `y = …` and `f(x) = …`
+  rows also offer their roots. **Add to graph** puts the answer in a new
+  row, and functions from other rows can be used.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
 - On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
   opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
