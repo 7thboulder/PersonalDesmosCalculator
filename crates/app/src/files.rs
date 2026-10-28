@@ -625,6 +625,12 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
         }
         number += 1;
         let name = row_name(number, r);
+        if r["matrix"].is_array() {
+            warnings.push(format!(
+                "{name} is a matrix, and Desmos's graphing calculator has no matrices, so it was left out."
+            ));
+            continue;
+        }
         let extra: Vec<&str> = r
             .as_object()
             .into_iter()
@@ -1100,7 +1106,7 @@ mod tests {
         assert_eq!(warnings.len(), 3, "{warnings:?}");
         assert!(warnings[0].contains("zeta"));
         assert!(warnings[1].contains("slopeField"));
-        assert!(warnings[2].starts_with("Row 8 has no Desmos equivalent"));
+        assert!(warnings[2].starts_with("Row 8 is a matrix"));
 
         // Importing the export gives the graph back.
         let (back, view, _) = open_any(&state.to_string()).unwrap();

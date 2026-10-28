@@ -10,10 +10,10 @@ use graph_core::{
     Axis, Curve, Equation, Field, Implicit, LineStyle, Mark, Parametric, Plot, PointStyle, Points,
     Polygon, SlopeField, TextAtlas, Vertex, Viewport,
 };
-use graph_expr::format::{exact_latex, result_latex, value_latex};
+use graph_expr::format::{exact_latex, matrix_entry_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_mode, wgsl, Cache, ColumnInput, Compare, Interval, Mode, Ode, Program, RowAnalysis,
-    RowInput, RowKind,
+    analyze_mode, wgsl, Cache, ColumnInput, Compare, Ink, Interval, Mode, Ode, Program,
+    RowAnalysis, RowInput, RowKind, Stroke,
 };
 use graph_render::{Frame3, Shading, Test};
 use serde_json::{json, Value};
@@ -321,6 +321,19 @@ impl Engine {
                         })
                         .collect()
                 }),
+                matrix: r["matrix"].as_array().map(|grid| {
+                    grid.iter()
+                        .map(|cells| {
+                            cells
+                                .as_array()
+                                .map_or(&[][..], Vec::as_slice)
+                                .iter()
+                                .map(|c| c.as_str().unwrap_or("").to_owned())
+                                .collect()
+                        })
+                        .collect()
+                }),
+                transform: r["transform"].as_f64(),
                 seeds: r["seeds"].as_str().map(str::to_owned),
                 derivs: r["derivs"]
                     .as_array()
@@ -541,6 +554,9 @@ impl Engine {
                 points.drag = result.drag.clone();
                 self.points.push(points);
             }
+            for stroke in &result.picture {
+                self.draw_stroke(result.id, stroke, color);
+            }
             // Each table column has its own colour and style.
             let columns = row["table"].as_array().map_or(&[][..], Vec::as_slice);
             for (style, column) in columns.iter().zip(&result.columns) {
@@ -560,6 +576,57 @@ impl Engine {
             })
             .collect();
         Value::Array(results.iter().map(|r| row_json(r, &defined)).collect())
+    }
+
+    /// One stroke of a matrix's picture. The transformation view has its
+    /// own colours, as in 3Blue1Brown's videos: a blue grid, green and red
+    /// arrows for where (1, 0) and (0, 1) go, and the unit square's image
+    /// in orange.
+    fn draw_stroke(&mut self, row: u64, stroke: &Stroke, color: [f32; 4]) {
+        let (ink, width, fill) = match stroke.ink {
+            Ink::Grid => ("#2d70b3", 1.0, 0.0),
+            Ink::IHat => ("#388c46", 3.0, 1.0),
+            Ink::JHat => ("#c74440", 3.0, 1.0),
+            Ink::Area => ("#fa7e19", 0.0, 0.3),
+            Ink::Eigen => ("#6042a6", 2.0, 0.0),
+            Ink::Row => ("", DEFAULT_CURVE_WIDTH, 1.0),
+        };
+        let mut color = if ink.is_empty() {
+            color
+        } else {
+            parse_color(ink, 1.0)
+        };
+        if stroke.ink == Ink::Grid {
+            color[3] = 0.45;
+        }
+        if stroke.filled {
+            self.polygons.push(GraphPolygon {
+                points: stroke.points.clone(),
+                color,
+                fill,
+                width: 0.0,
+                style: LineStyle::Solid,
+            });
+        } else {
+            self.points.push(GraphPoints {
+                row,
+                points: stroke.points.clone(),
+                color,
+                size: 0.0,
+                style: PointStyle::Filled,
+                dots: false,
+                line: Some((
+                    width,
+                    if stroke.dashed {
+                        LineStyle::Dashed
+                    } else {
+                        LineStyle::Solid
+                    },
+                )),
+                drag: None,
+                seed: None,
+            });
+        }
     }
 
     /// Calls `draw` with everything to plot in `vp`, in the form graph-core
@@ -1066,6 +1133,14 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "cellErrors": c.cell_errors,
             "points": !c.points.is_empty(),
         })).collect::<Vec<_>>(),
+        // A matrix value, cell by cell, and whether it can show its
+        // transformation of the plane.
+        "matrix": r.matrix.as_ref().map(|m| json!({
+            "cells": (0..m.rows)
+                .map(|i| (0..m.cols).map(|j| matrix_entry_latex(m.get(i, j))).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            "transforms": m.rows == 2 && m.cols == 2 && !r.picture.iter().any(|s| s.ink == Ink::Row),
+        })),
         // A differential equation shows its initial points under it.
         "ode": r.ode.map(|order| json!({
             "order": order,
