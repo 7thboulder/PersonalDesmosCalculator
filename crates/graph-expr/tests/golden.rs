@@ -748,6 +748,69 @@ fn cached_analyses_match_fresh_ones() {
 }
 
 #[test]
+fn cached_rows_match_fresh_ones() {
+    // Expression rows are remembered by id between analyses; each step
+    // changes something one of them reads.
+    let input = |latex: &[&str]| -> Vec<RowInput> {
+        latex
+            .iter()
+            .enumerate()
+            .map(|(i, l)| RowInput {
+                id: i as u64,
+                latex: l.to_string(),
+                ..Default::default()
+            })
+            .collect()
+    };
+    let rows = [
+        "a=2",
+        "L=[1...50000]",
+        "(L/1000,a\\sin(L/1000))",
+        "\\operatorname{total}(L)",
+        "y=ax+b",
+        "(t,at)",
+        "\\operatorname{mandelbrot}()",
+    ];
+    let steps: Vec<Vec<&str>> = vec![
+        rows.to_vec(),
+        // Nothing changes.
+        rows.to_vec(),
+        // A slider some rows read.
+        [&["a=3"], &rows[1..]].concat(),
+        // The list.
+        [&["a=3", "L=[1...40000]"], &rows[2..]].concat(),
+        // A missing name becomes defined, and so does t.
+        [&rows[..], &["b=1", "t=2"]].concat(),
+        // Rows move to other ids.
+        [&["c=1"], &rows[..]].concat(),
+    ];
+    let mut cache = Cache::default();
+    for (n, step) in steps.iter().enumerate() {
+        let rows = input(step);
+        let cached = analyze_cached(&rows, &mut cache);
+        assert_eq!(cached, analyze(&rows), "step {n}");
+    }
+}
+
+#[test]
+fn lists_can_be_longer_than_desmos_allows() {
+    let all = rows(&[
+        "L=[1...25000]",
+        "\\operatorname{length}(L)",
+        "\\operatorname{length}([a+b\\operatorname{for}a=[1...200],b=[1...200]])",
+        "\\operatorname{length}(\\operatorname{join}(L,L))",
+        "[1...10^{15}]",
+    ]);
+    assert_eq!(all[1].value, Some(Value::Number(25000.0)));
+    assert_eq!(all[2].value, Some(Value::Number(40000.0)));
+    assert_eq!(all[3].value, Some(Value::Number(50000.0)));
+    assert_eq!(
+        all[4].error.as_deref(),
+        Some("There isn't enough memory for a list of 1e15 elements")
+    );
+}
+
+#[test]
 fn regressions() {
     let all = rows(&[
         "x_1=[1,2,3,4,5]",
