@@ -756,7 +756,7 @@
       swatch: el.querySelector('.swatch'),
       play: el.querySelector('.play'),
       warn: el.querySelector('.warn'),
-      range: el.querySelector('input[type=range]'),
+      range: el.querySelector('.slider-box input[type=range]'),
       minEl: el.querySelector('.lim.min'),
       maxEl: el.querySelector('.lim.max'),
       limMin: el.querySelector('.lmin'),
