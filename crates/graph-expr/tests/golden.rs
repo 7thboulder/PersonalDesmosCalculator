@@ -1342,3 +1342,33 @@ fn higher_order_implicit_and_system_equations() {
     let r = rows(&["a=y'"]).remove(0);
     assert!(r.missing.is_empty(), "y' is never offered as a slider");
 }
+
+#[test]
+fn greek_letters_are_variables() {
+    let r = rows(&[
+        "\\omega=2",
+        "y=\\sin\\left(\\omega x\\right)",
+        "\\Omega_{1}=3",
+        "f\\left(\\lambda\\right)=\\lambda\\Omega_{1}",
+        "f\\left(\\omega\\right)",
+        "ω+α",
+        "\\pi=3",
+        "\\epsilon",
+    ]);
+    assert_eq!(r[0].slider, Some(2.0));
+    assert!(r[1].error.is_none(), "{:?}", r[1]);
+    assert_eq!(r[2].slider, Some(3.0));
+    assert_eq!(r[4].value, Some(Value::Number(6.0)));
+    // A Greek character typed or pasted is the same letter as its command.
+    assert_eq!(r[5].missing, vec!["alpha".to_string()]);
+    assert!(r[6].error.is_some(), "π stays a constant");
+    assert_eq!(r[7].missing, vec!["epsilon".to_string()]);
+}
+
+#[test]
+fn greek_letters_in_3d() {
+    let r = rows_3d(&["\\omega=2", "z=\\sin\\left(\\omega x\\right)", "\\phi=1"]);
+    assert_eq!(r[0].slider, Some(2.0));
+    assert!(close(r[1].surfaces[0].program.eval2(1.0, 0.0), 2f64.sin()));
+    assert!(r[2].slider.is_none(), "φ is a spherical coordinate in 3D");
+}

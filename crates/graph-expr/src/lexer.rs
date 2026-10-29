@@ -97,6 +97,55 @@ const GREEK: &[&str] = &[
     "infty",
 ];
 
+/// Greek letters typed or pasted as characters, and the names their
+/// commands have. The two forms of ε, θ and φ are one letter here, since
+/// they look alike on screen.
+const GREEK_CHARS: &[(char, &str)] = &[
+    ('α', "alpha"),
+    ('β', "beta"),
+    ('γ', "gamma"),
+    ('δ', "delta"),
+    ('ε', "epsilon"),
+    ('ϵ', "epsilon"),
+    ('ζ', "zeta"),
+    ('η', "eta"),
+    ('θ', "theta"),
+    ('ϑ', "theta"),
+    ('ι', "iota"),
+    ('κ', "kappa"),
+    ('λ', "lambda"),
+    ('μ', "mu"),
+    ('ν', "nu"),
+    ('ξ', "xi"),
+    ('π', "pi"),
+    ('ρ', "rho"),
+    ('σ', "sigma"),
+    ('τ', "tau"),
+    ('υ', "upsilon"),
+    ('φ', "phi"),
+    ('ϕ', "phi"),
+    ('χ', "chi"),
+    ('ψ', "psi"),
+    ('ω', "omega"),
+    ('Γ', "Gamma"),
+    ('Δ', "Delta"),
+    ('Θ', "Theta"),
+    ('Λ', "Lambda"),
+    ('Ξ', "Xi"),
+    ('Π', "Pi"),
+    ('Σ', "Sigma"),
+    ('Υ', "Upsilon"),
+    ('Φ', "Phi"),
+    ('Ψ', "Psi"),
+    ('Ω', "Omega"),
+    ('∞', "infty"),
+];
+
+/// The name of a Greek letter typed as a character, such as `ω` for omega.
+pub fn greek_name(c: char) -> Option<&'static str> {
+    GREEK_CHARS.iter().find(|(g, _)| *g == c).map(|(_, n)| *n)
+}
+
 pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut toks = Vec::new();
@@ -182,7 +231,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             '=' => push(&mut toks, Tok::Eq, &mut i),
             '<' => push(&mut toks, Tok::Lt, &mut i),
             '>' => push(&mut toks, Tok::Gt, &mut i),
-            other => return Err(format!("unexpected character '{other}'")),
+            other => match greek_name(other) {
+                Some(name) => push(&mut toks, Tok::Letter(name.to_owned()), &mut i),
+                None => return Err(format!("unexpected character '{other}'")),
+            },
         }
     }
     Ok(toks)
