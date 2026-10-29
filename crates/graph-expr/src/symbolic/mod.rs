@@ -6,15 +6,78 @@ mod convert;
 pub mod diff;
 pub mod integrate;
 pub mod latex;
+pub mod ode;
 pub mod poly;
 pub mod solve;
 pub mod sym;
+pub(crate) mod trigint;
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use crate::ast::{Expr, Relation, Statement};
 use convert::{infinity, to_sym, Defs};
+
+/// Replaces each integral written without bounds in a row with its
+/// antiderivative (taking the constant as 0), so the graph can draw it.
+/// `rows` are the rows' LaTeX, for functions they define.
+pub fn resolve_indefinite(statement: Statement, rows: &[String]) -> Result<Statement, String> {
+    let mut found = false;
+    let mut look =
+        |e: &Expr| found |= matches!(e, Expr::Integral(_, lo, _, _) if convert::is_indefinite(lo));
+    match &statement {
+        Statement::Expr(e) => e.walk(&mut look),
+        Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
+            a.walk(&mut look);
+            b.walk(&mut look);
+        }
+        Statement::Chain(c) => c.operands.iter().for_each(|e| e.walk(&mut look)),
+    }
+    if !found {
+        return Ok(statement);
+    }
+    let defs = Defs::from_rows(rows);
+    let mut error = None;
+    let mut f = |e: Expr| match e {
+        Expr::Integral(v, lo, hi, body) if convert::is_indefinite(&lo) => {
+            let whole = Expr::Integral(v, lo, hi, body);
+            DEADLINE.with(|d| d.set(Some(Instant::now() + Duration::from_millis(500))));
+            let found = to_sym(&whole, &defs);
+            DEADLINE.with(|d| d.set(None));
+            match found.and_then(|s| match crate::parse(&latex(&s))? {
+                Statement::Expr(e) => Ok(e),
+                _ => Err("Couldn't graph this antiderivative".into()),
+            }) {
+                Ok(e) => Ok(e),
+                Err(m) => {
+                    error.get_or_insert(m);
+                    Ok(Expr::Num(f64::NAN))
+                }
+            }
+        }
+        e => Err(e),
+    };
+    let mut r = |e: Expr| crate::units::rewrite(e, &mut f);
+    let out = match statement {
+        Statement::Expr(e) => Statement::Expr(r(e)),
+        Statement::Relation(a, rel, b) => {
+            let a = r(a);
+            Statement::Relation(a, rel, r(b))
+        }
+        Statement::Regression(a, b) => {
+            let a = r(a);
+            Statement::Regression(a, r(b))
+        }
+        Statement::Chain(c) => Statement::Chain(crate::ast::Condition {
+            operands: c.operands.into_iter().map(&mut r).collect(),
+            relations: c.relations,
+        }),
+    };
+    match error {
+        Some(m) => Err(m),
+        None => Ok(out),
+    }
+}
 use latex::{latex, name};
 use solve::Outcome;
 use sym::*;
@@ -114,7 +177,17 @@ pub(crate) fn out_of_time() -> bool {
 pub fn nice(s: &Sym) -> Sym {
     let mut best = s.clone();
     let mut best_len = latex(s).len();
-    for c in [expand(s), together(&expand(s))] {
+    // Over one denominator is rarely tidier for big expressions, and slow.
+    let x = expand(s);
+    let mut inexact = false;
+    trigint::walk(&x, &mut |t| inexact |= matches!(t, Sym::Real(_)));
+    let forms = if x.size() > 120 || inexact || out_of_time() {
+        vec![x]
+    } else {
+        let t = together(&x);
+        vec![x, t]
+    };
+    for c in forms {
         let l = latex(&c).len();
         if l < best_len {
             best = c;
@@ -164,6 +237,10 @@ enum Form {
     Relation(Sym, Relation, Sym),
     /// `d/dx ...` as the whole row.
     Derivative { var: String, body: Sym, times: u32 },
+    /// A differential equation `eq` = 0 in y(x).
+    Ode { order: usize, eq: Sym },
+    /// A system x' = f, y' = g in t.
+    System { f: Sym, g: Sym },
     /// An integral as the whole row; no bounds means indefinite.
     Integral {
         var: String,
@@ -207,11 +284,24 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
         return form;
     }
     let statement = crate::parse(latex)?;
-    if crate::analyze::ode_order(&statement).is_some() {
-        return Err(
-            "Solve doesn't solve differential equations yet; the graph draws their solutions"
-                .into(),
-        );
+    if let Some(order) = crate::analyze::ode_order(&statement) {
+        let Statement::Relation(l, Relation::Eq, r) = &statement else {
+            return Err("Write a differential equation with =, like y' = x - y".into());
+        };
+        let is_system = |e: &Expr| matches!(e, Expr::Point(a, b) if matches!((&**a, &**b), (Expr::Var(p), Expr::Var(q)) if p == "x'" && q == "y'"));
+        if is_system(l) || is_system(r) {
+            let Expr::Point(f, g) = (if is_system(l) { r } else { l }) else {
+                return Err("A system needs a point of slopes, like (y, -x)".into());
+            };
+            return Ok(Form::System {
+                f: to_sym(f, defs)?,
+                g: to_sym(g, defs)?,
+            });
+        }
+        return Ok(Form::Ode {
+            order,
+            eq: sub(to_sym(l, defs)?, to_sym(r, defs)?),
+        });
     }
     Ok(match statement {
         Statement::Expr(Expr::Derivative(v, body)) => {
@@ -251,6 +341,13 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
                 var: v,
                 body,
                 times: k,
+            }
+        }
+        Statement::Expr(Expr::Integral(v, lo, _, body)) if convert::is_indefinite(&lo) => {
+            Form::Integral {
+                body: to_sym(&body, defs)?,
+                var: v,
+                bounds: None,
             }
         }
         Statement::Expr(Expr::Integral(v, lo, hi, body)) => {
@@ -377,6 +474,14 @@ fn choices(form: &Form) -> Vec<Choice> {
                 ));
             }
         }
+        Form::Ode { .. } => {
+            out.push(choice("ode", "Solve the equation"));
+            out.push(choice("ode:general", "General solution"));
+        }
+        Form::System { .. } => {
+            out.push(choice("ode", "Solve the system"));
+            out.push(choice("ode:general", "General solution"));
+        }
         Form::Derivative { .. } => out.push(choice("calc", "Differentiate")),
         Form::Integral { .. } => out.push(choice("calc", "Integrate")),
     }
@@ -387,13 +492,48 @@ fn choices(form: &Form) -> Vec<Choice> {
 /// they define can be used; `op` picks the operation, or the most likely
 /// one when it is None.
 pub fn run(latex_in: &str, others: &[String], op: Option<&str>) -> Report {
+    run_row(latex_in, others, op, &Initial::default())
+}
+
+/// A differential equation row's initial point and derivatives, as typed.
+#[derive(Clone, Debug, Default)]
+pub struct Initial {
+    pub seeds: Option<String>,
+    pub derivs: Vec<String>,
+}
+
+/// Like `run`, with the row's initial conditions for differential equations.
+pub fn run_row(latex_in: &str, others: &[String], op: Option<&str>, initial: &Initial) -> Report {
     DEADLINE.with(|d| d.set(Some(Instant::now() + BUDGET)));
-    let report = run_inner(latex_in, others, op);
+    let report = run_inner(latex_in, others, op, initial);
     DEADLINE.with(|d| d.set(None));
     report
 }
 
-fn run_inner(source: &str, others: &[String], op: Option<&str>) -> Report {
+/// The single initial point of a differential equation, with y'(x₀), … from
+/// the derivative boxes (0 when empty, as the graph takes them).
+fn initial_point(initial: &Initial, defs: &Defs, order: usize) -> Option<(Sym, Vec<Sym>)> {
+    let seeds = initial.seeds.as_deref()?.trim();
+    let Ok(Statement::Expr(Expr::Point(a, b))) = crate::parse(seeds) else {
+        return None;
+    };
+    let x0 = to_sym(&a, defs).ok()?;
+    let mut values = vec![to_sym(&b, defs).ok()?];
+    for k in 0..order.saturating_sub(1) {
+        let l = initial.derivs.get(k).map_or("", |s| s.trim());
+        values.push(if l.is_empty() {
+            n(0)
+        } else {
+            match crate::parse(l) {
+                Ok(Statement::Expr(e)) => to_sym(&e, defs).ok()?,
+                _ => return None,
+            }
+        });
+    }
+    Some((x0, values))
+}
+
+fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initial) -> Report {
     let defs = Defs::from_rows(others);
     let mut report = Report::default();
     if source.trim().is_empty() {
@@ -454,6 +594,22 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>) -> Report {
                 "int" => integral_op(body, &v, None, &mut st),
                 _ => Err("Unknown operation".into()),
             }
+        }
+        (Form::Ode { order, eq }, _) => {
+            st.push("Solve the differential equation", source.to_owned());
+            let conditions = (op == "ode")
+                .then(|| initial_point(initial, &defs, *order))
+                .flatten()
+                .map(|(x0, values)| ode::Conditions { x0, values });
+            ode::solve_ode(eq, *order, conditions.as_ref(), &mut st)
+        }
+        (Form::System { f, g }, _) => {
+            st.push("Solve the system", source.to_owned());
+            let start = (op == "ode")
+                .then(|| initial_point(initial, &defs, 1))
+                .flatten()
+                .map(|(x0, v)| (x0, v[0].clone()));
+            ode::solve_system(f, g, start, &mut st)
         }
         (
             Form::Derivative {
@@ -675,7 +831,11 @@ fn derivative_op(s: &Sym, v: &str, times: u32, st: &mut Steps) -> Done {
 fn integral_op(s: &Sym, v: &str, bounds: Option<(Bound, Bound)>, st: &mut Steps) -> Done {
     let f = integrate::antiderivative(s, v, st);
     let Some((lo, hi)) = bounds else {
-        let f = f.ok_or("Solve couldn't find an antiderivative for this")?;
+        let f = f.ok_or(if trigint::non_elementary(s, v) {
+            "This has no antiderivative made of elementary functions; Solve can still find definite integrals of it numerically"
+        } else {
+            "Solve couldn't find an antiderivative for this"
+        })?;
         let f = nice(&f);
         st.push(
             "So, adding the constant of integration",

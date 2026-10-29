@@ -469,8 +469,37 @@ const SPACE_VARIABLES: &[&str] = &["z", "rho", "phi"];
 /// Desmos 3D's domain for u and v in a parametric surface.
 const UV_DOMAIN: (f64, f64) = (0.0, 1.0);
 const MAX_INLINE_DEPTH: usize = 64;
-/// Desmos's limit on list length.
-const MAX_LIST: usize = 10_000;
+/// Desmos's limit on the terms of a sum or product. Lists have no limit.
+const MAX_TERMS: usize = 10_000;
+/// An empty list with room for `n` elements, or None (with an error) when
+/// there isn't the memory for them. Lists have no fixed length limit, so a
+/// range such as `[1...10^{12}]` is refused here rather than crashing.
+fn list_with_room<T>(n: f64, problems: &mut Problems) -> Option<Vec<T>> {
+    let mut out = Vec::new();
+    let fits = n < usize::MAX as f64 && out.try_reserve_exact(n as usize).is_ok();
+    if !fits {
+        let n = if n < 1e15 {
+            // Grouped in thousands, as 1,000,000.
+            let digits = (n as u64).to_string();
+            let mut grouped = String::new();
+            for (i, c) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    grouped.push(',');
+                }
+                grouped.push(c);
+            }
+            grouped
+        } else {
+            format!("{n:e}")
+        };
+        problems.error(format!(
+            "There isn't enough memory for a list of {n} elements"
+        ));
+        return None;
+    }
+    Some(out)
+}
+
 /// Lists at least this long are broadcast through a compiled program.
 const FAST_BROADCAST_LEN: usize = 64;
 /// Sums with at least this many terms (less one) are compiled.
@@ -516,6 +545,40 @@ pub struct Cache {
     /// Function definitions, so an unchanged one keeps its pointer and the
     /// results above are checked against it without comparing bodies.
     funcs: FastMap<String, Rc<FuncDef>>,
+    /// Expression rows by id, so a row over a long list isn't worked out
+    /// again while another row is edited.
+    rows: FastMap<u64, CachedRow>,
+    /// The graph's mode and the names defined when `rows` were worked out.
+    /// A row also reads whether names are defined (and function bodies)
+    /// without recording it, so `rows` are reused only while these match.
+    names: Vec<String>,
+}
+
+struct CachedRow {
+    statement: Statement,
+    input: RowKey,
+    deps: Vec<Dep>,
+    out: RowAnalysis,
+}
+
+/// What of a row's input, besides its statement, its analysis reads.
+#[derive(PartialEq)]
+struct RowKey {
+    domain: Option<[String; 2]>,
+    seeds: Option<String>,
+    derivs: Vec<String>,
+    transform: Option<u64>,
+}
+
+impl RowKey {
+    fn of(row: &RowInput) -> RowKey {
+        RowKey {
+            domain: row.domain.clone(),
+            seeds: row.seeds.clone(),
+            derivs: row.derivs.clone(),
+            transform: row.transform.map(f64::to_bits),
+        }
+    }
 }
 
 /// A function's name and its constant arguments, then (when the result
@@ -1166,9 +1229,27 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             })
             .collect()
     };
+    // Integrals without bounds become their antiderivatives.
+    let all_latex: Vec<String> = rows
+        .iter()
+        .filter(|r| r.latex.contains("\\int"))
+        .next()
+        .map(|_| rows.iter().map(|r| r.latex.clone()).collect())
+        .unwrap_or_default();
     let mut parsed: Vec<Option<Result<Statement, String>>> = written
         .into_iter()
-        .map(|w| w.map(|r| r.map(units::lower_statement)))
+        .zip(rows)
+        .map(|(w, row)| {
+            w.map(|r| {
+                r.map(units::lower_statement).and_then(|s| {
+                    if row.latex.contains("\\int") {
+                        crate::symbolic::resolve_indefinite(s, &all_latex)
+                    } else {
+                        Ok(s)
+                    }
+                })
+            })
+        })
         .collect();
     let grids: Vec<Option<Result<matrix::Grid, String>>> = rows
         .iter()
@@ -1380,6 +1461,12 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         }
     }
 
+    let names = env.names();
+    if env.old.names != names {
+        env.old.rows.clear();
+    }
+    env.new.names = names;
+
     let results = rows
         .iter()
         .zip(parsed)
@@ -1416,7 +1503,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
                     if let Statement::Expr(e) = &statement {
                         point = Some(e.clone());
                     }
-                    env.other_row(row, &statement)
+                    env.other_row_cached(row, statement)
                 }
             };
             if out.error.is_none() && out.points.len() == 1 {
@@ -1884,6 +1971,21 @@ impl matrix::Scalars for Env {
 }
 
 impl Env {
+    /// The mode, every variable, function (by definition) and action, as
+    /// [`Cache::names`] keeps them.
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.vars.keys().map(|n| format!("v {n}")).collect();
+        names.extend(
+            self.funcs
+                .iter()
+                .map(|(n, f)| format!("f {n} {:p}", Rc::as_ptr(f))),
+        );
+        names.extend(self.actions.iter().map(|n| format!("a {n}")));
+        names.sort();
+        names.push(format!("{:?}", self.mode));
+        names
+    }
+
     /// The slider variables a point's coordinates are, when it is written
     /// as `(a, b)` or `(a, 3)` with `a` and `b` defined as plain numbers.
     fn drag_of(&self, e: &Expr) -> Option<[Option<String>; 2]> {
@@ -2082,6 +2184,38 @@ impl Env {
             });
         }
         row
+    }
+
+    /// As `other_row`, reusing the last analysis's result when the row and
+    /// everything it read are unchanged.
+    fn other_row_cached(&mut self, input: &RowInput, statement: Statement) -> RowAnalysis {
+        let key = RowKey::of(input);
+        let mut visiting = HashSet::new();
+        let (out, deps) = match self.old.rows.remove(&input.id) {
+            Some(c)
+                if c.statement == statement
+                    && c.input == key
+                    && self.still_valid(&c.deps, &mut visiting) =>
+            {
+                (c.out, c.deps)
+            }
+            _ => {
+                self.recording.push(Vec::new());
+                let out = self.other_row(input, &statement);
+                let reads = self.recording.pop().unwrap_or_default();
+                (out, self.deps_of(&reads))
+            }
+        };
+        self.new.rows.insert(
+            input.id,
+            CachedRow {
+                statement,
+                input: key,
+                deps,
+                out: out.clone(),
+            },
+        );
+        out
     }
 
     fn other_row(&mut self, input: &RowInput, statement: &Statement) -> RowAnalysis {
@@ -3421,7 +3555,7 @@ impl Env {
                 if b < a {
                     return Some((empty, 0.0));
                 }
-                if b - a >= MAX_LIST as f64 {
+                if b - a >= MAX_TERMS as f64 {
                     return None;
                 }
                 // A long sum is compiled once rather than read for every term.
@@ -4112,16 +4246,13 @@ impl Env {
                 if step == 0.0 || (z - a) / step < 0.0 {
                     return Val::list(vec![Item::Num(Low::Const(a))]);
                 }
-                let count = ((z - a) / step + 1e-9).floor() as usize + 1;
-                if count > MAX_LIST {
-                    problems.error("Lists can have at most 10,000 elements");
+                let count = ((z - a) / step + 1e-9).floor() + 1.0;
+                let Some(mut out) = list_with_room(count, problems) else {
                     return Val::nan();
-                }
-                Val::list(
-                    (0..count)
-                        .map(|i| Item::Num(Low::Const(a + step * i as f64)))
-                        .collect(),
-                )
+                };
+                let count = count as usize;
+                out.extend((0..count).map(|i| Item::Num(Low::Const(a + step * i as f64))));
+                Val::list(out)
             }
             Expr::Index(base, index) => {
                 // `L[n]` with L a variable reads the one element straight from
@@ -4158,12 +4289,11 @@ impl Env {
                     }
                     lists.push((name.clone(), v));
                 }
-                let total: usize = lists.iter().map(|(_, v)| v.items.len()).product();
-                if total > MAX_LIST {
-                    problems.error("Lists can have at most 10,000 elements");
+                let total = lists.iter().map(|(_, v)| v.items.len() as f64).product();
+                let Some(mut out) = list_with_room(total, problems) else {
                     return Val::nan();
-                }
-                let mut out = Vec::with_capacity(total);
+                };
+                let total = total as usize;
                 for k in 0..total {
                     let mut inner = bindings.clone();
                     let mut rest = k;
@@ -4331,7 +4461,7 @@ impl Env {
                 if b < a {
                     return Val::num(Low::Const(empty));
                 }
-                if b - a >= MAX_LIST as f64 {
+                if b - a >= MAX_TERMS as f64 {
                     problems.error(format!("A {what} can have at most 10,000 terms"));
                     return Val::nan();
                 }
@@ -4634,10 +4764,6 @@ impl Env {
         match f {
             ShapeFn::Join => {
                 let items = args.into_iter().flat_map(|v| v.items).collect::<Vec<_>>();
-                if items.len() > MAX_LIST {
-                    problems.error("Lists can have at most 10,000 elements");
-                    return Val::nan();
-                }
                 Val::list(items)
             }
             ShapeFn::Polygon => {

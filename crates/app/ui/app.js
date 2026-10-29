@@ -32,7 +32,7 @@
     charsThatBreakOutOfSupSub: '+-=<>',
     autoSubscriptNumerals: true,
     // Every Greek letter Desmos spells out, so typing omega gives ω.
-    autoCommands: 'sqrt sum prod int nthroot pi tau ' + GREEK_LETTERS,
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
@@ -806,7 +806,7 @@
       swatch: el.querySelector('.swatch'),
       play: el.querySelector('.play'),
       warn: el.querySelector('.warn'),
-      range: el.querySelector('input[type=range]'),
+      range: el.querySelector('.slider-box input[type=range]'),
       minEl: el.querySelector('.lim.min'),
       maxEl: el.querySelector('.lim.max'),
       limMin: el.querySelector('.lmin'),
@@ -1859,7 +1859,7 @@
     ['STATISTICS', named('mean median min max total length')],
     ['LIST OPERATIONS', named('join sort unique').concat([['for', 't: for ']])],
     ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
-      ['\u222b', 'c:\\int'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
+      ['\u222b', 'c:\\int'], ['\u221e', 'c:\\infty'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
     ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
     ['COMPLEX', named('real imag conj arg')],
@@ -2104,7 +2104,8 @@
     ['CALCULUS', [
       ['\\frac{d}{dx}\\sin\\left(x^2\\right)', 'Derivative (exact)'], ["f'\\left(x\\right)", "Also f''"],
       ['\\sum_{n=1}^{10}n^2', 'Sum (type sum); prod for products'],
-      ['\\int_0^1x^2dx', 'Integral (type int); bounds can be infinite']]],
+      ['\\int_0^1x^2dx', 'Integral (type int)'],
+      ['\\int_0^{\\infty}e^{-x}dx', 'Type infinity (or infty) for \u221e, as in improper integrals and bounds']]],
     ['POINTS AND GEOMETRY', [
       ['p=\\left(1,2\\right),\\ p.x', 'Point and its coordinates'],
       ['\\operatorname{distance}\\left(p,q\\right)', 'Distance between points'],

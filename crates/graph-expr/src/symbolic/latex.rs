@@ -18,6 +18,11 @@ pub fn latex(s: &Sym) -> String {
 
 /// The LaTeX for a name: `a_1` as a_{1}, `theta` as \theta.
 pub fn name(v: &str) -> String {
+    // y'' keeps its primes after the letter.
+    let primes = v.len() - v.trim_end_matches('\'').len();
+    if primes > 0 {
+        return format!("{}{}", name(&v[..v.len() - primes]), "'".repeat(primes));
+    }
     let (base, sub) = match v.split_once('_') {
         Some((b, s)) => (b, Some(s)),
         None => (v, None),
