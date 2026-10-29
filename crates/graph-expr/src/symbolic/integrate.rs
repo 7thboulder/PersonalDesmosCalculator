@@ -6,6 +6,7 @@ use super::diff::{derivative, paren};
 use super::latex::{latex, name};
 use super::poly;
 use super::sym::*;
+use super::trigint;
 use super::{out_of_time, Steps};
 
 /// `\int u\,dx`.
@@ -20,10 +21,17 @@ pub fn ii(u: &Sym, v: &str) -> String {
 
 /// An antiderivative of `e` in `v` (without the + C), if one is found.
 pub fn antiderivative(e: &Sym, v: &str, st: &mut Steps) -> Option<Sym> {
-    integ(e, v, st, 0)
+    let mark = st.mark();
+    let r = integ(e, v, st, 0)?;
+    // Never show an answer whose derivative isn't the integrand.
+    if !trigint::same_derivative(&r, e, v) && trigint::checkable(e, v) {
+        st.undo(mark);
+        return None;
+    }
+    Some(r)
 }
 
-fn integ(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
+pub(super) fn integ(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
     if depth > 8 || out_of_time() {
         return None;
     }
@@ -102,10 +110,19 @@ fn integ(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
     if let Some(r) = exp_trig(e, v, st) {
         return Some(r);
     }
+    if let Some(r) = trigint::trig_products(e, v, st, depth) {
+        return Some(r);
+    }
+    if let Some(r) = trigint::trig_power(e, v, st, depth) {
+        return Some(r);
+    }
     if let Some(r) = substitution(e, v, st, depth) {
         return Some(r);
     }
     if let Some(r) = rational(e, v, st, depth) {
+        return Some(r);
+    }
+    if let Some(r) = trigint::trig_sub(e, v, st, depth) {
         return Some(r);
     }
     if let Some(r) = parts(e, v, st, depth) {
@@ -120,7 +137,59 @@ fn integ(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
         }
         st.undo(mark);
     }
-    None
+    // Simpler forms of the same thing.
+    let w = together(e);
+    if w != *e && rational_in(&w, v) && !rational_in(e, v) {
+        let mark = st.mark();
+        st.push(
+            "Write it as one fraction",
+            format!("{}={}", ii(e, v), ii(&w, v)),
+        );
+        if let Some(r) = integ(&w, v, st, depth + 1) {
+            return Some(r);
+        }
+        st.undo(mark);
+    }
+    if trigint::has_trig(e) {
+        let w = trigint::to_sin_cos(e);
+        if w != *e && depth < 6 {
+            let mark = st.mark();
+            st.push(
+                "Write everything with sin and cos",
+                format!("{}={}", ii(e, v), ii(&w, v)),
+            );
+            if let Some(r) = integ(&w, v, st, depth + 1) {
+                return Some(r);
+            }
+            st.undo(mark);
+        }
+        if let Some(r) = trigint::weierstrass(e, v, st, depth) {
+            return Some(r);
+        }
+    }
+    trigint::hyperbolic(e, v, st, depth)
+}
+
+/// Whether the bottom of `e` is a power of one linear factor, like (2x + 1)³.
+fn over_linear_power(e: &Sym, v: &str) -> bool {
+    let (_, bottom) = num_den(e);
+    let varying: Vec<Sym> = bottom.factors().into_iter().filter(|f| f.has(v)).collect();
+    match varying.as_slice() {
+        [] => true,
+        [Sym::Pow(b, _)] => linear(b, v).is_some(),
+        [f] => linear(f, v).is_some(),
+        _ => false,
+    }
+}
+
+/// Whether `e` is a ratio of polynomials in `v` with rational coefficients.
+pub(super) fn rational_in(e: &Sym, v: &str) -> bool {
+    let (top, bottom) = num_den(e);
+    [top, bottom].iter().all(|p| {
+        poly::coeffs(p, v)
+            .and_then(|c| poly::rational(&c))
+            .is_some()
+    })
 }
 
 /// The standard integrals, for the variable on its own.
@@ -212,6 +281,10 @@ fn table(e: &Sym, v: &str) -> Option<(Sym, String)> {
                 (Func::Tan, 2, 1) => out(
                     sub(f(Func::Tan), x.clone()),
                     "Use tan²x = sec²x - 1, then integrate each part",
+                ),
+                (Func::Cot, 2, 1) => out(
+                    neg(add2(f(Func::Cot), x.clone())),
+                    "Use cot²x = csc²x - 1, then integrate each part",
                 ),
                 _ => None,
             }
@@ -367,6 +440,11 @@ fn candidates(e: &Sym, v: &str, out: &mut Vec<Sym>) {
         Sym::Pow(b, x) => {
             push(b, out);
             push(x, out);
+            // e^(f(x)) and roots like √x can be u themselves.
+            let root = x.as_q().is_some_and(|q| q.d > 1 && q.n == 1);
+            if (**b == var("e") && x.has(v)) || (root && b.has(v)) {
+                push(e, out);
+            }
             candidates(b, v, out);
             candidates(x, v, out);
         }
@@ -379,6 +457,30 @@ fn candidates(e: &Sym, v: &str, out: &mut Vec<Sym>) {
             }
         }
         _ => {}
+    }
+}
+
+/// x in terms of u = f(x), for the f that are easy to undo: ax + b,
+/// (ax + b)ᵏ, ln(ax + b) and e^(ax + b).
+fn invert(u: &Sym, v: &str, w: &Sym) -> Option<Sym> {
+    let undo_linear = |s: &Sym, inner: Sym| -> Option<Sym> {
+        let (a, b) = linear(s, v)?;
+        if a.has(v) || b.has(v) {
+            return None;
+        }
+        Some(div(sub(inner, b), a))
+    };
+    if let Some(r) = undo_linear(u, w.clone()) {
+        return Some(r);
+    }
+    match u {
+        // u = (ax + b)^(1/k): x = (uᵏ - b)/a.
+        Sym::Pow(b, k) if **b != var("e") && k.as_q().is_some_and(|q| q.n == 1 && q.d > 1) => {
+            undo_linear(b, powi(w.clone(), k.as_q().unwrap().d))
+        }
+        Sym::Pow(b, p) if **b == var("e") => undo_linear(p, func(Func::Ln, w.clone())),
+        Sym::Fn(Func::Ln, a) => undo_linear(a, exp(w.clone())),
+        _ => None,
     }
 }
 
@@ -396,17 +498,18 @@ fn substitution(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
         if du.is_zero() {
             continue;
         }
+        // Partial fractions does ratios of polynomials better.
+        if linear(&u, v).is_some() && rational_in(e, v) && !over_linear_power(e, v) {
+            continue;
+        }
         let q = div(e.clone(), du.clone());
         let mut w = replace_power(&q, &u, &u_var);
         if w.has(v) {
-            // With u = ax + b, x itself is (u - b)/a.
-            let Some((a, b)) = linear(&u, v) else {
+            // What x is in terms of u: (u - b)/a for u = ax + b, and so on.
+            let Some(x_of_u) = invert(&u, v, &u_var) else {
                 continue;
             };
-            if a.has(v) || b.has(v) {
-                continue;
-            }
-            w = expand(&w.subs_var(v, &div(sub(u_var.clone(), b), a)));
+            w = expand(&replace_power(&q, &u, &u_var).subs_var(v, &x_of_u));
             if w.has(v) {
                 continue;
             }
@@ -427,7 +530,7 @@ fn substitution(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym> {
             format!("{}={}", ii(e, v), ii(&w, u_name)),
         );
         if let Some(r) = integ(&w, u_name, st, depth + 1) {
-            let back = r.subs_var(u_name, &u);
+            let back = super::ode::tidy_exp(&r.subs_var(u_name, &u), false);
             st.push(
                 format!("Put ${} = {}$ back", name(u_name), latex(&u)),
                 format!("{}={}", ii(e, v), latex(&back)),
@@ -504,12 +607,13 @@ fn rational_steps(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym>
             }
             match f.len() {
                 2 => basis.push((div(n(1), powi(fs.clone(), j as i128)), rest)),
-                3 if *m == 1 => {
+                3 => {
+                    let fj = powi(fs.clone(), j as i128);
                     basis.push((
-                        div(x.clone(), fs.clone()),
+                        div(x.clone(), fj.clone()),
                         mul_poly(&rest, &[Q::ZERO, Q::ONE]),
                     ));
-                    basis.push((div(n(1), fs.clone()), rest));
+                    basis.push((div(n(1), fj), rest));
                 }
                 _ => {
                     st.undo(mark);
@@ -518,6 +622,7 @@ fn rational_steps(e: &Sym, v: &str, st: &mut Steps, depth: usize) -> Option<Sym>
             }
         }
     }
+    let _ = &x;
     let target: poly::P = rem.iter().map(|c| c.div(fb.unit)).collect::<Option<_>>()?;
     let size = basis.len();
     let mut rows: Vec<Vec<Q>> = (0..size)
@@ -672,12 +777,16 @@ fn quadratic_fraction(t: &Sym, v: &str, st: &mut Steps) -> Option<Sym> {
     let big_b = *qt.get(1).unwrap_or(&Q::ZERO);
     let big_c = qt[0];
     let x = var(v);
-    let quad = poly::build(&poly::to_sym(&qb), v);
     // Bx + C = (B/2a)(2ax + b) + (C - Bb/2a).
     let k = big_b.div(Q::int(2).mul(a)?)?;
     let rest = big_c.sub(k.mul(b)?)?;
     let root = sqrt(Sym::Num(disc.neg()));
-    let log_part = mul2(Sym::Num(k), func(Func::Ln, func(Func::Abs, quad.clone())));
+    // The bottom never changes sign, so its log needs no absolute value,
+    // and a constant factor only shifts the constant of integration.
+    let (_, ints) = poly::primitive(&qb)?;
+    let sign = if ints[2] < 0 { -1 } else { 1 };
+    let plain: Vec<Sym> = ints.iter().map(|&c| n(sign * c)).collect();
+    let log_part = mul2(Sym::Num(k), func(Func::Ln, poly::build(&plain, v)));
     let atan_part = mul(vec![
         Sym::Num(rest),
         n(2),
@@ -701,6 +810,11 @@ fn quadratic_fraction(t: &Sym, v: &str, st: &mut Steps) -> Option<Sym> {
 /// Where a factor ranks as the u in integration by parts (LIATE).
 fn rank(f: &Sym, v: &str) -> u8 {
     match f {
+        Sym::Pow(b, k)
+            if k.as_q().is_some_and(|q| q.is_int() && q.n > 1) && matches!(**b, Sym::Fn(..)) =>
+        {
+            rank(b, v)
+        }
         Sym::Fn(Func::Ln | Func::Log, _) => 5,
         Sym::Fn(
             Func::Asin | Func::Acos | Func::Atan | Func::Asinh | Func::Acosh | Func::Atanh,

@@ -245,15 +245,35 @@ fn absorb(s: &Sym, c: &str, scale: bool) -> Sym {
 fn absorb_all(s: &Sym, consts: &[String]) -> Sym {
     let mut out = s.clone();
     for c in consts {
-        let (a, b) = (nice(&absorb(&out, c, false)), nice(&absorb(&out, c, true)));
-        out = if latex(&b).len() < latex(&a).len() { b } else { a };
+        let (a, b) = (absorb(&out, c, false), absorb(&out, c, true));
+        for cand in [a, b] {
+            if cand != out {
+                let cand = flat_nice(&cand);
+                if latex(&cand).len() < latex(&out).len() {
+                    out = cand;
+                }
+            }
+        }
         // -C is as good a constant as C.
-        let flipped = nice(&out.subs_var(c, &neg(var(c))));
-        if latex(&flipped).len() < latex(&out).len() {
-            out = flipped;
+        if out.has(c) && out.size() < 80 {
+            let flipped = flat_nice(&out.subs_var(c, &neg(var(c))));
+            if latex(&flipped).len() < latex(&out).len() {
+                out = flipped;
+            }
         }
     }
     out
+}
+
+/// The shorter of an expression and its multiplied-out form, without
+/// putting it over one denominator: C₁eˣ + C₂e⁻ˣ reads better as it is.
+fn flat_nice(s: &Sym) -> Sym {
+    let x = expand(s);
+    if latex(&x).len() < latex(s).len() {
+        x
+    } else {
+        s.clone()
+    }
 }
 
 // ---- Checking -----------------------------------------------------------------------
@@ -269,12 +289,16 @@ fn env_value(names: &[String], n: &str, trial: usize) -> Option<f64> {
 /// Whether y = f solves `eq` = 0, tested at points with made-up values for
 /// the constants.
 fn verify(eq: &Sym, dep: &str, x: &str, order: usize, f: &Sym) -> bool {
-    if f.has("i") {
+    if f.has("i") || out_of_time() {
         return false;
     }
-    let mut ds = vec![f.clone()];
+    // Multiplied out at each step, derivatives of e^(ax)cos(bx) stay small.
+    let mut ds = vec![expand(f)];
     for _ in 0..order {
-        let d = derivative(ds.last().unwrap(), x);
+        if out_of_time() {
+            return false;
+        }
+        let d = expand(&derivative(ds.last().unwrap(), x));
         ds.push(d);
     }
     let mut names: Vec<String> = eq.names();
@@ -283,7 +307,10 @@ fn verify(eq: &Sym, dep: &str, x: &str, order: usize, f: &Sym) -> bool {
     names.sort();
     names.dedup();
     let mut passed = 0;
-    for (trial, x0) in [0.31, 0.87, 1.43, 2.11, -0.6, 3.3, -1.7].into_iter().enumerate() {
+    for (trial, x0) in [0.31, 0.87, 1.43, 2.11, -0.6, 3.3, -1.7]
+        .into_iter()
+        .enumerate()
+    {
         let base = |n: &str| {
             if n == x {
                 Some(x0)
@@ -316,14 +343,17 @@ fn verify(eq: &Sym, dep: &str, x: &str, order: usize, f: &Sym) -> bool {
 
 /// Whether ψ(x, y) = C solves y' = F: ψₓ + ψ_y F = 0 at points.
 fn verify_implicit(psi: &Sym, f: &Sym, dep: &str, x: &str) -> bool {
-    let check = add2(
-        derivative(psi, x),
-        mul2(derivative(psi, dep), f.clone()),
-    );
+    let check = add2(derivative(psi, x), mul2(derivative(psi, dep), f.clone()));
     let mut names = check.names();
     names.retain(|n| n != x && n != dep);
     let mut passed = 0;
-    for (x0, y0) in [(0.31, 0.53), (0.87, 1.21), (1.43, -0.7), (2.11, 0.37), (-0.6, 0.8)] {
+    for (x0, y0) in [
+        (0.31, 0.53),
+        (0.87, 1.21),
+        (1.43, -0.7),
+        (2.11, 0.37),
+        (-0.6, 0.8),
+    ] {
         let v = check.eval(&|n: &str| {
             if n == x {
                 Some(x0)
@@ -392,7 +422,7 @@ pub fn solve_ode(
         );
     };
     let yv = var(dep);
-    let tidy = |s: &Sym| nice(&absorb_all(s, &ctx.made));
+    let tidy = |s: &Sym| absorb_all(s, &ctx.made);
     let folded = match &sol {
         Sol::Explicit(fs) => Sol::Explicit(fs.iter().map(tidy).collect()),
         Sol::Implicit(l, r) => Sol::Implicit(tidy(l), tidy(r)),
@@ -536,7 +566,8 @@ fn apply_conditions(
                         c.is_some_and(|c| {
                             let back = f.subs_var(&consts[0], &c).subs_var(x, x0);
                             let (a, b) = (back.value(), cond.values[0].value());
-                            !(a.is_finite() && b.is_finite()) || (a - b).abs() < 1e-7 * b.abs().max(1.0)
+                            !(a.is_finite() && b.is_finite())
+                                || (a - b).abs() < 1e-7 * b.abs().max(1.0)
                         })
                     }
                 })
@@ -546,7 +577,7 @@ fn apply_conditions(
             let mut d = f.clone();
             for k in 0..n {
                 if k > 0 {
-                    d = derivative(&d, x);
+                    d = expand(&derivative(&d, x));
                 }
                 eqs.push((nice(&d.subs_var(x, x0)), cond.values[k].clone()));
             }
@@ -602,7 +633,10 @@ fn finish_conditions(
     mark: usize,
 ) -> Option<Sol> {
     let values: Vec<Sym> = values.iter().map(nice).collect();
-    if values.iter().any(|v| v.has("i") || matches!(v, Sym::Real(r) if !r.is_finite())) {
+    if values
+        .iter()
+        .any(|v| v.has("i") || matches!(v, Sym::Real(r) if !r.is_finite()))
+    {
         st.undo(mark);
         return None;
     }
@@ -702,9 +736,10 @@ fn first_order(eq: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> O
     let yp = dname(dep, 1);
     let c = poly::coeffs(eq, &yp);
     let (f, mn) = match c.as_deref() {
-        Some([c0, c1]) if !c1.has(&yp) && !c1.is_zero() => {
-            (nice(&div(neg(c0.clone()), c1.clone())), Some((c0.clone(), c1.clone())))
-        }
+        Some([c0, c1]) if !c1.has(&yp) && !c1.is_zero() => (
+            nice(&div(neg(c0.clone()), c1.clone())),
+            Some((c0.clone(), c1.clone())),
+        ),
         _ => match solve::solve(eq.clone(), n(0), &yp, &mut Steps::quiet(), 0) {
             Outcome::Roots(rs) if rs.len() == 1 && !rs[0].has(&yp) => (nice(&rs[0]), None),
             _ => return None,
@@ -918,15 +953,20 @@ fn separable(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Opti
         "Put the sides together, with one constant for both",
         eq_latex(&gl, &rhs),
     );
-    Some(explicit(gl, rhs, dep, &[c], st).unwrap_or_else(|(l, r)| Sol::Implicit(l, r)))
-    .map(|s| {
+    Some(explicit(gl, rhs, dep, &[c], st).unwrap_or_else(|(l, r)| Sol::Implicit(l, r))).map(|s| {
         let _ = &yv;
         s
     })
 }
 
 /// Solves l = r for y when Solve can, folding constants together.
-fn explicit(l: Sym, r: Sym, dep: &str, consts: &[String], st: &mut Steps) -> Result<Sol, (Sym, Sym)> {
+fn explicit(
+    l: Sym,
+    r: Sym,
+    dep: &str,
+    consts: &[String],
+    st: &mut Steps,
+) -> Result<Sol, (Sym, Sym)> {
     let (l, r) = unlog(l, r, consts, st);
     let roots = match solve::solve(l.clone(), r.clone(), dep, &mut Steps::quiet(), 0) {
         Outcome::Roots(rs) => rs,
@@ -934,7 +974,9 @@ fn explicit(l: Sym, r: Sym, dep: &str, consts: &[String], st: &mut Steps) -> Res
     };
     if roots.is_empty()
         || roots.len() > 2
-        || roots.iter().any(|r| r.has("k") || r.has("n") || r.has(dep) || r.has("i"))
+        || roots
+            .iter()
+            .any(|r| r.has("k") || r.has("n") || r.has(dep) || r.has("i"))
     {
         return Err((l, r));
     }
@@ -977,7 +1019,9 @@ fn unlog(l: Sym, r: Sym, consts: &[String], st: &mut Steps) -> (Sym, Sym) {
     let mut parts = Vec::new();
     for t in l.terms() {
         let (k, rest) = split_coef(&t);
-        let Sym::Fn(Func::Ln, u) = rest else { return (l, r) };
+        let Sym::Fn(Func::Ln, u) = rest else {
+            return (l, r);
+        };
         if !k.is_num() {
             return (l, r);
         }
@@ -1009,7 +1053,9 @@ fn powers_of(f: &Sym, dep: &str) -> Option<Vec<(Q, Sym)>> {
         for fac in t.factors() {
             match &fac {
                 Sym::Var(v) if v == dep => k = k.add(Q::ONE)?,
-                Sym::Pow(b, e) if matches!(&**b, Sym::Var(v) if v == dep) => k = k.add(e.as_q()?)?,
+                Sym::Pow(b, e) if matches!(&**b, Sym::Var(v) if v == dep) => {
+                    k = k.add(e.as_q()?)?
+                }
                 other if !free_of_dep(other, dep) => return None,
                 other => rest.push(other.clone()),
             }
@@ -1025,9 +1071,15 @@ fn powers_of(f: &Sym, dep: &str) -> Option<Vec<(Q, Sym)>> {
 /// y' = P y + Q yⁿ: v = y^(1-n) makes it linear.
 fn bernoulli(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
     let ps = powers_of(f, dep)?;
-    let a = ps.iter().find(|(k, _)| *k == Q::ONE).map(|(_, c)| c.clone()).unwrap_or(n(0));
+    let a = ps
+        .iter()
+        .find(|(k, _)| *k == Q::ONE)
+        .map(|(_, c)| c.clone())
+        .unwrap_or(n(0));
     let others: Vec<&(Q, Sym)> = ps.iter().filter(|(k, _)| *k != Q::ONE).collect();
-    let [(k, b)] = others.as_slice() else { return None };
+    let [(k, b)] = others.as_slice() else {
+        return None;
+    };
     if *k == Q::ZERO || b.is_zero() {
         return None;
     }
@@ -1039,7 +1091,10 @@ fn bernoulli(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Opti
         format!(
             "This is a Bernoulli equation, ${}={}$: substitute ${}={}^{{{}}}$ to make it linear",
             name(&dname(dep, 1)),
-            latex(&add2(mul2(a.clone(), var(dep)), mul2(b.clone(), pow(var(dep), kk)))),
+            latex(&add2(
+                mul2(a.clone(), var(dep)),
+                mul2(b.clone(), pow(var(dep), kk))
+            )),
             name(v),
             name(dep),
             latex(&Sym::Num(one_minus))
@@ -1058,7 +1113,11 @@ fn bernoulli(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Opti
         add2(mul2(a.clone(), vv.clone()), b.clone()),
     ));
     st.push(
-        format!("Put in ${}'$ to get a linear equation in ${}$", name(dep), name(v)),
+        format!(
+            "Put in ${}'$ to get a linear equation in ${}$",
+            name(dep),
+            name(v)
+        ),
         eq_latex(&var(&dname(v, 1)), &fv),
     );
     let Sol::Explicit(vs) = linear_first(&fv, v, x, ctx, st)? else {
@@ -1066,7 +1125,12 @@ fn bernoulli(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Opti
     };
     let back = nice(&pow(vs[0].clone(), Sym::Num(Q::ONE.div(one_minus)?)));
     st.push(
-        format!("Undo the substitution: ${}={}^{{{}}}$", name(dep), name(v), latex(&Sym::Num(Q::ONE.div(one_minus)?))),
+        format!(
+            "Undo the substitution: ${}={}^{{{}}}$",
+            name(dep),
+            name(v),
+            latex(&Sym::Num(Q::ONE.div(one_minus)?))
+        ),
         eq_latex(&var(dep), &back),
     );
     Some(Sol::Explicit(vec![back]))
@@ -1197,7 +1261,10 @@ fn homogeneous(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Op
     }
     let v = if dep == "v" { "w" } else { "v" };
     let vv = var(v);
-    let fv = nice(&f.subs_var(dep, &mul2(vv.clone(), var(x))).subs_var(x, &n(1)));
+    let fv = nice(
+        &f.subs_var(dep, &mul2(vv.clone(), var(x)))
+            .subs_var(x, &n(1)),
+    );
     let fv = if fv.has(x) { return None } else { fv };
     st.push(
         format!(
@@ -1212,10 +1279,7 @@ fn homogeneous(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Op
             name(x),
             name(v)
         ),
-        eq_latex(
-            &add2(vv.clone(), mul2(var(x), var(&dname(v, 1)))),
-            &fv,
-        ),
+        eq_latex(&add2(vv.clone(), mul2(var(x), var(&dname(v, 1)))), &fv),
     );
     let g = nice(&sub(fv, vv.clone()));
     if g.is_zero() {
@@ -1236,7 +1300,10 @@ fn homogeneous(f: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Op
     let hr = func(Func::Ln, func(Func::Abs, var(x)));
     let c = ctx.constant();
     let rhs = add2(hr, var(&c));
-    st.push("Integrate the right side and put them together", eq_latex(&gl, &rhs));
+    st.push(
+        "Integrate the right side and put them together",
+        eq_latex(&gl, &rhs),
+    );
     let ratio = div(var(dep), var(x));
     let l = nice(&gl.subs_var(v, &ratio));
     st.push(
@@ -1292,7 +1359,14 @@ impl Sym {
     }
 }
 
-fn higher_order(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn higher_order(
+    eq: &Sym,
+    order: usize,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     let check = |sol: &Sol| match sol {
         Sol::Explicit(fs) => fs.iter().all(|g| verify(eq, dep, x, order, g)),
         Sol::Implicit(..) => true,
@@ -1300,11 +1374,17 @@ fn higher_order(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &
     let made = ctx.made.len();
     let linear = linear_coeffs(eq, dep, order);
     let mut tries: Vec<Box<dyn FnMut(&mut Steps, &mut Ctx) -> Option<Sol>>> = Vec::new();
-    tries.push(Box::new(|st, ctx| repeated_integration(eq, order, dep, x, ctx, st)));
+    tries.push(Box::new(|st, ctx| {
+        repeated_integration(eq, order, dep, x, ctx, st)
+    }));
     if let Some((a, g)) = linear.clone() {
         let (a2, g2) = (a.clone(), g.clone());
-        tries.push(Box::new(move |st, ctx| constant_coefficients(&a, &g, dep, x, ctx, st)));
-        tries.push(Box::new(move |st, ctx| cauchy_euler(&a2, &g2, dep, x, ctx, st)));
+        tries.push(Box::new(move |st, ctx| {
+            constant_coefficients(&a, &g, dep, x, ctx, st)
+        }));
+        tries.push(Box::new(move |st, ctx| {
+            cauchy_euler(&a2, &g2, dep, x, ctx, st)
+        }));
     }
     tries.push(Box::new(|st, ctx| missing_dep(eq, order, dep, x, ctx, st)));
     tries.push(Box::new(|st, ctx| missing_x(eq, order, dep, x, ctx, st)));
@@ -1322,7 +1402,14 @@ fn higher_order(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &
 }
 
 /// y⁽ⁿ⁾ = f(x): integrate n times.
-fn repeated_integration(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn repeated_integration(
+    eq: &Sym,
+    order: usize,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     let top = dname(dep, order);
     let c = poly::coeffs(eq, &top)?;
     if c.len() != 2 || !free_of_dep(&c[0], dep) || !free_of_dep(&c[1], dep) {
@@ -1411,7 +1498,9 @@ fn char_roots(c: &[Sym]) -> Option<Vec<Root>> {
     match c.len() {
         2 => out.push(Root::Real(nice(&div(neg(c[0].clone()), c[1].clone())), 1)),
         3 => out.extend(quadratic_roots(&c[2], &c[1], &c[0], 1)),
-        5 if c[1].is_zero() && c[3].is_zero() => out.extend(even_quartic_roots(&c[4], &c[2], &c[0], 1)?),
+        5 if c[1].is_zero() && c[3].is_zero() => {
+            out.extend(even_quartic_roots(&c[4], &c[2], &c[0], 1)?)
+        }
         _ => return None,
     }
     Some(out)
@@ -1450,7 +1539,10 @@ fn even_quartic_roots(a: &Sym, b: &Sym, c: &Sym, m: usize) -> Option<Vec<Root>> 
 }
 
 fn quadratic_roots(a: &Sym, b: &Sym, c: &Sym, m: usize) -> Vec<Root> {
-    let d = nice(&expand(&sub(powi(b.clone(), 2), mul(vec![n(4), a.clone(), c.clone()]))));
+    let d = nice(&expand(&sub(
+        powi(b.clone(), 2),
+        mul(vec![n(4), a.clone(), c.clone()]),
+    )));
     let two_a = mul2(n(2), a.clone());
     let alpha = nice(&div(neg(b.clone()), two_a.clone()));
     if d.is_zero() {
@@ -1512,7 +1604,11 @@ fn roots_latex(r: &str, roots: &[Root]) -> String {
 /// `extra` multiplies repeated roots (x or ln x).
 fn basis(roots: &[Root], euler: bool, x: &str) -> (Vec<Sym>, Vec<String>) {
     let xv = var(x);
-    let t = if euler { func(Func::Ln, xv.clone()) } else { xv.clone() };
+    let t = if euler {
+        func(Func::Ln, xv.clone())
+    } else {
+        xv.clone()
+    };
     let grow = |r: &Sym| -> Sym {
         if euler {
             pow(xv.clone(), r.clone())
@@ -1522,7 +1618,11 @@ fn basis(roots: &[Root], euler: bool, x: &str) -> (Vec<Sym>, Vec<String>) {
     };
     let mut out = Vec::new();
     let mut notes = Vec::new();
-    let tl = if euler { "\\ln x".replace('x', &name(x)) } else { name(x) };
+    let tl = if euler {
+        "\\ln x".replace('x', &name(x))
+    } else {
+        name(x)
+    };
     for root in roots {
         match root {
             Root::Real(r, m) => {
@@ -1544,7 +1644,11 @@ fn basis(roots: &[Root], euler: bool, x: &str) -> (Vec<Sym>, Vec<String>) {
                 let arg = mul2(b.clone(), t.clone());
                 for j in 0..*m {
                     let k = powi(t.clone(), j as i128);
-                    out.push(nice(&mul(vec![k.clone(), grow(a), func(Func::Cos, arg.clone())])));
+                    out.push(nice(&mul(vec![
+                        k.clone(),
+                        grow(a),
+                        func(Func::Cos, arg.clone()),
+                    ])));
                     out.push(nice(&mul(vec![k, grow(a), func(Func::Sin, arg.clone())])));
                 }
                 let pair = roots_latex("", &[Root::Complex(a.clone(), b.clone(), 1)]);
@@ -1561,17 +1665,31 @@ fn basis(roots: &[Root], euler: bool, x: &str) -> (Vec<Sym>, Vec<String>) {
 }
 
 fn homogeneous_part(ys: &[Sym], ctx: &mut Ctx) -> Sym {
-    add(ys.iter().map(|y| mul2(var(&ctx.constant()), y.clone())).collect())
+    add(ys
+        .iter()
+        .map(|y| mul2(var(&ctx.constant()), y.clone()))
+        .collect())
 }
 
 /// Constant coefficients: the characteristic equation for the homogeneous
 /// part, then undetermined coefficients or variation of parameters.
-fn constant_coefficients(a: &[Sym], g: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn constant_coefficients(
+    a: &[Sym],
+    g: &Sym,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     if a.iter().any(|c| c.has(x)) {
         return None;
     }
     let order = a.len() - 1;
-    let r = if ctx.avoid.iter().any(|n| n == "r") { "m" } else { "r" };
+    let r = if ctx.avoid.iter().any(|n| n == "r") {
+        "m"
+    } else {
+        "r"
+    };
     st.push(
         "This is linear with constant coefficients. First solve it with the right side set to zero",
         format!("{}=0", operator_latex(a, dep)),
@@ -1709,13 +1827,23 @@ const UNKNOWNS: [&str; 12] = ["A", "B", "D", "E", "F", "G", "H", "J", "K", "L", 
 
 /// Undetermined coefficients: guess a particular solution shaped like the
 /// right side, put it in, and match the coefficients.
-fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut Steps) -> Option<Sym> {
+fn undetermined(
+    a: &[Sym],
+    g: &Sym,
+    roots: &[Root],
+    dep: &str,
+    x: &str,
+    st: &mut Steps,
+) -> Option<Sym> {
     let g = expand(&hyperbolic_to_exp(g));
     // (α, β) → highest power of x.
     let mut groups: Vec<(Sym, Sym, usize)> = Vec::new();
     for t in g.terms() {
         let (m, al, be) = uc_shape(&t, x)?;
-        match groups.iter_mut().find(|(a2, b2, _)| same(a2, &al) && same(b2, &be)) {
+        match groups
+            .iter_mut()
+            .find(|(a2, b2, _)| same(a2, &al) && same(b2, &be))
+        {
             Some(gr) => gr.2 = gr.2.max(m),
             None => groups.push((al, be, m)),
         }
@@ -1723,7 +1851,10 @@ fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut
     let xv = var(x);
     let mut used: Vec<String> = a.iter().chain([&g]).flat_map(|s| s.names()).collect();
     used.push(dep.into());
-    let mut names = UNKNOWNS.iter().filter(|u| !used.iter().any(|n| n == *u)).map(|s| s.to_string());
+    let mut names = UNKNOWNS
+        .iter()
+        .filter(|u| !used.iter().any(|n| n == *u))
+        .map(|s| s.to_string());
     let mut unknowns: Vec<String> = Vec::new();
     let mut guess = Vec::new();
     let mut bumped = Vec::new();
@@ -1733,7 +1864,9 @@ fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut
             .map(|r| match r {
                 Root::Real(r, k) if be.is_zero() && same(r, al) => *k,
                 Root::Complex(ra, rb, k)
-                    if !be.is_zero() && same(ra, al) && (same(rb, be) || same(rb, &neg(be.clone()))) =>
+                    if !be.is_zero()
+                        && same(ra, al)
+                        && (same(rb, be) || same(rb, &neg(be.clone()))) =>
                 {
                     *k
                 }
@@ -1764,7 +1897,9 @@ fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut
         guess.push(piece);
     }
     let guess = add(guess);
-    let mut note = "Guess a particular solution shaped like the right side, with unknown coefficients".to_owned();
+    let mut note =
+        "Guess a particular solution shaped like the right side, with unknown coefficients"
+            .to_owned();
     for (k, f) in &bumped {
         note.push_str(&format!(
             ". Because ${f}$ already solves the equation with zero on the right, multiply its part by ${}$",
@@ -1786,7 +1921,8 @@ fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut
     let residual = expand(&sub(add(lhs), g.clone()));
     let mut keyed: Vec<(Sym, Sym)> = Vec::new();
     for t in residual.terms() {
-        let (with_x, without): (Vec<Sym>, Vec<Sym>) = t.factors().into_iter().partition(|f| f.has(x));
+        let (with_x, without): (Vec<Sym>, Vec<Sym>) =
+            t.factors().into_iter().partition(|f| f.has(x));
         let key = mul(with_x);
         let coef = mul(without);
         match keyed.iter_mut().find(|(k, _)| *k == key) {
@@ -1803,7 +1939,9 @@ fn undetermined(a: &[Sym], g: &Sym, roots: &[Root], dep: &str, x: &str, st: &mut
             continue;
         }
         let mut row: Vec<Sym> = unknowns.iter().map(|u| nice(&derivative(&c, u))).collect();
-        let constant = zero_args.iter().fold(c.clone(), |s, (u, z)| s.subs_var(u, z));
+        let constant = zero_args
+            .iter()
+            .fold(c.clone(), |s, (u, z)| s.subs_var(u, z));
         let rest = nice(&sub(c.clone(), constant.clone()));
         shown.push(eq_latex(&rest, &nice(&neg(constant.clone()))));
         row.push(nice(&neg(constant)));
@@ -1855,9 +1993,26 @@ fn variation(y1: &Sym, y2: &Sym, g: &Sym, dep: &str, x: &str, st: &mut Steps) ->
     );
     let i1 = nice(&div(mul2(y2.clone(), g.clone()), w.clone()));
     let i2 = nice(&div(mul2(y1.clone(), g.clone()), w.clone()));
-    let u1 = integrate(&i1, x, Some("Integrate $y_2 g/W$".replace('y', &name(dep))), st)?;
-    let u2 = integrate(&i2, x, Some("Integrate $y_1 g/W$".replace('y', &name(dep))), st)?;
+    let u1 = integrate(
+        &i1,
+        x,
+        Some("Integrate $y_2 g/W$".replace('y', &name(dep))),
+        st,
+    )?;
+    let u2 = integrate(
+        &i2,
+        x,
+        Some("Integrate $y_1 g/W$".replace('y', &name(dep))),
+        st,
+    )?;
     let yp = nice(&expand(&sub(mul2(u2, y2.clone()), mul2(u1, y1.clone()))));
+    // sec x sin²x - sin x tan x is 0 once written with sin and cos.
+    let plain = nice(&expand(&super::trigint::to_sin_cos(&yp)));
+    let yp = if latex(&plain).len() < latex(&yp).len() {
+        plain
+    } else {
+        yp
+    };
     st.push(
         format!(
             "Then ${}_{{p}}=-{}_1\\int\\frac{{{}_2 g}}{{W}}+{}_2\\int\\frac{{{}_1 g}}{{W}}$",
@@ -1873,7 +2028,14 @@ fn variation(y1: &Sym, y2: &Sym, g: &Sym, dep: &str, x: &str, st: &mut Steps) ->
 }
 
 /// aₖ = cₖ xᵏ: try y = x^r.
-fn cauchy_euler(a: &[Sym], g: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn cauchy_euler(
+    a: &[Sym],
+    g: &Sym,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     let xv = var(x);
     let c: Vec<Sym> = a
         .iter()
@@ -1883,7 +2045,11 @@ fn cauchy_euler(a: &[Sym], g: &Sym, dep: &str, x: &str, ctx: &mut Ctx, st: &mut 
     if c.iter().any(|k| k.has(x)) || a.iter().all(|k| !k.has(x)) {
         return None;
     }
-    let r = if ctx.avoid.iter().any(|n| n == "r") { "m" } else { "r" };
+    let r = if ctx.avoid.iter().any(|n| n == "r") {
+        "m"
+    } else {
+        "r"
+    };
     let rv = var(r);
     // Σ cₖ r(r-1)…(r-k+1).
     let mut char_poly = Vec::new();
@@ -1931,7 +2097,14 @@ fn rename_derivs(eq: &Sym, dep: &str, to: &str, shift: usize, order: usize) -> S
 }
 
 /// No y itself: p = y⁽ᵏ⁾ lowers the order.
-fn missing_dep(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn missing_dep(
+    eq: &Sym,
+    order: usize,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     let lowest = (0..=order).find(|&k| eq.has(&dname(dep, k)))?;
     if lowest == 0 || lowest == order {
         return None;
@@ -1957,7 +2130,13 @@ fn missing_dep(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &m
     let Sol::Explicit(ps) = sol else { return None };
     let mut cur = ps.into_iter().next()?;
     st.push(
-        format!("So ${}={}$; integrate {} times to get ${}$", name(&dname(dep, lowest)), latex(&cur), lowest, name(dep)),
+        format!(
+            "So ${}={}$; integrate {} times to get ${}$",
+            name(&dname(dep, lowest)),
+            latex(&cur),
+            lowest,
+            name(dep)
+        ),
         "",
     );
     for k in (0..lowest).rev() {
@@ -1970,7 +2149,14 @@ fn missing_dep(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &m
 }
 
 /// No x, second order: p(y) = y' turns y'' into p dp/dy.
-fn missing_x(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &mut Steps) -> Option<Sol> {
+fn missing_x(
+    eq: &Sym,
+    order: usize,
+    dep: &str,
+    x: &str,
+    ctx: &mut Ctx,
+    st: &mut Steps,
+) -> Option<Sol> {
     if order != 2 || eq.has(x) || !eq.has(dep) {
         return None;
     }
@@ -1998,10 +2184,7 @@ fn missing_x(eq: &Sym, order: usize, dep: &str, x: &str, ctx: &mut Ctx, st: &mut
         return None;
     };
     let pf = ps.into_iter().next()?;
-    st.push(
-        format!("Now solve ${}'={}$", name(dep), latex(&pf)),
-        "",
-    );
+    st.push(format!("Now solve ${}'={}$", name(dep), latex(&pf)), "");
     let next = sub(var(&dname(dep, 1)), pf);
     first_order(&next, dep, x, ctx, st)
 }
@@ -2015,7 +2198,9 @@ pub fn solve_system(
     start: Option<(Sym, Sym)>,
     st: &mut Steps,
 ) -> Result<(String, Option<String>), String> {
-    let fail = || "Solve only solves systems that are linear with constant coefficients, like x' = x - y, y' = x + y".to_owned();
+    let fail = || {
+        "Solve only solves systems that are linear with constant coefficients, like x' = x - y, y' = x + y".to_owned()
+    };
     let lin = |e: &Sym| -> Option<(Sym, Sym)> {
         let cx = poly::coeffs(e, "x")?;
         if cx.len() > 2 {
@@ -2047,7 +2232,11 @@ pub fn solve_system(
     let tr = nice(&add2(a.clone(), d.clone()));
     let det = nice(&sub(mul2(a.clone(), d.clone()), mul2(b.clone(), c.clone())));
     let lv = var("lambda");
-    let char_poly = add(vec![powi(lv.clone(), 2), neg(mul2(tr.clone(), lv)), det.clone()]);
+    let char_poly = add(vec![
+        powi(lv.clone(), 2),
+        neg(mul2(tr.clone(), lv)),
+        det.clone(),
+    ]);
     st.push(
         "The characteristic equation is $\\lambda^2-(a+d)\\lambda+(ad-bc)=0$",
         format!("{}=0", latex(&char_poly)),
@@ -2073,7 +2262,18 @@ pub fn solve_system(
         [Root::Real(l1, 1), Root::Real(l2, 1)] => {
             let (v1, v2) = (vector(l1), vector(l2));
             let (v1, v2) = if b.is_zero() && c.is_zero() {
-                (if same(l1, &a) { (n(1), n(0)) } else { (n(0), n(1)) }, if same(l2, &a) { (n(1), n(0)) } else { (n(0), n(1)) })
+                (
+                    if same(l1, &a) {
+                        (n(1), n(0))
+                    } else {
+                        (n(0), n(1))
+                    },
+                    if same(l2, &a) {
+                        (n(1), n(0))
+                    } else {
+                        (n(0), n(1))
+                    },
+                )
             } else {
                 (v1, v2)
             };
@@ -2084,19 +2284,32 @@ pub fn solve_system(
             let e1 = exp(mul2(l1.clone(), t.clone()));
             let e2 = exp(mul2(l2.clone(), t.clone()));
             (
-                add2(mul(vec![c1.clone(), v1.0, e1.clone()]), mul(vec![c2.clone(), v2.0, e2.clone()])),
-                add2(mul(vec![c1.clone(), v1.1, e1]), mul(vec![c2.clone(), v2.1, e2])),
+                add2(
+                    mul(vec![c1.clone(), v1.0, e1.clone()]),
+                    mul(vec![c2.clone(), v2.0, e2.clone()]),
+                ),
+                add2(
+                    mul(vec![c1.clone(), v1.1, e1]),
+                    mul(vec![c2.clone(), v2.1, e2]),
+                ),
             )
         }
         [Root::Real(l, 2)] => {
             let e = exp(mul2(l.clone(), t.clone()));
             if b.is_zero() && c.is_zero() {
-                st.push("The matrix is a multiple of the identity, so each part grows on its own", "");
+                st.push(
+                    "The matrix is a multiple of the identity, so each part grows on its own",
+                    "",
+                );
                 (mul2(c1.clone(), e.clone()), mul2(c2.clone(), e))
             } else {
                 let v = vector(l);
                 // (A - λI) w = v.
-                let w = if !b.is_zero() { (n(0), n(1)) } else { (n(1), n(0)) };
+                let w = if !b.is_zero() {
+                    (n(0), n(1))
+                } else {
+                    (n(1), n(0))
+                };
                 let scale = if !b.is_zero() { b.clone() } else { c.clone() };
                 let w = (div(w.0, scale.clone()), div(w.1, scale));
                 let v = (v.0, v.1);
@@ -2106,17 +2319,35 @@ pub fn solve_system(
                     format!("v={},\\ w={}", vl(&v), vl(&(w0.clone(), w1.clone()))),
                 );
                 (
-                    mul2(e.clone(), add2(mul2(c1.clone(), v.0.clone()), mul2(c2.clone(), add2(mul2(t.clone(), v.0), w0)))),
-                    mul2(e, add2(mul2(c1.clone(), v.1.clone()), mul2(c2.clone(), add2(mul2(t.clone(), v.1), w1)))),
+                    mul2(
+                        e.clone(),
+                        add2(
+                            mul2(c1.clone(), v.0.clone()),
+                            mul2(c2.clone(), add2(mul2(t.clone(), v.0), w0)),
+                        ),
+                    ),
+                    mul2(
+                        e,
+                        add2(
+                            mul2(c1.clone(), v.1.clone()),
+                            mul2(c2.clone(), add2(mul2(t.clone(), v.1), w1)),
+                        ),
+                    ),
                 )
             }
         }
         [Root::Complex(al, be, 1)] => {
             // v = (b, α - a + βi) = p + qi.
             let (p, q) = if !b.is_zero() {
-                ((b.clone(), nice(&sub(al.clone(), a.clone()))), (n(0), be.clone()))
+                (
+                    (b.clone(), nice(&sub(al.clone(), a.clone()))),
+                    (n(0), be.clone()),
+                )
             } else {
-                ((nice(&sub(al.clone(), d.clone())), c.clone()), (be.clone(), n(0)))
+                (
+                    (nice(&sub(al.clone(), d.clone())), c.clone()),
+                    (be.clone(), n(0)),
+                )
             };
             st.push(
                 "The eigenvalues are complex, $\\alpha\\pm\\beta i$, with eigenvector $p+qi$; the real solutions are $e^{\\alpha t}(p\\cos\\beta t-q\\sin\\beta t)$ and $e^{\\alpha t}(p\\sin\\beta t+q\\cos\\beta t)$",
@@ -2129,8 +2360,14 @@ pub fn solve_system(
                 mul2(
                     e.clone(),
                     add2(
-                        mul2(c1.clone(), sub(mul2(pk.clone(), co.clone()), mul2(qk.clone(), si.clone()))),
-                        mul2(c2.clone(), add2(mul2(pk.clone(), si.clone()), mul2(qk.clone(), co.clone()))),
+                        mul2(
+                            c1.clone(),
+                            sub(mul2(pk.clone(), co.clone()), mul2(qk.clone(), si.clone())),
+                        ),
+                        mul2(
+                            c2.clone(),
+                            add2(mul2(pk.clone(), si.clone()), mul2(qk.clone(), co.clone())),
+                        ),
                     ),
                 )
             };
@@ -2141,7 +2378,12 @@ pub fn solve_system(
     let (mut xs, mut ys) = (nice(&expand(&xs)), nice(&expand(&ys)));
     // Check: x' = f(x, y), y' = g(x, y).
     for (lhs, rhs) in [(derivative(&xs, "t"), f), (derivative(&ys, "t"), g)] {
-        let r = sub(lhs, rhs.subs_var("x", &var("\u{5}")).subs_var("y", &ys).subs_var("\u{5}", &xs));
+        let r = sub(
+            lhs,
+            rhs.subs_var("x", &var("\u{5}"))
+                .subs_var("y", &ys)
+                .subs_var("\u{5}", &xs),
+        );
         if !zero_everywhere(&r) {
             return Err(fail());
         }
@@ -2156,7 +2398,13 @@ pub fn solve_system(
         let (ex, ey) = (at0(&xs), at0(&ys));
         st.push(
             "Start at the initial point when $t=0$",
-            format!("{}={},\\ {}={}", latex(&ex), latex(&x0), latex(&ey), latex(&y0)),
+            format!(
+                "{}={},\\ {}={}",
+                latex(&ex),
+                latex(&x0),
+                latex(&ey),
+                latex(&y0)
+            ),
         );
         let row = |e: &Sym, v: &Sym| {
             vec![
@@ -2170,11 +2418,19 @@ pub fn solve_system(
                 "So",
                 format!("C_{{1}}={},\\ C_{{2}}={}", latex(&vals[0]), latex(&vals[1])),
             );
-            let put = |s: &Sym| nice(&expand(&s.subs_var("C_1", &vals[0]).subs_var("C_2", &vals[1])));
+            let put = |s: &Sym| {
+                nice(&expand(
+                    &s.subs_var("C_1", &vals[0]).subs_var("C_2", &vals[1]),
+                ))
+            };
             xs = put(&xs);
             ys = put(&ys);
             st.push(
-                format!("The trajectory from $\\left({},{}\\right)$ is", latex(&x0), latex(&y0)),
+                format!(
+                    "The trajectory from $\\left({},{}\\right)$ is",
+                    latex(&x0),
+                    latex(&y0)
+                ),
                 pair(&xs, &ys),
             );
         }

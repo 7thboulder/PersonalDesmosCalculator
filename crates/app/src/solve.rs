@@ -37,10 +37,10 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
     let report = std::panic::catch_unwind(move || {
         symbolic::run_row(&latex, &others, op.as_deref(), &initial)
     })
-        .unwrap_or_else(|_| symbolic::Report {
-            error: Some("Something went wrong while solving this".into()),
-            ..Default::default()
-        });
+    .unwrap_or_else(|_| symbolic::Report {
+        error: Some("Something went wrong while solving this".into()),
+        ..Default::default()
+    });
     json!({
         "id": id,
         "op": report.op,

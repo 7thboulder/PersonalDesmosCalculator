@@ -595,14 +595,30 @@ impl Parser {
     /// `\int_a^b body dx` after the `\int`. The body runs to the `dx`.
     fn integral(&mut self) -> Result<Expr, String> {
         let bounds_error = || "An integral needs bounds, like 0 below and 1 above".to_string();
-        if !self.eat(&Tok::Underscore) {
-            return Err(bounds_error());
-        }
-        let lo = self.script()?;
-        if !self.eat(&Tok::Caret) {
-            return Err(bounds_error());
-        }
-        let hi = self.script()?;
+        let empty = |p: &Parser, at: usize| {
+            matches!(
+                (p.toks.get(at), p.toks.get(at + 1)),
+                (Some(Tok::LBrace), Some(Tok::RBrace))
+            )
+        };
+        // No bounds, or the empty ones the editor leaves: \int_{ }^{ }.
+        let indefinite = || Expr::Var(crate::ast::INDEFINITE.into());
+        let (lo, hi) = if self.peek() != Some(&Tok::Underscore) {
+            (indefinite(), indefinite())
+        } else if empty(self, self.pos + 1)
+            && self.toks.get(self.pos + 3) == Some(&Tok::Caret)
+            && empty(self, self.pos + 4)
+        {
+            self.pos += 6;
+            (indefinite(), indefinite())
+        } else {
+            self.pos += 1;
+            let lo = self.script()?;
+            if !self.eat(&Tok::Caret) {
+                return Err(bounds_error());
+            }
+            (lo, self.script()?)
+        };
         self.integral_depth += 1;
         let body = if self.at_differential() {
             Ok(Expr::Num(1.0))

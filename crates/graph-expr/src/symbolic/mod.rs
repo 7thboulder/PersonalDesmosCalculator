@@ -10,12 +10,74 @@ pub mod ode;
 pub mod poly;
 pub mod solve;
 pub mod sym;
+pub(crate) mod trigint;
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use crate::ast::{Expr, Relation, Statement};
 use convert::{infinity, to_sym, Defs};
+
+/// Replaces each integral written without bounds in a row with its
+/// antiderivative (taking the constant as 0), so the graph can draw it.
+/// `rows` are the rows' LaTeX, for functions they define.
+pub fn resolve_indefinite(statement: Statement, rows: &[String]) -> Result<Statement, String> {
+    let mut found = false;
+    let mut look =
+        |e: &Expr| found |= matches!(e, Expr::Integral(_, lo, _, _) if convert::is_indefinite(lo));
+    match &statement {
+        Statement::Expr(e) => e.walk(&mut look),
+        Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
+            a.walk(&mut look);
+            b.walk(&mut look);
+        }
+        Statement::Chain(c) => c.operands.iter().for_each(|e| e.walk(&mut look)),
+    }
+    if !found {
+        return Ok(statement);
+    }
+    let defs = Defs::from_rows(rows);
+    let mut error = None;
+    let mut f = |e: Expr| match e {
+        Expr::Integral(v, lo, hi, body) if convert::is_indefinite(&lo) => {
+            let whole = Expr::Integral(v, lo, hi, body);
+            DEADLINE.with(|d| d.set(Some(Instant::now() + Duration::from_millis(500))));
+            let found = to_sym(&whole, &defs);
+            DEADLINE.with(|d| d.set(None));
+            match found.and_then(|s| match crate::parse(&latex(&s))? {
+                Statement::Expr(e) => Ok(e),
+                _ => Err("Couldn't graph this antiderivative".into()),
+            }) {
+                Ok(e) => Ok(e),
+                Err(m) => {
+                    error.get_or_insert(m);
+                    Ok(Expr::Num(f64::NAN))
+                }
+            }
+        }
+        e => Err(e),
+    };
+    let mut r = |e: Expr| crate::units::rewrite(e, &mut f);
+    let out = match statement {
+        Statement::Expr(e) => Statement::Expr(r(e)),
+        Statement::Relation(a, rel, b) => {
+            let a = r(a);
+            Statement::Relation(a, rel, r(b))
+        }
+        Statement::Regression(a, b) => {
+            let a = r(a);
+            Statement::Regression(a, r(b))
+        }
+        Statement::Chain(c) => Statement::Chain(crate::ast::Condition {
+            operands: c.operands.into_iter().map(&mut r).collect(),
+            relations: c.relations,
+        }),
+    };
+    match error {
+        Some(m) => Err(m),
+        None => Ok(out),
+    }
+}
 use latex::{latex, name};
 use solve::Outcome;
 use sym::*;
@@ -115,7 +177,17 @@ pub(crate) fn out_of_time() -> bool {
 pub fn nice(s: &Sym) -> Sym {
     let mut best = s.clone();
     let mut best_len = latex(s).len();
-    for c in [expand(s), together(&expand(s))] {
+    // Over one denominator is rarely tidier for big expressions, and slow.
+    let x = expand(s);
+    let mut inexact = false;
+    trigint::walk(&x, &mut |t| inexact |= matches!(t, Sym::Real(_)));
+    let forms = if x.size() > 120 || inexact || out_of_time() {
+        vec![x]
+    } else {
+        let t = together(&x);
+        vec![x, t]
+    };
+    for c in forms {
         let l = latex(&c).len();
         if l < best_len {
             best = c;
@@ -269,6 +341,13 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
                 var: v,
                 body,
                 times: k,
+            }
+        }
+        Statement::Expr(Expr::Integral(v, lo, _, body)) if convert::is_indefinite(&lo) => {
+            Form::Integral {
+                body: to_sym(&body, defs)?,
+                var: v,
+                bounds: None,
             }
         }
         Statement::Expr(Expr::Integral(v, lo, hi, body)) => {
@@ -752,7 +831,11 @@ fn derivative_op(s: &Sym, v: &str, times: u32, st: &mut Steps) -> Done {
 fn integral_op(s: &Sym, v: &str, bounds: Option<(Bound, Bound)>, st: &mut Steps) -> Done {
     let f = integrate::antiderivative(s, v, st);
     let Some((lo, hi)) = bounds else {
-        let f = f.ok_or("Solve couldn't find an antiderivative for this")?;
+        let f = f.ok_or(if trigint::non_elementary(s, v) {
+            "This has no antiderivative made of elementary functions; Solve can still find definite integrals of it numerically"
+        } else {
+            "Solve couldn't find an antiderivative for this"
+        })?;
         let f = nice(&f);
         st.push(
             "So, adding the constant of integration",
