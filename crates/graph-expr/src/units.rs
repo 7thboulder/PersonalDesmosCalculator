@@ -1037,52 +1037,79 @@ fn constant_value(e: &Expr) -> Option<f64> {
 
 /// Replaces every unit by its SI factor and drops conversions, which only
 /// change how the answer is shown.
-pub fn lower(e: Expr) -> Expr {
-    let b = |e: Box<Expr>| Box::new(lower(*e));
-    let all = |v: Vec<Expr>| v.into_iter().map(lower).collect::<Vec<_>>();
-    let cond = |c: Condition| Condition {
-        operands: c.operands.into_iter().map(lower).collect(),
-        relations: c.relations,
+/// Rebuilds `e` from the top down: `f` returns the replacement for a node,
+/// or hands the node back to have its children rebuilt.
+pub fn rewrite(e: Expr, f: &mut dyn FnMut(Expr) -> Result<Expr, Expr>) -> Expr {
+    let e = match f(e) {
+        Ok(done) => return done,
+        Err(e) => e,
     };
+    let mut lower = |e: Expr| rewrite(e, f);
+    macro_rules! b {
+        ($e:expr) => {
+            Box::new(lower(*$e))
+        };
+    }
+    macro_rules! all {
+        ($v:expr) => {
+            $v.into_iter().map(&mut lower).collect::<Vec<_>>()
+        };
+    }
     match e {
-        Expr::Unit(q) => Expr::Num(q.factor),
-        Expr::Convert(inner, _) => lower(*inner),
-        Expr::Num(_) | Expr::Var(_) => e,
-        Expr::Neg(a) => Expr::Neg(b(a)),
-        Expr::Factorial(a) => Expr::Factorial(b(a)),
-        Expr::Coord(a, c) => Expr::Coord(b(a), c),
-        Expr::Add(x, y) => Expr::Add(b(x), b(y)),
-        Expr::Sub(x, y) => Expr::Sub(b(x), b(y)),
-        Expr::Mul(x, y) => Expr::Mul(b(x), b(y)),
-        Expr::Div(x, y) => Expr::Div(b(x), b(y)),
-        Expr::Pow(x, y) => Expr::Pow(b(x), b(y)),
-        Expr::Point(x, y) => Expr::Point(b(x), b(y)),
-        Expr::Index(x, y) => Expr::Index(b(x), b(y)),
-        Expr::Filter(x, y) => Expr::Filter(b(x), b(y)),
-        Expr::Point3(x, y, z) => Expr::Point3(b(x), b(y), b(z)),
-        Expr::Call(f, args) => Expr::Call(f, all(args)),
-        Expr::Apply(n, args) => Expr::Apply(n, all(args)),
-        Expr::Shape(f, args) => Expr::Shape(f, all(args)),
-        Expr::Actions(args) => Expr::Actions(all(args)),
-        Expr::Prime(n, k, args) => Expr::Prime(n, k, all(args)),
-        Expr::List(items) => Expr::List(all(items)),
-        Expr::Range(x, y, z) => Expr::Range(b(x), y.map(b), b(z)),
+        Expr::Unit(_) | Expr::Num(_) | Expr::Var(_) => e,
+        Expr::Convert(inner, target) => Expr::Convert(b!(inner), target),
+        Expr::Neg(a) => Expr::Neg(b!(a)),
+        Expr::Factorial(a) => Expr::Factorial(b!(a)),
+        Expr::Coord(a, c) => Expr::Coord(b!(a), c),
+        Expr::Add(x, y) => Expr::Add(b!(x), b!(y)),
+        Expr::Sub(x, y) => Expr::Sub(b!(x), b!(y)),
+        Expr::Mul(x, y) => Expr::Mul(b!(x), b!(y)),
+        Expr::Div(x, y) => Expr::Div(b!(x), b!(y)),
+        Expr::Pow(x, y) => Expr::Pow(b!(x), b!(y)),
+        Expr::Point(x, y) => Expr::Point(b!(x), b!(y)),
+        Expr::Index(x, y) => Expr::Index(b!(x), b!(y)),
+        Expr::Filter(x, y) => Expr::Filter(b!(x), b!(y)),
+        Expr::Point3(x, y, z) => Expr::Point3(b!(x), b!(y), b!(z)),
+        Expr::Call(f, args) => Expr::Call(f, all!(args)),
+        Expr::Apply(n, args) => Expr::Apply(n, all!(args)),
+        Expr::Shape(f, args) => Expr::Shape(f, all!(args)),
+        Expr::Actions(args) => Expr::Actions(all!(args)),
+        Expr::Prime(n, k, args) => Expr::Prime(n, k, all!(args)),
+        Expr::List(items) => Expr::List(all!(items)),
+        Expr::Range(x, y, z) => Expr::Range(b!(x), y.map(|y| b!(y)), b!(z)),
         Expr::Comprehension(body, generators) => Expr::Comprehension(
-            b(body),
+            b!(body),
             generators.into_iter().map(|(n, l)| (n, lower(l))).collect(),
         ),
         Expr::Piecewise(branches, otherwise) => Expr::Piecewise(
             branches
                 .into_iter()
-                .map(|(c, v)| (cond(c), lower(v)))
+                .map(|(c, v)| {
+                    let operands = c.operands.into_iter().map(&mut lower).collect();
+                    (
+                        Condition {
+                            operands,
+                            relations: c.relations,
+                        },
+                        lower(v),
+                    )
+                })
                 .collect(),
-            otherwise.map(b),
+            otherwise.map(|o| b!(o)),
         ),
-        Expr::Derivative(v, body) => Expr::Derivative(v, b(body)),
-        Expr::Repeat(k, v, lo, hi, body) => Expr::Repeat(k, v, b(lo), b(hi), b(body)),
-        Expr::Integral(v, lo, hi, body) => Expr::Integral(v, b(lo), b(hi), b(body)),
-        Expr::Update(n, value) => Expr::Update(n, b(value)),
+        Expr::Derivative(v, body) => Expr::Derivative(v, b!(body)),
+        Expr::Repeat(k, v, lo, hi, body) => Expr::Repeat(k, v, b!(lo), b!(hi), b!(body)),
+        Expr::Integral(v, lo, hi, body) => Expr::Integral(v, b!(lo), b!(hi), b!(body)),
+        Expr::Update(n, value) => Expr::Update(n, b!(value)),
     }
+}
+
+pub fn lower(e: Expr) -> Expr {
+    rewrite(e, &mut |e| match e {
+        Expr::Unit(q) => Ok(Expr::Num(q.factor)),
+        Expr::Convert(inner, _) => Ok(lower(*inner)),
+        e => Err(e),
+    })
 }
 
 pub fn lower_statement(s: Statement) -> Statement {

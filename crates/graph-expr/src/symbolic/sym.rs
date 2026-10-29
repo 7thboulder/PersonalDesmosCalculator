@@ -591,15 +591,22 @@ pub fn add(terms: Vec<Sym>) -> Sym {
 
 /// c·sin²u + c·cos²u = c, wherever both appear in a sum.
 fn sin_cos_squares(terms: Vec<Sym>) -> Vec<Sym> {
+    // The term as (everything else, u) when it has a factor f(u)².
     let square_of = |t: &Sym, f: Func| -> Option<(Sym, Sym)> {
-        let (c, rest) = split_coef(t);
-        match rest {
-            Sym::Pow(b, e) if e.is_int(2) => match *b {
-                Sym::Fn(g, u) if g == f => Some((c, *u)),
-                _ => None,
-            },
-            _ => None,
-        }
+        let fs = t.factors();
+        let i = fs.iter().position(|x| match x {
+            Sym::Pow(b, e) if e.is_int(2) => matches!(&**b, Sym::Fn(g, _) if *g == f),
+            _ => false,
+        })?;
+        let Sym::Pow(b, _) = &fs[i] else { return None };
+        let Sym::Fn(_, u) = &**b else { return None };
+        let others: Vec<Sym> = fs
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k != i)
+            .map(|(_, x)| x.clone())
+            .collect();
+        Some((mul(others), (**u).clone()))
     };
     for (i, t) in terms.iter().enumerate() {
         if let Some((c, u)) = square_of(t, Func::Sin) {
@@ -759,6 +766,8 @@ pub fn pow(b: Sym, e: Sym) -> Sym {
         }
     }
     match b {
+        // (e^u)^k = e^(ku) for real u.
+        Sym::Pow(inner, e2) if *inner == var("e") && !e2.has("i") => pow(*inner, mul2(*e2, e)),
         Sym::Pow(inner, e2) => {
             if e.as_q().is_some_and(Q::is_int) {
                 return pow(*inner, mul2(*e2, e));
@@ -1020,6 +1029,28 @@ pub fn func(f: Func, a: Sym) -> Sym {
             }
             if let Sym::Fn(Func::Abs, _) = a {
                 return a;
+            }
+            // x² + 1 and the like are never negative.
+            if let Sym::Add(ts) = &a {
+                let positive = |t: &Sym| {
+                    let (c, rest) = split_coef(t);
+                    c.is_constant()
+                        && c.value() > 0.0
+                        && rest.factors().iter().all(|f| match f {
+                            Sym::Pow(_, k) => k.as_q().is_some_and(|q| q.is_int() && q.n % 2 == 0),
+                            f => f.is_one() || (f.is_constant() && f.value() > 0.0),
+                        })
+                };
+                if ts.iter().all(positive) {
+                    return a;
+                }
+            }
+            // e^u and even roots are never negative.
+            if let Sym::Pow(b, e) = &a {
+                let even_root = e.as_q().is_some_and(|q| q.d % 2 == 0);
+                if (**b == var("e") && !e.has("i")) || even_root {
+                    return a;
+                }
             }
             raw(a)
         }

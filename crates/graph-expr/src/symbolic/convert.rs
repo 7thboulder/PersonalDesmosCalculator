@@ -43,6 +43,19 @@ impl Defs {
 const UNSUPPORTED: &str =
     "Solve works on single expressions and equations, not on lists, points or piecewise definitions";
 
+/// Whether an integral's bound means it has none.
+pub fn is_indefinite(e: &Expr) -> bool {
+    matches!(e, Expr::Var(v) if v == crate::ast::INDEFINITE)
+}
+
+pub fn no_antiderivative(body: &Sym, v: &str) -> String {
+    if super::trigint::non_elementary(body, v) {
+        "This has no antiderivative made of elementary functions; give the integral bounds to work it out numerically".into()
+    } else {
+        "Couldn't find an antiderivative for this; give the integral bounds to work it out numerically".into()
+    }
+}
+
 /// Whether an expression is ∞ or -∞, for integral bounds.
 pub fn infinity(e: &Expr) -> Option<f64> {
     match e {
@@ -112,6 +125,13 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
                 body = super::diff::derivative(&body, &params[0]);
             }
             substitute(&body, params, &[c(&args[0])?])
+        }
+        Expr::Integral(v, lo, _, body) if is_indefinite(lo) => {
+            let body = c(body)?;
+            match super::integrate::antiderivative(&body, v, &mut super::Steps::quiet()) {
+                Some(f) => super::nice(&f),
+                None => return Err(no_antiderivative(&body, v)),
+            }
         }
         Expr::Integral(v, lo, hi, body) => {
             if infinity(lo).is_some() || infinity(hi).is_some() {

@@ -1229,9 +1229,27 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             })
             .collect()
     };
+    // Integrals without bounds become their antiderivatives.
+    let all_latex: Vec<String> = rows
+        .iter()
+        .filter(|r| r.latex.contains("\\int"))
+        .next()
+        .map(|_| rows.iter().map(|r| r.latex.clone()).collect())
+        .unwrap_or_default();
     let mut parsed: Vec<Option<Result<Statement, String>>> = written
         .into_iter()
-        .map(|w| w.map(|r| r.map(units::lower_statement)))
+        .zip(rows)
+        .map(|(w, row)| {
+            w.map(|r| {
+                r.map(units::lower_statement).and_then(|s| {
+                    if row.latex.contains("\\int") {
+                        crate::symbolic::resolve_indefinite(s, &all_latex)
+                    } else {
+                        Ok(s)
+                    }
+                })
+            })
+        })
         .collect();
     let grids: Vec<Option<Result<matrix::Grid, String>>> = rows
         .iter()

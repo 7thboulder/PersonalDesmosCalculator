@@ -43,6 +43,9 @@ on the right. What you type is graphed as you type it:
   or `infty` for ∞ (or use ∞ under **functions** on the keypad), as in
   `∫ from 0 to ∞ of e^-x dx` or a restriction `{x < ∞}`. Derivatives are
   exact (symbolic); integrals use adaptive Gauss-Kronrod quadrature.
+  An integral without bounds, such as `y = ∫ x e^x dx` or
+  `f(x) = ∫ sec^3 x dx`, graphs its antiderivative (with the constant
+  taken as 0), found exactly the same way the Solve button finds it.
 - 3D graphs: the **2D / 3D** switch at the top of the list turns the graph
   into Desmos 3D's box. `z = f(x, y)` (or a bare expression in x and y) is
   drawn as a lit surface, trimmed to the box, with r and θ measured around
@@ -97,9 +100,25 @@ on the right. What you type is graphed as you type it:
   drops answers squaring added. An expression can be simplified (exact
   fractions and roots such as 5√2), expanded, factored, differentiated
   (each rule shown) or integrated (substitution, partial fractions, by
-  parts, definite integrals and improper ones); `y = …` and `f(x) = …`
-  rows also offer their roots. **Add to graph** puts the answer in a new
-  row, and functions from other rows can be used.
+  parts, trig identities and reduction formulas for powers of sin, cos,
+  tan and sec, trigonometric substitution for √(a² - x²), √(x² + a²) and
+  √(x² - a²), completing the square, the t = tan(x/2) substitution,
+  definite integrals and improper ones); `y = …` and `f(x) = …` rows also
+  offer their roots. Every antiderivative is checked by differentiating
+  it before it is shown. **Add to graph** puts the answer in a new row,
+  and functions from other rows can be used.
+- Solve also solves differential equations exactly, with steps:
+  first order by direct integration, integrating factors, separating the
+  variables, Bernoulli, exact (with an integrating factor if needed) and
+  homogeneous substitutions; higher order by repeated integration,
+  characteristic equations (real, repeated and complex roots, letters
+  such as ω allowed) with undetermined coefficients or variation of
+  parameters, Cauchy–Euler equations and reduction of order; and linear
+  systems `x' = ax + by, y' = cx + dy` by eigenvalues. With the row's
+  initial point (and initial derivatives) it finds the constants, so
+  **Add to graph** draws the exact solution over the numerical one; the
+  **General solution** chip keeps C, C₁, C₂, which become sliders. Each
+  solution is checked in the equation before it is shown.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
 - On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
   opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
