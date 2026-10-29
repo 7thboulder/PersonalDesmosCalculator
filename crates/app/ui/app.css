@@ -990,3 +990,12 @@ button.icon:disabled { color: #bbb; cursor: default; }
 }
 /* An indefinite ∫ has no limits; MathQuill would show empty boxes. */
 .steps .mq-math-mode .mq-empty { display: none; }
+
+/* Dragging a row by its tab: it lifts above the others, which slide aside. */
+.row.drag-shift { transition: transform 0.15s ease; }
+.row.dragging {
+  z-index: 5;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+body.dragging-row, body.dragging-row * { cursor: grabbing !important; user-select: none; }

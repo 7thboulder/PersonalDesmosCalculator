@@ -310,6 +310,125 @@
     sendRows();
   }
 
+  // ---- Dragging rows -------------------------------------------------------
+
+  // Pressing a row's left tab (its number or icon) and dragging moves the row
+  // up or down the list, as in Desmos. The row follows the mouse while the
+  // others slide out of its way; letting go drops it there, as one undo step.
+  // A press that hardly moves stays a click, so the icon still hides and shows.
+  var DRAG_START_PX = 4;
+  var drag = null;
+  // Set when a drag ends, so the click that follows the mouseup is ignored.
+  var dragJustEnded = false;
+
+  list.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || drag) return;
+    var tab = e.target.closest && e.target.closest('.tab');
+    if (!tab || tab.parentNode.parentNode !== list) return;
+    if (e.target.closest('.play, .warn')) return;
+    var row = rows.filter(function (r) { return r.el === tab.parentNode; })[0];
+    if (!row) return;
+    drag = { row: row, startY: e.clientY, y: e.clientY, moved: false };
+  }, true);
+
+  function startDrag() {
+    drag.moved = true;
+    var el = drag.row.el;
+    closeMenu();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    setActive(drag.row);
+    // Measured after the blur, which can change row heights. Each row's
+    // middle is measured once so rows sliding aside don't move the marks.
+    drag.from = indexOf(drag.row);
+    drag.to = drag.from;
+    drag.height = el.getBoundingClientRect().height;
+    drag.startScroll = list.scrollTop;
+    drag.mids = rows.map(function (r) {
+      var b = r.el.getBoundingClientRect();
+      return b.top + b.height / 2 + list.scrollTop;
+    });
+    el.classList.add('dragging');
+    document.body.classList.add('dragging-row');
+    rows.forEach(function (r) { if (r !== drag.row) r.el.classList.add('drag-shift'); });
+  }
+
+  function moveDrag() {
+    var dy = drag.y - drag.startY + list.scrollTop - drag.startScroll;
+    drag.row.el.style.transform = 'translateY(' + dy + 'px)';
+    // The dragged row's middle decides which gap it goes in.
+    var mid = drag.mids[drag.from] + dy;
+    var to = drag.from;
+    while (to < rows.length - 1 && mid > drag.mids[to + 1]) to++;
+    while (to > 0 && mid < drag.mids[to - 1]) to--;
+    drag.to = to;
+    rows.forEach(function (r, i) {
+      if (i === drag.from) return;
+      var shift = 0;
+      if (drag.from < to && i > drag.from && i <= to) shift = -drag.height;
+      if (drag.from > to && i < drag.from && i >= to) shift = drag.height;
+      r.el.style.transform = shift ? 'translateY(' + shift + 'px)' : '';
+    });
+  }
+
+  // Near the top or bottom of the list, the list scrolls so a row can be
+  // dragged past what fits on screen.
+  function autoScroll() {
+    if (!drag || !drag.moved) return;
+    var b = list.getBoundingClientRect();
+    var edge = 40, by = 0;
+    if (drag.y < b.top + edge) by = -Math.ceil((b.top + edge - drag.y) / 4);
+    else if (drag.y > b.bottom - edge) by = Math.ceil((drag.y - b.bottom + edge) / 4);
+    if (by) {
+      var before = list.scrollTop;
+      list.scrollTop += by;
+      if (list.scrollTop !== before) moveDrag();
+    }
+    requestAnimationFrame(autoScroll);
+  }
+
+  document.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    drag.y = e.clientY;
+    if (!drag.moved) {
+      if (Math.abs(drag.y - drag.startY) < DRAG_START_PX) return;
+      startDrag();
+      requestAnimationFrame(autoScroll);
+    }
+    e.preventDefault();
+    moveDrag();
+  });
+
+  function endDrag() {
+    if (!drag) return;
+    var d = drag;
+    drag = null;
+    if (!d.moved) return;
+    dragJustEnded = true;
+    setTimeout(function () { dragJustEnded = false; }, 0);
+    document.body.classList.remove('dragging-row');
+    rows.forEach(function (r) {
+      r.el.classList.remove('dragging', 'drag-shift');
+      r.el.style.transform = '';
+    });
+    if (d.to === d.from) return;
+    rows.splice(d.from, 1);
+    rows.splice(d.to, 0, d.row);
+    var after = rows[d.to + 1];
+    if (after) list.insertBefore(d.row.el, after.el); else list.appendChild(d.row.el);
+    renumber();
+    // A move is its own undo step, even right after typing.
+    lastChange = 0;
+    sendRows();
+  }
+
+  document.addEventListener('mouseup', function (e) { if (e.button === 0) endDrag(); });
+  window.addEventListener('blur', endDrag);
+  document.addEventListener('click', function (e) {
+    if (!dragJustEnded) return;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+
   // ---- Numbers -------------------------------------------------------------
 
   // Shortest decimal for v with at most `places` places: 2.50 -> 2.5, -0 -> 0.
@@ -596,7 +715,12 @@
       e.stopPropagation();
       e.preventDefault();
       longPressed = false;
-      pressTimer = setTimeout(function () { longPressed = true; openMenu(target); }, LONG_PRESS_MS);
+      pressTimer = setTimeout(function () {
+        // Held still, the icon opens its menu; dragged, it moves the row.
+        if (drag && drag.moved) return;
+        longPressed = true;
+        openMenu(target);
+      }, LONG_PRESS_MS);
     });
     swatch.addEventListener('mouseup', function () { clearTimeout(pressTimer); });
     swatch.addEventListener('mouseleave', function () { clearTimeout(pressTimer); });
