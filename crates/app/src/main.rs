@@ -46,7 +46,8 @@ USAGE:
                                        takes it (warnings go to stderr)
     graphcalc --analyze                read the panel's rows as JSON on stdin and
                                        print the engine's reply, for testing
-    graphcalc --solve LATEX [OP]       run the Solve button on one row and print
+    graphcalc --solve LATEX [OP [SEEDS [DERIVS...]]]
+                                       run the Solve button on one row and print
                                        the working as JSON (OP as in its choices,
                                        such as factor or solve:x)";
 
@@ -91,12 +92,14 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("--solve") => {
             let latex = args.get(1).ok_or("--solve needs a row's LaTeX")?;
-            let reply = solve::reply(
-                &serde_json::json!([]),
-                0,
-                latex,
-                args.get(2).map(String::as_str),
-            );
+            // A differential equation's initial point and derivatives may follow.
+            let row = serde_json::json!([{
+                "id": 0,
+                "latex": latex,
+                "seeds": args.get(3),
+                "derivs": args.get(4..).unwrap_or_default(),
+            }]);
+            let reply = solve::reply(&row, 0, latex, args.get(2).map(String::as_str));
             println!("{reply:#}");
             Ok(())
         }

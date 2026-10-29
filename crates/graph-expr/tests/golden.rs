@@ -758,6 +758,69 @@ fn cached_analyses_match_fresh_ones() {
 }
 
 #[test]
+fn cached_rows_match_fresh_ones() {
+    // Expression rows are remembered by id between analyses; each step
+    // changes something one of them reads.
+    let input = |latex: &[&str]| -> Vec<RowInput> {
+        latex
+            .iter()
+            .enumerate()
+            .map(|(i, l)| RowInput {
+                id: i as u64,
+                latex: l.to_string(),
+                ..Default::default()
+            })
+            .collect()
+    };
+    let rows = [
+        "a=2",
+        "L=[1...50000]",
+        "(L/1000,a\\sin(L/1000))",
+        "\\operatorname{total}(L)",
+        "y=ax+b",
+        "(t,at)",
+        "\\operatorname{mandelbrot}()",
+    ];
+    let steps: Vec<Vec<&str>> = vec![
+        rows.to_vec(),
+        // Nothing changes.
+        rows.to_vec(),
+        // A slider some rows read.
+        [&["a=3"], &rows[1..]].concat(),
+        // The list.
+        [&["a=3", "L=[1...40000]"], &rows[2..]].concat(),
+        // A missing name becomes defined, and so does t.
+        [&rows[..], &["b=1", "t=2"]].concat(),
+        // Rows move to other ids.
+        [&["c=1"], &rows[..]].concat(),
+    ];
+    let mut cache = Cache::default();
+    for (n, step) in steps.iter().enumerate() {
+        let rows = input(step);
+        let cached = analyze_cached(&rows, &mut cache);
+        assert_eq!(cached, analyze(&rows), "step {n}");
+    }
+}
+
+#[test]
+fn lists_can_be_longer_than_desmos_allows() {
+    let all = rows(&[
+        "L=[1...25000]",
+        "\\operatorname{length}(L)",
+        "\\operatorname{length}([a+b\\operatorname{for}a=[1...200],b=[1...200]])",
+        "\\operatorname{length}(\\operatorname{join}(L,L))",
+        "[1...10^{15}]",
+    ]);
+    assert_eq!(all[1].value, Some(Value::Number(25000.0)));
+    assert_eq!(all[2].value, Some(Value::Number(40000.0)));
+    assert_eq!(all[3].value, Some(Value::Number(50000.0)));
+    assert_eq!(
+        all[4].error.as_deref(),
+        Some("There isn't enough memory for a list of 1e15 elements")
+    );
+}
+
+#[test]
 fn regressions() {
     let all = rows(&[
         "x_1=[1,2,3,4,5]",
@@ -1288,4 +1351,34 @@ fn higher_order_implicit_and_system_equations() {
     assert!(one("x'=y',y'=x").error.is_some());
     let r = rows(&["a=y'"]).remove(0);
     assert!(r.missing.is_empty(), "y' is never offered as a slider");
+}
+
+#[test]
+fn greek_letters_are_variables() {
+    let r = rows(&[
+        "\\omega=2",
+        "y=\\sin\\left(\\omega x\\right)",
+        "\\Omega_{1}=3",
+        "f\\left(\\lambda\\right)=\\lambda\\Omega_{1}",
+        "f\\left(\\omega\\right)",
+        "ω+α",
+        "\\pi=3",
+        "\\epsilon",
+    ]);
+    assert_eq!(r[0].slider, Some(2.0));
+    assert!(r[1].error.is_none(), "{:?}", r[1]);
+    assert_eq!(r[2].slider, Some(3.0));
+    assert_eq!(r[4].value, Some(Value::Number(6.0)));
+    // A Greek character typed or pasted is the same letter as its command.
+    assert_eq!(r[5].missing, vec!["alpha".to_string()]);
+    assert!(r[6].error.is_some(), "π stays a constant");
+    assert_eq!(r[7].missing, vec!["epsilon".to_string()]);
+}
+
+#[test]
+fn greek_letters_in_3d() {
+    let r = rows_3d(&["\\omega=2", "z=\\sin\\left(\\omega x\\right)", "\\phi=1"]);
+    assert_eq!(r[0].slider, Some(2.0));
+    assert!(close(r[1].surfaces[0].program.eval2(1.0, 0.0), 2f64.sin()));
+    assert!(r[2].slider.is_none(), "φ is a spherical coordinate in 3D");
 }

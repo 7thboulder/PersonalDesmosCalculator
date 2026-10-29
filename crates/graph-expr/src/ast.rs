@@ -1,6 +1,10 @@
 use crate::builtins::Builtin;
 use crate::units::Quantity;
 
+/// What stands for both bounds of an integral written without any, which
+/// means an antiderivative.
+pub const INDEFINITE: &str = "\u{7}indefinite";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Num(f64),

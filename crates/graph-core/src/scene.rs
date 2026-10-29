@@ -606,10 +606,17 @@ fn draw_solutions(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<V
     }
 }
 
+/// Point sets longer than this are thinned as they are drawn: points
+/// that would land on top of one already drawn are skipped.
+const CROWDED: usize = 10_000;
+
 fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
     if let Some((width, style)) = set.line {
         // Far-off points are clamped so f32 vertices stay accurate.
         const CLAMP: f64 = 1.0e5;
+        // A long run drops points within a tenth of a pixel of the last
+        // one kept, which can't be seen, so a huge list stays cheap to draw.
+        let thin = set.points.len() > CROWDED;
         let mut run: Vec<[f32; 2]> = Vec::new();
         for p in set
             .points
@@ -618,10 +625,18 @@ fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
         {
             let [sx, sy] = vp.to_screen(p[0], p[1]);
             if sx.is_finite() && sy.is_finite() {
-                run.push([
+                let q = [
                     sx.clamp(-CLAMP, CLAMP) as f32,
                     sy.clamp(-CLAMP, CLAMP) as f32,
-                ]);
+                ];
+                if thin {
+                    if let Some(last) = run.last() {
+                        if (q[0] - last[0]).abs() < 0.1 && (q[1] - last[1]).abs() < 0.1 {
+                            continue;
+                        }
+                    }
+                }
+                run.push(q);
             } else {
                 if run.len() >= 2 {
                     stroke_styled(&run, width * scale, style, set.color, out);
@@ -635,12 +650,27 @@ fn draw_points(vp: &Viewport, scale: f32, set: &Points, out: &mut Vec<Vertex>) {
     }
     let r = set.size * scale / 2.0;
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
+    // In a crowded set, a point is drawn only when no earlier one landed
+    // in its cell of the screen (a quarter of a point across), so a list
+    // of millions of points costs at most one point per cell.
+    let mut taken = Vec::new();
+    let cell = (r / 2.0).max(1.0);
+    let cols = ((w + 2.0 * r) / cell) as usize + 1;
+    if set.points.len() > CROWDED {
+        taken = vec![false; cols * (((h + 2.0 * r) / cell) as usize + 1)];
+    }
     for p in set.points {
         let [sx, sy] = vp.to_screen(p[0], p[1]);
         let c = [sx as f32, sy as f32];
         let visible = (-r..=w + r).contains(&c[0]) && (-r..=h + r).contains(&c[1]);
         if !visible {
             continue;
+        }
+        if !taken.is_empty() {
+            let at = ((c[1] + r) / cell) as usize * cols + ((c[0] + r) / cell) as usize;
+            if std::mem::replace(&mut taken[at], true) {
+                continue;
+            }
         }
         match set.style {
             PointStyle::Filled => disc(c, r, set.color, out),
