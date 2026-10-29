@@ -31,8 +31,9 @@
     supSubsRequireOperand: true,
     charsThatBreakOutOfSupSub: '+-=<>',
     autoSubscriptNumerals: true,
-    // Every Greek letter Desmos spells out, so typing omega gives ω.
-    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau ' + GREEK_LETTERS,
+    // Every Greek letter Desmos spells out, so typing omega gives ω, and
+    // matrix for a matrix in place.
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
@@ -969,9 +970,12 @@
       handlers: {
         edit: function () {
           // Typing table into an empty row makes a table there, as in Desmos,
-          // and matrix makes a matrix.
-          if (!loading && row.field.latex() === 'table') { replaceWithTable(row); return; }
-          if (!loading && row.field.latex() === 'matrix') { replaceWithMatrix(row); return; }
+          // and matrix makes a matrix row; anywhere else, matrix makes a
+          // matrix in place.
+          var latex = row.field.latex(), before = row.typed;
+          row.typed = latex;
+          if (!loading && latex === 'table') { replaceWithTable(row); return; }
+          if (!loading && /^matrix?$/.test(before) && latex === EMPTY_MATRIX) { replaceWithMatrix(row); return; }
           if (!row.settingSlider) row.playPos = null;
           markStepsStale(row);
           sendRows();
@@ -1504,6 +1508,8 @@
   // A matrix row: a name, then a grid of cells, each an expression that may
   // use sliders. Rows such as det(A), A^{-1} or A(1, 2) use it by name.
   var MATRIX_LIMIT = 20;
+  // What typing matrix writes in place.
+  var EMPTY_MATRIX = '\\begin{bmatrix}&\\\\&\\end{bmatrix}';
   var TRANSFORM_SECONDS = 2;
 
   // The first capital letter no row has taken as a name yet.
@@ -1839,6 +1845,21 @@
     loading = true;
     updates.forEach(function (u) {
       var row = rows.filter(function (r) { return r.id === u.row; })[0];
+      if (row && row.kind === 'matrix' && u.cells) {
+        // A matrix row takes the new matrix cell by cell.
+        var same = u.cells.length === row.cells.length &&
+          u.cells[0].length === row.cells[0].length;
+        if (same) {
+          row.filling = true;
+          u.cells.forEach(function (line, ri) {
+            line.forEach(function (v, ci) { row.cells[ri][ci].latex(v); });
+          });
+          row.filling = false;
+        } else {
+          fillMatrix(row, u.cells.length, u.cells[0].length, u.cells);
+        }
+        return;
+      }
       if (!row || row.kind) return;
       var latex = row.field.latex();
       var eq = latex.indexOf('=');
@@ -2254,7 +2275,8 @@
       ['A\\left(1,2\\right),\\ A\\left(\\cos t,\\sin t\\right)', 'A point or curve moved by A'],
       ['A\\left[2,1\\right]', 'Entry in row 2, column 1'],
       ['\\operatorname{identity}\\left(3\\right)', 'Identity matrix'],
-      ['B=\\left[\\left[1,2\\right],\\left[3,4\\right]\\right]', 'A matrix written out, row by row']]],
+      ['B=\\begin{bmatrix}1&2\\\\3&4\\end{bmatrix}', 'Type matrix anywhere for one in place: Enter for the next row, Shift+Enter adds a row, Shift+Space a column'],
+      ['V\\to V+aA', 'An action can set a matrix to a new one']]],
     ['FRACTALS AND ITERATION', [
       ['\\operatorname{mandelbrot}\\left(\\right)', 'Mandelbrot set, sharp however far you zoom; mandelbrot(n) sets the iterations'],
       ['\\operatorname{julia}\\left(-0.8+0.156i\\right)', 'Julia set of z^2+c; julia(c, n) sets the iterations'],

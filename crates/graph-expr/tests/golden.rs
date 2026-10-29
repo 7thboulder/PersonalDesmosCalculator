@@ -2,7 +2,8 @@
 //! result Desmos gives. This is the Phase 1 gate for matching Desmos syntax.
 
 use graph_expr::{
-    analyze, analyze_cached, Axis, Cache, Compare, Ode, RowAnalysis, RowInput, RowKind, Value,
+    analyze, analyze_cached, Axis, Cache, Compare, NewValue, Ode, RowAnalysis, RowInput, RowKind,
+    Value,
 };
 
 fn rows(latex: &[&str]) -> Vec<RowAnalysis> {
@@ -646,21 +647,30 @@ fn actions() {
         "a+A",
     ]);
     assert_eq!(all[2].kind, RowKind::Action);
-    assert_eq!(all[2].updates, vec![("a".to_owned(), Value::Number(2.0))]);
+    assert_eq!(
+        all[2].updates,
+        vec![("a".to_owned(), NewValue::Value(Value::Number(2.0)))]
+    );
     // Both sides use the old values, so this swaps a and b.
     assert_eq!(
         all[3].updates,
         vec![
-            ("a".to_owned(), Value::Number(5.0)),
-            ("b".to_owned(), Value::Number(1.0))
+            ("a".to_owned(), NewValue::Value(Value::Number(5.0))),
+            ("b".to_owned(), NewValue::Value(Value::Number(1.0)))
         ]
     );
     assert_eq!(all[4].kind, RowKind::Action, "a named action");
     assert_eq!(all[5].updates, all[4].updates, "running an action by name");
-    assert_eq!(all[6].updates, vec![("a".to_owned(), Value::Number(2.0))]);
+    assert_eq!(
+        all[6].updates,
+        vec![("a".to_owned(), NewValue::Value(Value::Number(2.0)))]
+    );
     assert_eq!(
         all[8].updates,
-        vec![("L".to_owned(), Value::Numbers(vec![1.0, 2.0, 1.0]))]
+        vec![(
+            "L".to_owned(),
+            NewValue::Value(Value::Numbers(vec![1.0, 2.0, 1.0]))
+        )]
     );
     assert_eq!(all[9].missing, vec!["c".to_owned()]);
     assert!(all[10].error.as_deref().unwrap().contains("action"));

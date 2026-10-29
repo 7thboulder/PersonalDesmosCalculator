@@ -573,6 +573,10 @@ pub fn bench_ticker(path: &str, ticks: u32) -> Result<(), String> {
             let Some(r) = rows.iter_mut().find(|r| r["id"] == u["row"]) else {
                 continue;
             };
+            if r.get("matrix").is_some() && u.get("cells").is_some() {
+                r["matrix"] = u["cells"].clone();
+                continue;
+            }
             let latex = r["latex"].as_str().unwrap_or("");
             if let Some(eq) = latex.find('=') {
                 r["latex"] = json!(format!(

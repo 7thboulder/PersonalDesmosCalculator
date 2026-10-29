@@ -52,6 +52,12 @@ pub enum Tok {
     Unit(String),
     /// Text that converts the answer: `\text{in km}`.
     UnitTarget(String),
+    /// `\begin{bmatrix}` and `\end{bmatrix}`, around a matrix typed in
+    /// place, with `&` between its entries and `\\` between its rows.
+    MatrixOpen,
+    MatrixClose,
+    Amp,
+    RowBreak,
     /// A command this calculator does not understand yet.
     Unsupported(String),
 }
@@ -202,6 +208,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
                     match symbol {
                         '{' => toks.push(Tok::LCurly),
                         '}' => toks.push(Tok::RCurly),
+                        '\\' => toks.push(Tok::RowBreak),
                         ' ' | ',' | ';' | ':' | '!' => {}
                         '%' => toks.push(Tok::Unsupported("%".into())),
                         other => toks.push(Tok::Unsupported(other.to_string())),
@@ -229,6 +236,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             '!' => push(&mut toks, Tok::Bang, &mut i),
             '\'' => push(&mut toks, Tok::Prime, &mut i),
             '=' => push(&mut toks, Tok::Eq, &mut i),
+            '&' => push(&mut toks, Tok::Amp, &mut i),
             '<' => push(&mut toks, Tok::Lt, &mut i),
             '>' => push(&mut toks, Tok::Gt, &mut i),
             other => match greek_name(other) {
@@ -349,6 +357,19 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
             let op: String = chars[start..j].iter().collect();
             i = j + 1;
             Tok::OpName(op)
+        }
+        "begin" | "end" => {
+            // Only matrices: `\begin{bmatrix}` (or pmatrix, or plain matrix).
+            let (env, end) = text_block(chars, i)?;
+            if !matches!(env.as_str(), "bmatrix" | "pmatrix" | "matrix") {
+                return Err(format!("'{env}' isn't supported"));
+            }
+            toks.push(if name == "begin" {
+                Tok::MatrixOpen
+            } else {
+                Tok::MatrixClose
+            });
+            return Ok(end);
         }
         "frac" | "dfrac" | "tfrac" => Tok::Frac,
         "sqrt" => Tok::Sqrt,

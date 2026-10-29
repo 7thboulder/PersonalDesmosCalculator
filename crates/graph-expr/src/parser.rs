@@ -169,6 +169,7 @@ fn unexpected(tok: &Tok) -> String {
         Tok::Comma => "Points are written with brackets, like (1, 2)".into(),
         Tok::Colon => "A ':' only belongs inside a piecewise definition like {x<0: 1}".into(),
         Tok::Dots => "A '...' only belongs inside a list like [1...10]".into(),
+        Tok::MatrixClose | Tok::Amp | Tok::RowBreak => "This only belongs inside a matrix".into(),
         Tok::Eq | Tok::Lt | Tok::Gt | Tok::Le | Tok::Ge => "Unexpected comparison".into(),
         other => format!("Unexpected {}", describe(other)),
     }
@@ -337,6 +338,7 @@ impl Parser {
                 | Tok::AbsOpen
                 | Tok::LBrace
                 | Tok::LBracket
+                | Tok::MatrixOpen
                 | Tok::LCurly
                 | Tok::Sum
                 | Tok::Prod
@@ -545,6 +547,7 @@ impl Parser {
                 Ok(e)
             }
             Tok::LBracket => self.list(),
+            Tok::MatrixOpen => self.matrix(),
             Tok::LCurly => self.piecewise(),
             Tok::Sum => self.repeat(Repeat::Sum),
             Tok::Prod => self.repeat(Repeat::Product),
@@ -664,6 +667,30 @@ impl Parser {
             self.pos += 1;
         }
         Ok(generators)
+    }
+
+    /// A matrix typed in place, after its `\begin{bmatrix}`: entries split
+    /// by `&` and rows by `\\`. It reads as the list of its rows, as
+    /// `[[1, 2], [3, 4]]` does, and an empty entry is 0, as in a matrix row.
+    fn matrix(&mut self) -> Result<Expr, String> {
+        let mut rows = vec![Vec::new()];
+        loop {
+            let entry = match self.peek() {
+                Some(Tok::Amp | Tok::RowBreak | Tok::MatrixClose) => Expr::Num(0.0),
+                _ => self.expr()?,
+            };
+            rows.last_mut().expect("a row").push(entry);
+            match self.next() {
+                Some(Tok::Amp) => {}
+                Some(Tok::RowBreak) => rows.push(Vec::new()),
+                Some(Tok::MatrixClose) => break,
+                _ => return Err("This matrix isn't finished".into()),
+            }
+        }
+        if rows.iter().any(|r| r.len() != rows[0].len()) {
+            return Err("Every row of a matrix needs the same number of entries".into());
+        }
+        Ok(Expr::List(rows.into_iter().map(Expr::List).collect()))
     }
 
     fn list(&mut self) -> Result<Expr, String> {
@@ -1082,6 +1109,27 @@ mod tests {
         assert_eq!(var, "t");
         assert!(matches!(*body, Expr::Add(..)));
         assert!(parse("\\int_{0}^{1}t^2").is_err(), "no dt");
+    }
+
+    #[test]
+    fn matrices_typed_in_place() {
+        let n = |v: f64| Expr::Num(v);
+        let row = |items: Vec<Expr>| Expr::List(items);
+        assert_eq!(
+            parse("2\\begin{bmatrix}1&\\\\x&4\\end{bmatrix}").unwrap(),
+            Statement::Expr(Expr::bin(
+                Expr::Mul,
+                n(2.0),
+                row(vec![
+                    row(vec![n(1.0), n(0.0)]),
+                    row(vec![Expr::Var("x".into()), n(4.0)])
+                ])
+            ))
+        );
+        assert_eq!(
+            parse("\\begin{bmatrix}1&2\\\\3\\end{bmatrix}").unwrap_err(),
+            "Every row of a matrix needs the same number of entries"
+        );
     }
 
     #[test]

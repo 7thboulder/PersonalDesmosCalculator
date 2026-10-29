@@ -18,8 +18,9 @@ pub mod wgsl;
 
 pub use analyze::{
     analyze, analyze_cached, analyze_mode, Axis, Cache, ColumnAnalysis, ColumnInput, Compare,
-    ComplexPlot, Curve, Curve3, Fit, Fractal, Implicit3, Mode, Ode, ParamSurface, Parameter,
-    Parametric, Region, RowAnalysis, RowInput, RowKind, Seed, Surface, Value, MAX_ODE_ORDER,
+    ComplexPlot, Curve, Curve3, Fit, Fractal, Implicit3, Mode, NewValue, Ode, ParamSurface,
+    Parameter, Parametric, Region, RowAnalysis, RowInput, RowKind, Seed, Surface, Value,
+    MAX_ODE_ORDER,
 };
 pub use compile::Program;
 pub use interval::Interval;

@@ -34,7 +34,9 @@ pub fn is_function(name: &str) -> bool {
 /// Whether a row's LaTeX might use a matrix function or write a matrix
 /// out, a quick test that spares graphs without matrices the layer.
 pub(crate) fn may_mention(latex: &str) -> bool {
-    FUNCTIONS.iter().any(|f| latex.contains(f)) || latex.contains("\\left[\\left[")
+    FUNCTIONS.iter().any(|f| latex.contains(f))
+        || latex.contains("\\left[\\left[")
+        || latex.contains("\\begin{")
 }
 
 /// The most rows or columns a matrix can have.
@@ -839,6 +841,20 @@ impl Layer {
         }
     }
 
+    /// The names whose value is a matrix, once the rows are worked out.
+    pub fn matrices(&self) -> HashSet<String> {
+        self.grids
+            .keys()
+            .chain(
+                self.done
+                    .iter()
+                    .filter(|(_, d)| matches!(d, Ok(Some(_))))
+                    .map(|(n, _)| n),
+            )
+            .cloned()
+            .collect()
+    }
+
     /// Whether any row involves a matrix, so the layer has work to do.
     pub fn active(&self) -> bool {
         !self.names.is_empty()
@@ -1368,7 +1384,28 @@ impl Layer {
                 };
                 Expr::Piecewise(out, otherwise)
             }
-            Expr::Update(n, v) => Expr::Update(n.clone(), go(self, v)?),
+            // An action sets a matrix to a new matrix, worked out here and
+            // written out in full for the action to carry.
+            Expr::Update(n, v) => {
+                let target = !bound.contains(n)
+                    && (self.grids.contains_key(n) || self.vars.contains_key(n))
+                    && self.var(n, s)?.is_some();
+                match (target, self.part(v, bound, s)?) {
+                    (true, Part::Matrix(m)) => Expr::Update(n.clone(), Box::new(written(&m))),
+                    (false, Part::Expr(v)) => Expr::Update(n.clone(), Box::new(v)),
+                    (true, Part::Expr(_)) => {
+                        return Err(
+                            format!("'{n}' is a matrix, so an action sets it to a matrix").into(),
+                        )
+                    }
+                    (false, Part::Matrix(_)) => {
+                        return Err(format!(
+                            "'{n}' isn't a matrix, so an action can't set it to one"
+                        )
+                        .into())
+                    }
+                }
+            }
             Expr::Actions(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for i in items {
@@ -1448,6 +1485,37 @@ fn computed(e: Expr) -> Expr {
     } else {
         e
     }
+}
+
+/// A matrix written out as `[[...], [...]]`.
+fn written(m: &Matrix) -> Expr {
+    Expr::List(
+        (0..m.rows)
+            .map(|r| Expr::List(m.row(r).iter().map(|v| Expr::Num(*v)).collect()))
+            .collect(),
+    )
+}
+
+/// The matrix in `[[...], [...]]` when every entry is a number, as an
+/// action carries a new matrix.
+pub(crate) fn literal(e: &Expr) -> Option<Matrix> {
+    let Expr::List(rows) = e else { return None };
+    let rows: Option<Vec<Vec<f64>>> = rows
+        .iter()
+        .map(|r| match r {
+            Expr::List(cells) => cells
+                .iter()
+                .map(|c| match c {
+                    Expr::Num(v) => Some(*v),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        })
+        .collect();
+    let rows = rows?;
+    let cols = rows.first()?.len();
+    (cols > 0 && rows.iter().all(|r| r.len() == cols)).then(|| Matrix::from_rows(&rows))
 }
 
 /// `re + im i` as an expression.

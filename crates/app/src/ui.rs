@@ -5,7 +5,7 @@ const INDEX: &str = include_str!("../ui/index.html");
 const STYLE: &str = include_str!("../ui/app.css");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const JQUERY: &str = include_str!("../ui/vendor/jquery.min.js");
-const MATHQUILL_JS: &str = include_str!("../ui/vendor/mathquill/mathquill.min.js");
+const MATHQUILL_JS: &str = include_str!("../ui/vendor/mathquill/mathquill.js");
 const MATHQUILL_CSS: &str = include_str!("../ui/vendor/mathquill/mathquill.css");
 const SYMBOLA_WOFF2: &[u8] = include_bytes!("../ui/vendor/mathquill/Symbola.woff2");
 
