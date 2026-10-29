@@ -6,6 +6,7 @@ mod convert;
 pub mod diff;
 pub mod integrate;
 pub mod latex;
+pub mod ode;
 pub mod poly;
 pub mod solve;
 pub mod sym;
@@ -164,6 +165,10 @@ enum Form {
     Relation(Sym, Relation, Sym),
     /// `d/dx ...` as the whole row.
     Derivative { var: String, body: Sym, times: u32 },
+    /// A differential equation `eq` = 0 in y(x).
+    Ode { order: usize, eq: Sym },
+    /// A system x' = f, y' = g in t.
+    System { f: Sym, g: Sym },
     /// An integral as the whole row; no bounds means indefinite.
     Integral {
         var: String,
@@ -207,11 +212,24 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
         return form;
     }
     let statement = crate::parse(latex)?;
-    if crate::analyze::ode_order(&statement).is_some() {
-        return Err(
-            "Solve doesn't solve differential equations yet; the graph draws their solutions"
-                .into(),
-        );
+    if let Some(order) = crate::analyze::ode_order(&statement) {
+        let Statement::Relation(l, Relation::Eq, r) = &statement else {
+            return Err("Write a differential equation with =, like y' = x - y".into());
+        };
+        let is_system = |e: &Expr| matches!(e, Expr::Point(a, b) if matches!((&**a, &**b), (Expr::Var(p), Expr::Var(q)) if p == "x'" && q == "y'"));
+        if is_system(l) || is_system(r) {
+            let Expr::Point(f, g) = (if is_system(l) { r } else { l }) else {
+                return Err("A system needs a point of slopes, like (y, -x)".into());
+            };
+            return Ok(Form::System {
+                f: to_sym(f, defs)?,
+                g: to_sym(g, defs)?,
+            });
+        }
+        return Ok(Form::Ode {
+            order,
+            eq: sub(to_sym(l, defs)?, to_sym(r, defs)?),
+        });
     }
     Ok(match statement {
         Statement::Expr(Expr::Derivative(v, body)) => {
@@ -377,6 +395,14 @@ fn choices(form: &Form) -> Vec<Choice> {
                 ));
             }
         }
+        Form::Ode { .. } => {
+            out.push(choice("ode", "Solve the equation"));
+            out.push(choice("ode:general", "General solution"));
+        }
+        Form::System { .. } => {
+            out.push(choice("ode", "Solve the system"));
+            out.push(choice("ode:general", "General solution"));
+        }
         Form::Derivative { .. } => out.push(choice("calc", "Differentiate")),
         Form::Integral { .. } => out.push(choice("calc", "Integrate")),
     }
@@ -387,13 +413,48 @@ fn choices(form: &Form) -> Vec<Choice> {
 /// they define can be used; `op` picks the operation, or the most likely
 /// one when it is None.
 pub fn run(latex_in: &str, others: &[String], op: Option<&str>) -> Report {
+    run_row(latex_in, others, op, &Initial::default())
+}
+
+/// A differential equation row's initial point and derivatives, as typed.
+#[derive(Clone, Debug, Default)]
+pub struct Initial {
+    pub seeds: Option<String>,
+    pub derivs: Vec<String>,
+}
+
+/// Like `run`, with the row's initial conditions for differential equations.
+pub fn run_row(latex_in: &str, others: &[String], op: Option<&str>, initial: &Initial) -> Report {
     DEADLINE.with(|d| d.set(Some(Instant::now() + BUDGET)));
-    let report = run_inner(latex_in, others, op);
+    let report = run_inner(latex_in, others, op, initial);
     DEADLINE.with(|d| d.set(None));
     report
 }
 
-fn run_inner(source: &str, others: &[String], op: Option<&str>) -> Report {
+/// The single initial point of a differential equation, with y'(x₀), … from
+/// the derivative boxes (0 when empty, as the graph takes them).
+fn initial_point(initial: &Initial, defs: &Defs, order: usize) -> Option<(Sym, Vec<Sym>)> {
+    let seeds = initial.seeds.as_deref()?.trim();
+    let Ok(Statement::Expr(Expr::Point(a, b))) = crate::parse(seeds) else {
+        return None;
+    };
+    let x0 = to_sym(&a, defs).ok()?;
+    let mut values = vec![to_sym(&b, defs).ok()?];
+    for k in 0..order.saturating_sub(1) {
+        let l = initial.derivs.get(k).map_or("", |s| s.trim());
+        values.push(if l.is_empty() {
+            n(0)
+        } else {
+            match crate::parse(l) {
+                Ok(Statement::Expr(e)) => to_sym(&e, defs).ok()?,
+                _ => return None,
+            }
+        });
+    }
+    Some((x0, values))
+}
+
+fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initial) -> Report {
     let defs = Defs::from_rows(others);
     let mut report = Report::default();
     if source.trim().is_empty() {
@@ -454,6 +515,22 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>) -> Report {
                 "int" => integral_op(body, &v, None, &mut st),
                 _ => Err("Unknown operation".into()),
             }
+        }
+        (Form::Ode { order, eq }, _) => {
+            st.push("Solve the differential equation", source.to_owned());
+            let conditions = (op == "ode")
+                .then(|| initial_point(initial, &defs, *order))
+                .flatten()
+                .map(|(x0, values)| ode::Conditions { x0, values });
+            ode::solve_ode(eq, *order, conditions.as_ref(), &mut st)
+        }
+        (Form::System { f, g }, _) => {
+            st.push("Solve the system", source.to_owned());
+            let start = (op == "ode")
+                .then(|| initial_point(initial, &defs, 1))
+                .flatten()
+                .map(|(x0, v)| (x0, v[0].clone()));
+            ode::solve_system(f, g, start, &mut st)
         }
         (
             Form::Derivative {

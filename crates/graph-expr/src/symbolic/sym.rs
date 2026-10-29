@@ -591,15 +591,22 @@ pub fn add(terms: Vec<Sym>) -> Sym {
 
 /// c·sin²u + c·cos²u = c, wherever both appear in a sum.
 fn sin_cos_squares(terms: Vec<Sym>) -> Vec<Sym> {
+    // The term as (everything else, u) when it has a factor f(u)².
     let square_of = |t: &Sym, f: Func| -> Option<(Sym, Sym)> {
-        let (c, rest) = split_coef(t);
-        match rest {
-            Sym::Pow(b, e) if e.is_int(2) => match *b {
-                Sym::Fn(g, u) if g == f => Some((c, *u)),
-                _ => None,
-            },
-            _ => None,
-        }
+        let fs = t.factors();
+        let i = fs.iter().position(|x| match x {
+            Sym::Pow(b, e) if e.is_int(2) => matches!(&**b, Sym::Fn(g, _) if *g == f),
+            _ => false,
+        })?;
+        let Sym::Pow(b, _) = &fs[i] else { return None };
+        let Sym::Fn(_, u) = &**b else { return None };
+        let others: Vec<Sym> = fs
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k != i)
+            .map(|(_, x)| x.clone())
+            .collect();
+        Some((mul(others), (**u).clone()))
     };
     for (i, t) in terms.iter().enumerate() {
         if let Some((c, u)) = square_of(t, Func::Sin) {
