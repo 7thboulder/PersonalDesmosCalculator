@@ -12,8 +12,8 @@ use graph_core::{
 };
 use graph_expr::format::{exact_latex, matrix_entry_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_mode, wgsl, Cache, ColumnInput, Compare, Fractal, Ink, Interval, Mode, Ode, Program,
-    RowAnalysis, RowInput, RowKind, Stroke,
+    analyze_mode, wgsl, Cache, ColumnInput, Compare, Fractal, Ink, Interval, Mode, NewValue, Ode,
+    Program, RowAnalysis, RowInput, RowKind, Stroke,
 };
 use graph_render::{Frame3, Shading, Test};
 use serde_json::{json, Value};
@@ -1226,10 +1226,26 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             && r.polygons3.is_empty()
             && r.boxes3.is_empty()
             && r.implicits3.iter().all(|s| s.shade.is_none())),
-        "updates": r.updates.iter().filter_map(|(name, v)| Some(json!({
-            "row": defined.get(name.as_str())?,
-            "latex": exact_latex(v),
-        }))).collect::<Vec<_>>(),
+        // A new matrix also comes cell by cell, for a matrix row's grid.
+        "updates": r.updates.iter().filter_map(|(name, v)| Some(match v {
+            NewValue::Value(v) => json!({
+                "row": defined.get(name.as_str())?,
+                "latex": exact_latex(v),
+            }),
+            NewValue::Matrix(m) => {
+                let cells: Vec<Vec<String>> = (0..m.rows)
+                    .map(|i| (0..m.cols).map(|j| exact_latex(&graph_expr::Value::Number(m.get(i, j)))).collect())
+                    .collect();
+                json!({
+                    "row": defined.get(name.as_str())?,
+                    "latex": format!(
+                        "\\begin{{bmatrix}}{}\\end{{bmatrix}}",
+                        cells.iter().map(|r| r.join("&")).collect::<Vec<_>>().join("\\\\")
+                    ),
+                    "cells": cells,
+                })
+            }
+        })).collect::<Vec<_>>(),
         // A complex plot's style menu offers Colors or Grid.
         "complex": !r.complex.is_empty(),
         "lines": !(r.curves.is_empty()
@@ -1405,6 +1421,52 @@ mod tests {
             reply[4]["updates"],
             json!([{"row": 1, "latex": "1"}]),
             "hidden rows still run"
+        );
+    }
+
+    #[test]
+    fn actions_set_matrices() {
+        let mut engine = Engine::default();
+        let reply = engine.update(&json!([
+            {"id": 1, "latex": "P", "matrix": [["0"], ["2"]]},
+            {"id": 2, "latex": "V", "matrix": [["v_o"], ["0"]]},
+            {"id": 3, "latex": "v_o=3"},
+            {"id": 4, "latex": "a=\\frac{1}{2}\\cdot P"},
+            {"id": 5, "latex": "V\\to V+a\\cdot d"},
+            {"id": 6, "latex": "d=2"},
+            {"id": 7, "latex": "B=\\begin{bmatrix}1&2\\\\3&4\\end{bmatrix}"},
+            {"id": 8, "latex": "B\\to B^{2},d\\to\\det\\left(B\\right)"},
+            {"id": 9, "latex": "d\\to P"},
+            {"id": 10, "latex": "P\\to5"},
+        ]));
+        assert_eq!(reply[4]["kind"], "action");
+        assert_eq!(
+            reply[4]["updates"],
+            json!([{
+                "row": 2,
+                "latex": "\\begin{bmatrix}3\\\\2\\end{bmatrix}",
+                "cells": [["3"], ["2"]],
+            }])
+        );
+        assert_eq!(reply[6]["matrix"]["cells"], json!([["1", "2"], ["3", "4"]]));
+        assert_eq!(
+            reply[7]["updates"],
+            json!([
+                {
+                    "row": 7,
+                    "latex": "\\begin{bmatrix}7&10\\\\15&22\\end{bmatrix}",
+                    "cells": [["7", "10"], ["15", "22"]],
+                },
+                {"row": 6, "latex": "-2"},
+            ])
+        );
+        assert_eq!(
+            reply[8]["error"],
+            "'d' isn't a matrix, so an action can't set it to one"
+        );
+        assert_eq!(
+            reply[9]["error"],
+            "'P' is a matrix, so an action sets it to a matrix"
         );
     }
 

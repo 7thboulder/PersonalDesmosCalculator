@@ -40,7 +40,7 @@ pub fn matrix_entry_latex(v: f64) -> String {
     if v.is_finite() && v.fract() != 0.0 && v.abs() < 1e9 {
         for d in 2..=1000u32 {
             let n = v * d as f64;
-            if (n - n.round()).abs() < 1e-9 * n.abs().max(1.0) {
+            if (n - n.round()).abs() < 1e-11 * n.abs().max(1.0) {
                 let n = n.round() as i64;
                 let sign = if n < 0 { "-" } else { "" };
                 return format!("{sign}\\frac{{{}}}{{{d}}}", n.abs());

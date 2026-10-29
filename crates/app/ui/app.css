@@ -990,3 +990,34 @@ button.icon:disabled { color: #bbb; cursor: default; }
 }
 /* An indefinite ∫ has no limits; MathQuill would show empty boxes. */
 .steps .mq-math-mode .mq-empty { display: none; }
+
+/* A matrix typed in place inside an expression, its brackets drawn as in
+   a matrix row. */
+.mq-math-mode .mq-matrix {
+  position: relative;
+  vertical-align: middle;
+  padding: 0.1em 0.3em;
+  margin: 0 0.1em;
+}
+.mq-math-mode .mq-matrix::before, .mq-math-mode .mq-matrix::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0.22em;
+  border: 0.07em solid currentColor;
+}
+.mq-math-mode .mq-matrix::before { left: 0; border-right: 0; }
+.mq-math-mode .mq-matrix::after { right: 0; border-left: 0; }
+.mq-math-mode .mq-matrix-table {
+  display: inline-table;
+  vertical-align: middle;
+  border-collapse: separate;
+  border-spacing: 0.4em 0.1em;
+  margin: 0 -0.3em;
+}
+.mq-math-mode .mq-matrix-table td {
+  text-align: center;
+  padding: 0;
+  min-width: 0.6em;
+}

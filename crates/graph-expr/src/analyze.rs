@@ -253,6 +253,13 @@ pub enum Value {
     Complexes(Vec<[f64; 2]>),
 }
 
+/// What an action sets a variable to: a value, or a whole matrix.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NewValue {
+    Value(Value),
+    Matrix(Matrix),
+}
+
 /// The parameter a parametric or polar row runs over.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parameter {
@@ -318,7 +325,7 @@ pub struct RowAnalysis {
     pub complex: Vec<ComplexPlot>,
     /// For an action row: what each variable becomes when it runs, worked
     /// out from the current values.
-    pub updates: Vec<(String, Value)>,
+    pub updates: Vec<(String, NewValue)>,
     /// Set for parametric and polar rows, whose domain the panel shows.
     pub parameter: Option<Parameter>,
     /// One entry per column for a table row.
@@ -1240,6 +1247,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         fast_lists: FastMap::default(),
         next_hole: 0,
         actions: HashSet::new(),
+        matrices: HashSet::new(),
         calls: FastMap::default(),
         snapshots: FastMap::default(),
         checked: FastMap::default(),
@@ -1345,6 +1353,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
                 }
             }
         }
+        env.matrices = layer.matrices();
     }
 
     // Names of actions, including names for other names of actions.
@@ -1762,6 +1771,9 @@ struct Env {
     next_hole: u32,
     /// Variables that name actions, as in `A = a \to a + 1`.
     actions: HashSet<String>,
+    /// Variables whose value is a matrix, which actions can set to a new
+    /// matrix.
+    matrices: HashSet<String>,
     /// Results of function calls with constant arguments, so a function
     /// called thousands of times with the same arguments is worked out once.
     calls: FastMap<CallKey, (Val, Vec<&'static str>, Vec<Read>)>,
@@ -1933,8 +1945,20 @@ impl Env {
         e: &Expr,
         problems: &mut Problems,
         visiting: &mut HashSet<String>,
-    ) -> Option<Vec<(String, Value)>> {
+    ) -> Option<Vec<(String, NewValue)>> {
         match e {
+            // The matrix layer has already worked the new matrix out.
+            Expr::Update(name, value) if self.matrices.contains(name) => {
+                match matrix::literal(value) {
+                    Some(m) => Some(vec![(name.clone(), NewValue::Matrix(m))]),
+                    None => {
+                        problems.error(format!(
+                            "'{name}' is a matrix, so an action sets it to a matrix"
+                        ));
+                        None
+                    }
+                }
+            }
             Expr::Update(name, value) => {
                 if !self.vars.contains_key(name) || self.actions.contains(name) {
                     if self.actions.contains(name) || self.funcs.contains_key(name) {
@@ -1951,7 +1975,7 @@ impl Env {
                     return None;
                 }
                 match val.constant() {
-                    Some(v) => Some(vec![(name.clone(), v)]),
+                    Some(v) => Some(vec![(name.clone(), NewValue::Value(v))]),
                     None => {
                         problems.error("An action's new value can't depend on x or y");
                         None
@@ -1959,7 +1983,7 @@ impl Env {
                 }
             }
             Expr::Actions(items) => {
-                let mut all: Vec<(String, Value)> = Vec::new();
+                let mut all: Vec<(String, NewValue)> = Vec::new();
                 for item in items {
                     for (name, v) in self.run(item, problems, visiting)? {
                         if all.iter().any(|(n, _)| *n == name) {

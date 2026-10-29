@@ -73,7 +73,11 @@ on the right. What you type is graphed as you type it:
   row of the grid, and the buttons under it add or remove rows and columns.
   Other rows use a matrix by name: `\det(A)`, `A^{-1}` (or `inv(A)`),
   `A^T`, `AB`, `2A`, `A^3`, `rref(A)`, `rank`, `trace`, `A[2, 1]`,
-  `identity(3)`, and `[[1, 2], [3, 4]]` written out. Matrix results show
+  `identity(3)`, and `[[1, 2], [3, 4]]` written out. Typing `matrix`
+  anywhere else in an expression puts a grid there, such as
+  `B = 2[grid] + A`: Enter goes to its next row (and out from the last),
+  Shift+Enter adds a row, Shift+Space a column, and Backspace in an empty
+  row or column takes it away. Matrix results show
   under the row, with simple fractions as fractions. `eigenvalues(A)` lists
   them (complex ones too) and `eigenvectors(A)` gives them as columns and
   draws each as an arrow on its dashed line. `A(1, 2)` moves a point and
@@ -141,7 +145,9 @@ on the right. What you type is graphed as you type it:
 - Polygons: `polygon((0,0), (4,0), (2,3))`, or one per element with `for`,
   filled at 40% (the style menu's **Fill** slider changes it).
 - Actions: `a \to a + 1` (type `->`) gets a **Run** button, `l = a \to 1`
-  names one, and `l_1, l_2` runs several at once. The + menu's **ticker**
+  names one, and `l_1, l_2` runs several at once. An action can set a
+  matrix too, as in `V \to V + aA`, rewriting its grid with the new
+  entries. The + menu's **ticker**
   runs an action over and over, every so many milliseconds.
 - Regressions: `y_1 \sim m x_1 + b` (type `~`) fits every name that is not
   defined elsewhere, shows the values and R², draws the fitted curve, and
