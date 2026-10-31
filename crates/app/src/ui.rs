@@ -6,6 +6,7 @@ const STYLE: &str = include_str!("../ui/app.css");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const DOC_STYLE: &str = include_str!("../ui/doc.css");
 const DOC_SCRIPT: &str = include_str!("../ui/doc.js");
+const SHORTCUTS_SCRIPT: &str = include_str!("../ui/shortcuts.js");
 const JQUERY: &str = include_str!("../ui/vendor/jquery.min.js");
 const MATHQUILL_JS: &str = include_str!("../ui/vendor/mathquill/mathquill.js");
 const MATHQUILL_CSS: &str = include_str!("../ui/vendor/mathquill/mathquill.css");
@@ -23,6 +24,7 @@ pub fn panel_html() -> String {
         .replace("{{MATHQUILL_JS}}", MATHQUILL_JS)
         .replace("{{DOC_STYLE}}", DOC_STYLE)
         .replace("{{DOC_SCRIPT}}", DOC_SCRIPT)
+        .replace("{{SHORTCUTS_SCRIPT}}", SHORTCUTS_SCRIPT)
         .replace("{{SCRIPT}}", SCRIPT)
 }
 
@@ -71,6 +73,7 @@ mod tests {
             "{{SCRIPT}}",
             "{{DOC_STYLE}}",
             "{{DOC_SCRIPT}}",
+            "{{SHORTCUTS_SCRIPT}}",
         ] {
             assert!(!html.contains(name), "unfilled placeholder {name}");
         }

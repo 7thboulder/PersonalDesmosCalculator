@@ -70,7 +70,8 @@
     <span class="spacer"></span>
     <button id="doc-undo" class="icon" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
     <button id="doc-redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
-    <button id="doc-help" class="icon" title="Document shortcuts">?</button>
+    <button id="doc-shortcuts-btn" title="Make and change typing shortcuts">Shortcuts</button>
+    <button id="doc-help" class="icon" title="Document keys (Ctrl+/)">?</button>
   </div>
   <div id="doc-main">
     <aside id="doc-side">
@@ -93,6 +94,28 @@
       </div>
     </div>
   </div>
+  <div id="ref-pick"><input placeholder="Equation number" spellcheck="false" autocomplete="off"><div class="items"></div></div>
+  <div id="doc-context"><button data-act="shortcut">Make a shortcut from this&hellip;</button></div>
+  <div id="doc-shortcuts" class="overlay no-shortcuts">
+    <div class="box">
+      <div class="tabs"><b>Typing shortcuts</b><button class="close" title="Close (Esc)">&times;</button></div>
+      <p class="hint">Type a trigger in a math line and it turns into the math beside it. &#9633; boxes are blanks: the cursor goes to the first one and Tab moves to the next. Desmos's own words (sqrt, int, pi, ...) still work as usual.</p>
+      <div class="sc-list"></div>
+      <div class="sc-form">
+        <h3 class="sc-form-title">Add a shortcut</h3>
+        <div class="sc-row">
+          <label>Trigger <input class="sc-trigger" spellcheck="false" autocomplete="off" placeholder=";xyz"></label>
+          <label>Name <input class="sc-note" spellcheck="false" autocomplete="off" placeholder="What it is"></label>
+        </div>
+        <div class="sc-row"><span class="lbl">Gives</span><span class="sc-template"></span><button class="sc-slot" title="Add a blank the cursor jumps to">+ &#9633; blank</button></div>
+        <div class="sc-row">
+          <label>Works in <select class="sc-where"><option value="doc">Documents</option><option value="both">Documents and the graphing calculator</option></select></label>
+        </div>
+        <ul class="sc-warn"></ul>
+        <div class="buttons"><button class="sc-cancel">Clear</button><button class="sc-save go">Add shortcut</button></div>
+      </div>
+    </div>
+  </div>
   <div id="doc-help-box" class="overlay">
     <div class="box">
       <div class="tabs"><b>Document shortcuts</b><button class="close" title="Close (Esc)">&times;</button></div>
@@ -101,7 +124,14 @@
         <tr><td><b>"</b> on an empty line</td><td>Make it a text line</td></tr>
         <tr><td><b>$</b> in a text line</td><td>Math inside the text; <b>$</b> again or &rarr; leaves it</td></tr>
         <tr><td><b>#</b> on an empty line, or <b>#</b> + space in text</td><td>Heading (<b>##</b> for a smaller one)</td></tr>
-        <tr><td>Enter</td><td>New math line below</td></tr>
+        <tr><td>Enter after an equation</td><td>Next step, lined up on the = (or &lt;, &le;, &rArr;, ...) above</td></tr>
+        <tr><td>Enter on an empty step</td><td>End the steps</td></tr>
+        <tr><td>Shift+Enter on a math line</td><td>New line outside the steps</td></tr>
+        <tr><td>Ctrl+Enter</td><td>Carry down: copy the line as the next step (from its = on)</td></tr>
+        <tr><td><b>@</b></td><td>Refer to a numbered equation, shown as (3) and kept up to date</td></tr>
+        <tr><td>Ctrl+Alt+P</td><td>Next "Problem N" heading</td></tr>
+        <tr><td>Tab</td><td>Next &#9633; blank in a shortcut's math</td></tr>
+        <tr><td>Right-click math</td><td>Make a shortcut from the selection (or the line)</td></tr>
         <tr><td>Shift+Enter in text</td><td>Line break inside the paragraph</td></tr>
         <tr><td>Up, Down, Left, Right</td><td>Move between lines</td></tr>
         <tr><td>Backspace on an empty line</td><td>Delete it (text and headings turn back into math first)</td></tr>
@@ -229,6 +259,7 @@
 <script>{{JQUERY}}</script>
 <script>{{MATHQUILL_JS}}</script>
 <script>{{SCRIPT}}</script>
+<script>{{SHORTCUTS_SCRIPT}}</script>
 <script>{{DOC_SCRIPT}}</script>
 </body>
 </html>

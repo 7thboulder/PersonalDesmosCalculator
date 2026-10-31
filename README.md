@@ -220,6 +220,21 @@ its first phase.
   one from anywhere and Ctrl+Shift+S saves a copy. Renaming the title renames
   the file.
 - The app reopens whichever view and document were open last.
+- Steps: Enter after an equation starts the next step, lined up on the `=`
+  (or `<`, `≤`, `⇒`, ...) above. Enter on an empty step ends the steps, and
+  Shift+Enter starts a line outside them. Ctrl+Enter carries the line down
+  as the next step, starting from its `=`.
+- Each group of steps that holds an equation gets a number such as (1).
+  Typing `@` (in math or text) and a number inserts a reference, which
+  follows the equation when lines move. Ctrl+Alt+P adds the next
+  "Problem N" heading.
+- Typing shortcuts: `;pd` gives ∂□/∂□, `;dd` d□/d□, `;dx` d/dx, `;lim` a
+  limit, `vv` a vector arrow, `;cb` a cube root, `;nck` a binomial,
+  `;pm` ±, `;oo` ∞, `;tf` ∴, `;=>` ⇒ and `;<=>` ⇔. □ marks a blank: the
+  cursor goes to the first one and Tab moves to the next. **Shortcuts** in
+  the document bar adds, changes, turns off or resets them (each one can
+  also work in the graphing calculator), and right-clicking math makes a
+  shortcut from it. They are saved in `%APPDATA%\graphcalc\shortcuts.json`.
 
 ## Trying it on Windows 10 or 11
 

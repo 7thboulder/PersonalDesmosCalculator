@@ -675,6 +675,11 @@ impl Running {
             Some("docOpen") => self.doc_open(value["path"].as_str().map(PathBuf::from)),
             Some("docRename") => self.doc_rename(&value),
             Some("docList") => self.doc_list(),
+            Some("shortcutsSave") => {
+                if let Err(e) = docs::write_shortcuts(&value["list"]) {
+                    self.doc_error(format!("Could not save the shortcuts: {e}"));
+                }
+            }
             Some("docNew") => {
                 self.docs.path = None;
                 self.remember_docs();
@@ -938,6 +943,7 @@ impl Running {
                 "library": self.library(),
                 "opened": opened,
                 "view": if view { "doc" } else { "graph" },
+                "shortcuts": docs::read_shortcuts(),
             }),
         );
         self.doc_list();
