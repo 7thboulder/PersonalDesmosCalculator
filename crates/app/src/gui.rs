@@ -2,6 +2,7 @@
 //! WebView2 child covers the left side with the MathQuill expression panel.
 //! This is the layout wry's own wgpu example uses on Windows.
 
+use crate::docs;
 use crate::engine::Engine;
 use crate::files::{self, BoxView, Document, Space};
 use crate::interact::{Effect, Interaction};
@@ -110,6 +111,10 @@ struct Running {
     /// A file named on the command line, opened once the panel is ready.
     open_on_start: Option<PathBuf>,
     proxy: EventLoopProxy<UserEvent>,
+    /// The Document view is showing: the panel covers the whole window.
+    doc_view: bool,
+    /// The open document and the library folder, remembered across starts.
+    docs: docs::State,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -153,7 +158,11 @@ impl ApplicationHandler<UserEvent> for App {
                 ..
             } if state.modifiers.control_key() => {
                 let shift = state.modifiers.shift_key();
+                let alt = state.modifiers.alt_key();
                 match c.to_lowercase().as_str() {
+                    // The graph has the keyboard, so the panel never saw it.
+                    "d" if alt => state.run_script("window.doc && window.doc.show(true)"),
+                    _ if alt => {}
                     "s" if shift => state.file_command("saveAs"),
                     "s" => state.file_command("save"),
                     "o" => state.file_command("open"),
@@ -253,7 +262,7 @@ impl Running {
 
         let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
-            .with_bounds(panel_bounds(&window))
+            .with_bounds(panel_bounds(&window, false))
             .with_html(crate::ui::panel_html())
             .with_devtools(cfg!(debug_assertions))
             .with_ipc_handler(move |request| {
@@ -302,6 +311,8 @@ impl Running {
             autosave_due: None,
             open_on_start: options.open.clone(),
             proxy,
+            doc_view: false,
+            docs: docs::read_state(),
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -341,7 +352,7 @@ impl Running {
         self.config.height = size.height;
         self.surface.configure(&self.gpu.device, &self.config);
         if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(panel_bounds(&self.window));
+            let _ = webview.set_bounds(panel_bounds(&self.window, self.doc_view));
         }
         let area = self.graph_area();
         self.viewport.resize(area.width as f64, area.height as f64);
@@ -496,6 +507,10 @@ impl Running {
     }
 
     fn render(&mut self) {
+        // The document covers the graph, so there is nothing to draw.
+        if self.doc_view {
+            return;
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -652,6 +667,17 @@ impl Running {
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
+            }
+            Some("view") => self.set_view(value["view"] == "doc"),
+            Some("docInit") => self.doc_init(),
+            Some("docSave") => self.doc_save(&value),
+            Some("docSaveAs") => self.doc_save_as(&value),
+            Some("docOpen") => self.doc_open(value["path"].as_str().map(PathBuf::from)),
+            Some("docRename") => self.doc_rename(&value),
+            Some("docList") => self.doc_list(),
+            Some("docNew") => {
+                self.docs.path = None;
+                self.remember_docs();
             }
             Some("solve") => {
                 let id = value["id"].as_u64().unwrap_or(0);
@@ -853,6 +879,154 @@ impl Running {
         let _ = files::write_autosave(&path, &contents);
     }
 
+    /// Shows the Document view (the panel fills the window) or the graph.
+    fn set_view(&mut self, doc_view: bool) {
+        if doc_view == self.doc_view {
+            return;
+        }
+        self.doc_view = doc_view;
+        if let Some(webview) = &self.webview {
+            let _ = webview.set_bounds(panel_bounds(&self.window, doc_view));
+            if doc_view {
+                let _ = webview.focus();
+            }
+        }
+        self.docs.doc_view = doc_view;
+        self.remember_docs();
+        self.window.request_redraw();
+    }
+
+    fn library(&self) -> PathBuf {
+        self.docs
+            .library
+            .clone()
+            .unwrap_or_else(|| documents_dir().join(docs::LIBRARY_NAME))
+    }
+
+    fn remember_docs(&self) {
+        if !self.smoke_test {
+            docs::write_state(&self.docs);
+        }
+    }
+
+    fn doc_reply(&self, function: &str, value: serde_json::Value) {
+        self.run_script(&format!("window.doc.{function}({value})"));
+    }
+
+    fn doc_error(&self, message: String) {
+        self.doc_reply("error", serde_json::Value::String(message));
+    }
+
+    /// The panel's document view starts: which document to show and where
+    /// the library is. The view comes back as it was left.
+    fn doc_init(&mut self) {
+        let mut opened = serde_json::Value::Null;
+        if let Some(path) = self.docs.path.clone() {
+            match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| docs::from_file(&t))
+            {
+                Ok(doc) => opened = serde_json::json!({ "path": path, "doc": doc }),
+                // Moved or deleted since: start with a new document.
+                Err(_) => self.docs.path = None,
+            }
+        }
+        let view = self.docs.doc_view && !self.smoke_test && self.open_on_start.is_none();
+        self.doc_reply(
+            "init",
+            serde_json::json!({
+                "library": self.library(),
+                "opened": opened,
+                "view": if view { "doc" } else { "graph" },
+            }),
+        );
+        self.doc_list();
+    }
+
+    /// Writes the document. A new one gets a file in the library named
+    /// after its title.
+    fn doc_save(&mut self, value: &serde_json::Value) {
+        let title = value["doc"]["title"].as_str().unwrap_or_default();
+        let path = match value["path"].as_str() {
+            Some(p) => PathBuf::from(p),
+            None => docs::free_path(&self.library(), title, None),
+        };
+        self.write_doc(path, &value["doc"]);
+    }
+
+    fn write_doc(&mut self, path: PathBuf, doc: &serde_json::Value) {
+        let written = docs::to_file(doc).and_then(|text| docs::write(&path, &text));
+        match written {
+            Ok(()) => {
+                let fresh = self.docs.path.as_ref() != Some(&path);
+                self.docs.path = Some(path.clone());
+                self.remember_docs();
+                self.doc_reply("saved", serde_json::json!({ "path": path }));
+                if fresh {
+                    self.doc_list();
+                }
+            }
+            Err(e) => self.doc_error(format!("Could not save {}: {e}", path.display())),
+        }
+    }
+
+    fn doc_save_as(&mut self, value: &serde_json::Value) {
+        let title = value["doc"]["title"].as_str().unwrap_or_default();
+        let start = docs::free_path(&self.library(), title, None);
+        if let Some(path) = dialogs::save_doc(&self.window, &start) {
+            let path = path.with_extension(docs::EXTENSION);
+            self.write_doc(path, &value["doc"]);
+        }
+    }
+
+    /// Opens a document from the library, or one picked in the open dialog.
+    fn doc_open(&mut self, path: Option<PathBuf>) {
+        let Some(path) = path.or_else(|| dialogs::open_doc(&self.window, &self.library())) else {
+            return;
+        };
+        match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| docs::from_file(&t))
+        {
+            Ok(doc) => {
+                self.docs.path = Some(path.clone());
+                self.remember_docs();
+                self.doc_reply("load", serde_json::json!({ "path": path, "doc": doc }));
+            }
+            Err(e) => self.doc_error(format!("Could not open {}: {e}", path.display())),
+        }
+    }
+
+    /// Renames the document's file after its title changed.
+    fn doc_rename(&mut self, value: &serde_json::Value) {
+        let Some(old) = value["path"].as_str().map(PathBuf::from) else {
+            return;
+        };
+        let Some(dir) = old.parent() else { return };
+        let new = docs::free_path(dir, value["title"].as_str().unwrap_or_default(), Some(&old));
+        if new == old {
+            return;
+        }
+        match std::fs::rename(&old, &new) {
+            Ok(()) => {
+                self.docs.path = Some(new.clone());
+                self.remember_docs();
+                self.doc_reply("saved", serde_json::json!({ "path": new }));
+                self.doc_list();
+            }
+            Err(e) => self.doc_error(format!("Could not rename {}: {e}", old.display())),
+        }
+    }
+
+    fn doc_list(&self) {
+        let library = self.library();
+        let items = docs::list(&library);
+        self.doc_reply(
+            "library",
+            serde_json::json!({ "folder": library, "items": items }),
+        );
+    }
+
     fn run_script(&self, js: &str) {
         if let Some(webview) = &self.webview {
             let _ = webview.evaluate_script(js);
@@ -860,15 +1034,41 @@ impl Running {
     }
 }
 
-fn panel_bounds(window: &Window) -> Rect {
-    let height = window
-        .inner_size()
-        .to_logical::<f64>(window.scale_factor())
-        .height;
+/// The panel's place in the window: the left strip beside the graph, or
+/// all of it in the Document view.
+fn panel_bounds(window: &Window, doc_view: bool) -> Rect {
+    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let width = if doc_view { size.width } else { PANEL_WIDTH };
     Rect {
         position: wry::dpi::LogicalPosition::new(0.0, 0.0).into(),
-        size: wry::dpi::LogicalSize::new(PANEL_WIDTH, height).into(),
+        size: wry::dpi::LogicalSize::new(width, size.height).into(),
     }
+}
+
+/// The person's Documents folder, wherever Windows keeps it (OneDrive moves
+/// it, for one).
+fn documents_dir() -> PathBuf {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Documents, SHGetKnownFolderPath};
+    let mut raw: *mut u16 = std::ptr::null_mut();
+    // SAFETY: the out pointer is valid; the string Windows returns is
+    // NUL-terminated and freed with CoTaskMemFree once copied.
+    let found = unsafe {
+        let ok = SHGetKnownFolderPath(&FOLDERID_Documents, 0, std::ptr::null_mut(), &mut raw) == 0;
+        let path = (ok && !raw.is_null()).then(|| {
+            let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+            String::from_utf16_lossy(std::slice::from_raw_parts(raw, len))
+        });
+        if !raw.is_null() {
+            CoTaskMemFree(raw as *const core::ffi::c_void);
+        }
+        path
+    };
+    found.map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("USERPROFILE")
+            .map(|h| PathBuf::from(h).join("Documents"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
 }
 
 fn finish_smoke_test(state: Option<&Running>, path: &std::path::Path) -> Result<(), String> {
@@ -984,11 +1184,22 @@ mod dialogs {
         } else {
             "Desmos graph states (*.json, *.txt)\0*.json;*.txt\0"
         };
-        let filter: Vec<u16> =
-            format!("Graphs (*.{EXTENSION})\0*.{EXTENSION}\0{desmos}All files (*.*)\0*.*\0\0")
-                .encode_utf16()
-                .collect();
-        let ext = wide(EXTENSION);
+        let filter =
+            format!("Graphs (*.{EXTENSION})\0*.{EXTENSION}\0{desmos}All files (*.*)\0*.*\0\0");
+        run_dialog(window, save, initial, None, &filter, EXTENSION)
+    }
+
+    fn run_dialog(
+        window: &Window,
+        save: bool,
+        initial: Option<&Path>,
+        folder: Option<&Path>,
+        filter: &str,
+        extension: &str,
+    ) -> Option<PathBuf> {
+        let filter: Vec<u16> = filter.encode_utf16().collect();
+        let ext = wide(extension);
+        let folder = folder.and_then(|f| f.to_str()).map(wide);
         let mut buffer = vec![0u16; 4096];
         if let Some(name) = initial.and_then(|p| p.to_str()) {
             let name: Vec<u16> = name.encode_utf16().take(buffer.len() - 1).collect();
@@ -1001,6 +1212,7 @@ mod dialogs {
             lpstrFile: buffer.as_mut_ptr(),
             nMaxFile: buffer.len() as u32,
             lpstrDefExt: ext.as_ptr(),
+            lpstrInitialDir: folder.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
             Flags: OFN_EXPLORER
                 | OFN_NOCHANGEDIR
                 | OFN_PATHMUSTEXIST
@@ -1033,6 +1245,22 @@ mod dialogs {
 
     pub fn save(window: &Window, current: Option<&Path>) -> Option<PathBuf> {
         file_dialog(window, true, current)
+    }
+
+    const DOC_FILTER: &str = "Math documents (*.gcdoc)\0*.gcdoc\0All files (*.*)\0*.*\0\0";
+
+    /// Opens a math document, starting in the library folder.
+    pub fn open_doc(window: &Window, library: &Path) -> Option<PathBuf> {
+        let _ = std::fs::create_dir_all(library);
+        run_dialog(window, false, None, Some(library), DOC_FILTER, "gcdoc")
+    }
+
+    /// Saves a math document somewhere new, suggesting `start`.
+    pub fn save_doc(window: &Window, start: &Path) -> Option<PathBuf> {
+        if let Some(dir) = start.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        run_dialog(window, true, Some(start), None, DOC_FILTER, "gcdoc")
     }
 
     pub enum Answer {

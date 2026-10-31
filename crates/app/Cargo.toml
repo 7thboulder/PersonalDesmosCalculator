@@ -25,4 +25,4 @@ wry = "0.57"
 # (SChannel), so nothing extra ships or needs installing.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_System_Com"] }

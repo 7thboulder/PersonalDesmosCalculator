@@ -1,0 +1,237 @@
+/* Math document view: a page of lines the size of Desmos rows. */
+#topbar #to-doc {
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  padding: 4px 9px;
+  background: #fff;
+  color: #555;
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+#topbar #to-doc:hover { background: #eef3fb; }
+
+#doc { display: none; }
+body.doc-view #panel { display: none; }
+body.doc-view #doc {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  z-index: 10;
+}
+
+#doc-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 8px;
+  background: #f2f2f2;
+  border-bottom: 1px solid #ccc;
+  flex: none;
+}
+#doc-bar .spacer { flex: 1; }
+#doc-bar #doc-help { font: 600 16px "Segoe UI", Arial, sans-serif; color: #555; }
+#views {
+  display: flex;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  overflow: hidden;
+}
+#views button {
+  border: 0;
+  padding: 4px 12px;
+  background: #fff;
+  color: #555;
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+#views button + button { border-left: 1px solid #c4c4c4; }
+#views button.on { background: #2f72b3; color: #fff; }
+.doc-status { font-size: 12px; color: #888; margin-left: 6px; }
+.doc-status.error { color: #c4372f; }
+
+#doc-main { flex: 1; display: flex; min-height: 0; }
+
+#doc-side {
+  width: 250px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #ddd;
+  background: #f9f9f9;
+  min-height: 0;
+}
+#doc.side-closed #doc-side { display: none; }
+#doc-side .side-head { padding: 10px 10px 6px; }
+#doc-new {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #2f72dc;
+  border-radius: 4px;
+  background: #2f72dc;
+  color: #fff;
+  font: 600 13px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+  text-align: left;
+}
+#doc-new:hover { background: #255fbd; }
+#doc-search {
+  margin: 0 10px 8px;
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  user-select: text;
+}
+#doc-list { flex: 1; overflow-y: auto; padding: 0 4px 8px; }
+#doc-list .group {
+  padding: 10px 8px 4px;
+  font: 600 11px "Segoe UI", Arial, sans-serif;
+  color: #888;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+#doc-list .item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#doc-list .item:hover { background: #ececec; }
+#doc-list .item.on { background: #dfe8f7; }
+#doc-list .item .name { font-size: 13px; color: #222; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#doc-list .item .when { font-size: 11px; color: #999; }
+#doc-list .empty { padding: 10px; font-size: 12px; color: #999; }
+#doc-side .side-foot {
+  border-top: 1px solid #ddd;
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#doc-side .side-foot button {
+  padding: 4px 10px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  background: #fff;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+#doc-side .side-foot button:hover { background: #eef3fb; }
+#doc-side .folder {
+  width: 100%;
+  font-size: 11px;
+  color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+#doc-scroll { flex: 1; overflow-y: auto; min-width: 0; }
+#doc-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 24px 120px;
+}
+#doc-title {
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  padding: 4px 0 4px 40px;
+  margin-bottom: 10px;
+  font: 600 26px "Segoe UI", Arial, sans-serif;
+  color: #111;
+  background: transparent;
+  user-select: text;
+}
+#doc-title::placeholder { color: #c2c2c2; }
+
+/* One line: a gutter for numbers and marks, then the math or text. */
+.dline {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  min-height: 48px;
+  border-bottom: 1px solid #eceef1;
+  position: relative;
+}
+.dline.focused { background: #f7f9fc; }
+.dline .gut {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 11px Consolas, monospace;
+  color: #bbb;
+}
+.dline.focused .gut::before {
+  content: "";
+  width: 3px;
+  height: 60%;
+  border-radius: 2px;
+  background: #2f72dc;
+}
+.dline .dmath {
+  padding: 6px 12px 6px 0;
+  font-size: 19px;
+  min-width: 0;
+  overflow-x: auto;
+}
+.dline .dmath .mq-editable-field {
+  border: 0;
+  box-shadow: none;
+  min-width: 100%;
+  min-height: 1.4em;
+}
+.dline .dmath .mq-editable-field.mq-focused { box-shadow: none; }
+.dline .dtext {
+  padding: 10px 12px 10px 0;
+  font: 16px/1.55 "Segoe UI", Arial, sans-serif;
+  color: #222;
+  outline: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  user-select: text;
+  min-height: 1.55em;
+  cursor: text;
+}
+.dline.text, .dline.heading { min-height: 40px; }
+.dline.heading .dtext { font-weight: 600; color: #000; }
+.dline.heading.h1 .dtext { font-size: 22px; padding-top: 16px; }
+.dline.heading.h2 .dtext { font-size: 18px; padding-top: 12px; }
+.dline.heading.h3 .dtext { font-size: 16px; padding-top: 10px; }
+.dline .dtext:empty::before { content: attr(data-hint); color: #c2c2c2; }
+.dline .gut .kind { font: 600 11px "Segoe UI", Arial, sans-serif; color: #c4c4c4; }
+
+/* Math inside a text line. */
+.dinl {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 17px;
+  padding: 0 2px;
+  border-radius: 3px;
+  user-select: none;
+}
+.dinl .mq-editable-field { border: 0; box-shadow: none; min-width: 0.6em; }
+.dinl .mq-editable-field.mq-focused { box-shadow: none; background: #eef3fb; }
+.dinl:hover { background: #f2f5fa; }
+
+#doc-tail { min-height: 160px; cursor: text; }
+
+#doc-help-box .box { width: 520px; }
+#doc-help-box .tabs { display: flex; align-items: center; margin-bottom: 8px; font-size: 14px; }
+#doc-help-box .close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+}
+#doc-help-box td { padding: 4px 8px 4px 0; font-size: 12px; vertical-align: top; }
+#doc-help-box td:first-child { white-space: nowrap; color: #333; }

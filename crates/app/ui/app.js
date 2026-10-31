@@ -249,6 +249,7 @@
   redoButton.addEventListener('click', redo);
   // Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes, wherever the focus is.
   document.addEventListener('keydown', function (e) {
+    if (document.body.classList.contains('doc-view')) return;
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     var k = e.key.toLowerCase();
     if (k !== 'z' && k !== 'y') return;
@@ -2356,6 +2357,8 @@
   }
 
   document.addEventListener('keydown', function (e) {
+    // The document view has its own shortcuts (doc.js).
+    if (document.body.classList.contains('doc-view')) return;
     if (shortcuts.classList.contains('open') && (e.key === 'Escape' || e.key === '/')) {
       e.preventDefault();
       shortcuts.classList.remove('open');
@@ -2462,6 +2465,7 @@
   });
   document.addEventListener('mousedown', function () { fileMenu.classList.remove('open'); });
   document.addEventListener('keydown', function (e) {
+    if (document.body.classList.contains('doc-view')) return;
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     var k = e.key.toLowerCase();
     var action = k === 's' ? (e.shiftKey ? 'saveAs' : 'save') : k === 'o' ? 'open' : null;
@@ -2631,6 +2635,12 @@
       togglePlay(rows[at]);
     }
   };
+
+  // The document view (doc.js) types with the same editor settings.
+  window.panel = { mathOptions: MATH_OPTIONS, send: send };
+  document.getElementById('to-doc').addEventListener('click', function () {
+    if (window.doc) window.doc.show(true);
+  });
 
   addRow('y=\\sin\\left(x\\right)', 0);
   addRow('', 1);
