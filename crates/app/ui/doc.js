@@ -36,8 +36,13 @@
 
   function indexOf(line) { return lines.indexOf(line); }
 
+  // Documents also write lim as an operator, as in lim_{h→0}.
+  var DOC_OPTIONS = Object.assign({}, panel.mathOptions, {
+    autoOperatorNames: (panel.mathOptions.autoOperatorNames || 'sin cos tan ln log') + ' lim'
+  });
+
   function mathOptions(handlers) {
-    return Object.assign({}, panel.mathOptions, { handlers: handlers });
+    return Object.assign({}, DOC_OPTIONS, { handlers: handlers });
   }
 
   function lineShell(kind) {
@@ -61,17 +66,35 @@
     return line;
   }
 
-  function makeMath(latex, at) {
+  // Line ids for references: short, unique enough within a document.
+  function newId() { return 'g' + Math.random().toString(36).slice(2, 9); }
+
+  function makeMath(latex, at, opts) {
+    opts = opts || {};
     var el = lineShell('math');
     var box = document.createElement('div');
     box.className = 'dmath';
     var span = document.createElement('span');
     box.appendChild(span);
     el.appendChild(box);
-    var line = { kind: 'math', el: el };
+    var line = { kind: 'math', el: el, step: !!opts.step, id: opts.id || newId() };
     line.field = MQ.MathField(span, mathOptions({
       edit: function () { changed(); },
-      enter: function () { focusLine(indexOf(line) + 1, 'start', newMath('', indexOf(line) + 1)); },
+      enter: function () {
+        var i = indexOf(line);
+        var latex = line.field.latex();
+        // Enter on an empty step ends the group of steps.
+        if (line.step && latex === '') {
+          line.step = false;
+          changed();
+          return;
+        }
+        // After an equation (or inside a group) the next line is a step,
+        // lined up under it.
+        var step = line.step || relationAt(latex) >= 0;
+        focusLine(i + 1, 'start', newMath('', i + 1, { step: step }));
+        changed();
+      },
       upOutOf: function () { focusLine(indexOf(line) - 1, 'end'); },
       downOutOf: function () { focusLine(indexOf(line) + 1, 'down'); },
       moveOutOf: function (dir) {
@@ -97,9 +120,40 @@
       line.field.latex(latex);
       loading--;
     }
-    // " or # on an empty line makes it text or a heading, the way " makes
-    // a note in Desmos.
     el.addEventListener('keydown', function (e) {
+      var i = indexOf(line);
+      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        // Shift+Enter: a plain line, outside the group.
+        e.preventDefault();
+        e.stopPropagation();
+        focusLine(i + 1, 'start', newMath('', i + 1));
+        changed();
+        return;
+      }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey) {
+        // Carry down: the line again as the next step. An equation's copy
+        // starts at its relation, ready for the next = ...
+        e.preventDefault();
+        e.stopPropagation();
+        var latex = line.field.latex();
+        var at = relationAt(latex);
+        var copy = at > 0 ? latex.slice(at) : latex;
+        focusLine(i + 1, 'end', newMath(copy, i + 1, { step: true }));
+        changed();
+        return;
+      }
+      if (e.key === '@' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        var cursor = el.querySelector('.mq-cursor');
+        openRefPicker(cursor || el, function (id) {
+          line.field.focus();
+          if (id) line.field.write('\\embed{ref}[' + id + ']');
+        });
+        return;
+      }
+      // " or # on an empty line makes it text or a heading, the way " makes
+      // a note in Desmos.
       if (e.ctrlKey || e.altKey || e.metaKey || line.field.latex() !== '') return;
       if (e.key === '"' || e.key === '#') {
         e.preventDefault();
@@ -114,7 +168,207 @@
     return insertLine(line, at);
   }
 
-  function newMath(latex, at) { return makeMath(latex, at); }
+  function newMath(latex, at, opts) {
+    var line = makeMath(latex, at, opts);
+    scheduleLayout();
+    return line;
+  }
+
+  // ---- Steps, alignment and equation numbers -------------------------------
+
+  var RELATION_CMDS = ['le', 'leq', 'ge', 'geq', 'ne', 'neq', 'approx', 'to', 'Rightarrow',
+    'Leftarrow', 'Leftrightarrow', 'iff', 'implies', 'sim', 'equiv', 'lt', 'gt'];
+  var RELATION_SYMBOLS = ['=', '<', '>', '\u2264', '\u2265', '\u2260', '\u2248', '\u2192', '\u21D2',
+    '\u21D0', '\u21D4', '\u223C', '\u2261', '\u27F9', '\u27FA'];
+
+  // Where the first relation (=, <, \le, ...) outside any brackets starts
+  // in a line's LaTeX, or -1.
+  function relationAt(latex) {
+    var depth = 0;
+    for (var i = 0; i < latex.length; i++) {
+      var c = latex[i];
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+      else if (c === '\\') {
+        var m = /^\\([A-Za-z]+)/.exec(latex.slice(i));
+        if (!m) { i++; continue; }
+        if (m[1] === 'left') depth++;
+        else if (m[1] === 'right') depth--;
+        else if (depth === 0 && RELATION_CMDS.indexOf(m[1]) >= 0) return i;
+        i += m[0].length - 1;
+      } else if (depth === 0 && (c === '=' || c === '<' || c === '>')) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  var numbers = {};
+  var layoutFrame = 0;
+  function scheduleLayout() {
+    if (layoutFrame) return;
+    layoutFrame = requestAnimationFrame(function () {
+      layoutFrame = 0;
+      layout();
+    });
+  }
+
+  // The x position of a math line's first top-level relation, in pixels
+  // from the start of its math.
+  function relationX(line) {
+    var root = line.el.querySelector('.mq-root-block');
+    if (!root) return null;
+    for (var c = root.firstElementChild; c; c = c.nextElementSibling) {
+      if (c.classList.contains('mq-binary-operator') &&
+          RELATION_SYMBOLS.indexOf(c.textContent.trim()) >= 0) {
+        return c.getBoundingClientRect().left - root.getBoundingClientRect().left;
+      }
+    }
+    return null;
+  }
+
+  // Groups steps, numbers the groups that hold an equation, lines up each
+  // group on its relations and renumbers references.
+  function layout() {
+    var groups = [];
+    var current = null;
+    lines.forEach(function (l) {
+      if (l.kind !== 'math') { current = null; return; }
+      if (!l.step || !current) {
+        l.step = false;
+        current = { lines: [l] };
+        groups.push(current);
+      } else {
+        current.lines.push(l);
+      }
+    });
+    lines.forEach(function (l) {
+      if (l.kind === 'math') return;
+      l.el.classList.remove('step', 'cont');
+      l.el.querySelector('.gut').textContent = '';
+    });
+    numbers = {};
+    var n = 0;
+    groups.forEach(function (g) {
+      var numbered = g.lines.some(function (l) { return relationAt(l.field.latex()) >= 0; });
+      if (numbered) numbers[g.lines[0].id] = ++n;
+      g.lines.forEach(function (l, k) {
+        l.el.classList.toggle('step', k > 0);
+        l.el.classList.toggle('cont', k < g.lines.length - 1);
+        l.el.querySelector('.gut').textContent = k === 0 && numbered ? '(' + n + ')' : '';
+      });
+      var xs = g.lines.map(relationX);
+      var known = xs.filter(function (x) { return x !== null; });
+      var max = known.length > 1 ? Math.max.apply(null, known) : 0;
+      g.lines.forEach(function (l, k) {
+        var pad = known.length > 1 && xs[k] !== null ? max - xs[k] : 0;
+        l.el.querySelector('.dmath').style.paddingLeft = pad ? pad + 'px' : '';
+      });
+    });
+    document.querySelectorAll('#doc .dref[data-g]').forEach(function (el) {
+      var num = numbers[el.dataset.g];
+      el.textContent = '(' + (num || '?') + ')';
+      el.classList.toggle('missing', !num);
+      el.title = num ? 'Equation ' + num : 'That equation was deleted';
+    });
+  }
+
+  // References to a group of steps: (3), kept up to date as lines move.
+  MQ.registerEmbed('ref', function (id) {
+    return {
+      htmlString: '<span class="dref" data-g="' + id + '">(' + (numbers[id] || '?') + ')</span>',
+      text: function () { return '(' + (numbers[id] || '?') + ')'; },
+      latex: function () { return '\\embed{ref}[' + id + ']'; }
+    };
+  });
+
+  // @ opens a list of the numbered equations; typing a number or arrowing
+  // picks one.
+  var picker = document.getElementById('ref-pick');
+  var pickerInput = picker.querySelector('input');
+  var pickerList = picker.querySelector('.items');
+  var pickerDone = null;
+  var pickerAt = 0;
+
+  function pickerItems() {
+    var q = pickerInput.value.replace(/[()\s]/g, '');
+    var out = [];
+    lines.forEach(function (l) {
+      if (l.kind !== 'math' || !numbers[l.id]) return;
+      var num = String(numbers[l.id]);
+      if (!q || num.indexOf(q) === 0) out.push({ id: l.id, num: num, latex: l.field.latex() });
+    });
+    return out;
+  }
+
+  function renderPicker() {
+    var items = pickerItems();
+    pickerAt = Math.max(0, Math.min(pickerAt, items.length - 1));
+    pickerList.textContent = '';
+    if (!items.length) {
+      var none = document.createElement('div');
+      none.className = 'none';
+      none.textContent = Object.keys(numbers).length ? 'No equation with that number.' : 'No numbered equations yet.';
+      pickerList.appendChild(none);
+    }
+    items.forEach(function (it, k) {
+      var row = document.createElement('div');
+      row.className = 'item' + (k === pickerAt ? ' on' : '');
+      var num = document.createElement('span');
+      num.className = 'num';
+      num.textContent = '(' + it.num + ')';
+      var m = document.createElement('span');
+      m.className = 'preview';
+      m.textContent = it.latex.replace(/\\embed\{[a-z]+\}(\[[^\]]*\])?/g, '');
+      row.appendChild(num);
+      row.appendChild(m);
+      row.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        closePicker(it.id);
+      });
+      pickerList.appendChild(row);
+      try { MQ.StaticMath(m); } catch (err) { /* plain text is fine */ }
+    });
+    return items;
+  }
+
+  function openRefPicker(anchor, done) {
+    pickerDone = done;
+    pickerAt = 0;
+    pickerInput.value = '';
+    var r = anchor.getBoundingClientRect();
+    picker.style.left = Math.min(r.left, window.innerWidth - 340) + 'px';
+    picker.style.top = Math.min(r.bottom + 6, window.innerHeight - 260) + 'px';
+    picker.classList.add('open');
+    renderPicker();
+    pickerInput.focus();
+  }
+
+  function closePicker(id) {
+    if (!picker.classList.contains('open')) return;
+    picker.classList.remove('open');
+    var done = pickerDone;
+    pickerDone = null;
+    if (done) done(id || null);
+  }
+
+  pickerInput.addEventListener('input', function () { pickerAt = 0; renderPicker(); });
+  pickerInput.addEventListener('keydown', function (e) {
+    var items = pickerItems();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      pickerAt += e.key === 'ArrowDown' ? 1 : -1;
+      renderPicker();
+    } else if (e.key === 'Enter' || e.key === 'Tab' || e.key === ' ') {
+      e.preventDefault();
+      closePicker(items[pickerAt] && items[pickerAt].id);
+    } else if (e.key === 'Escape' || (e.key === 'Backspace' && !pickerInput.value)) {
+      e.preventDefault();
+      closePicker(null);
+    }
+    e.stopPropagation();
+  });
+  pickerInput.addEventListener('blur', function () { setTimeout(function () { closePicker(null); }, 0); });
 
   // A text line or heading: editable text with math islands between $s.
   function newText(text, kind, level, at) {
@@ -145,6 +399,14 @@
     if (i < 0) return;
     lines.splice(i, 1);
     line.el.remove();
+    // Removing a group's first line makes the next step its first line,
+    // with the same id, so references to it still work.
+    var next = lines[i];
+    if (line.kind === 'math' && !line.step && next && next.kind === 'math' && next.step) {
+      next.step = false;
+      next.id = line.id;
+    }
+    scheduleLayout();
   }
 
   function isEmpty(line) {
@@ -179,6 +441,7 @@
         out += n.nodeValue.replace(/​/g, '').replace(/\\/g, '\\\\').replace(/\$/g, '\\$');
       } else if (n.nodeType === 1) {
         if (n.classList.contains('dinl')) out += '$' + (n.dataset.latex || '') + '$';
+        else if (n.classList.contains('dref')) out += '\\ref{' + n.dataset.g + '}';
         else if (n.tagName === 'BR') out += '\n';
         else {
           var inner = serializeNodes(n.childNodes);
@@ -205,7 +468,13 @@
     var i = 0;
     while (i < text.length) {
       var c = text[i];
-      if (c === '\\' && i + 1 < text.length && (text[i + 1] === '$' || text[i + 1] === '\\')) {
+      var ref = c === '\\' && /^\\ref\{([-\w]+)\}/.exec(text.slice(i));
+      if (ref) {
+        if (run) parts.push({ text: run });
+        run = '';
+        parts.push({ ref: ref[1] });
+        i += ref[0].length;
+      } else if (c === '\\' && i + 1 < text.length && (text[i + 1] === '$' || text[i + 1] === '\\')) {
         run += text[i + 1];
         i += 2;
       } else if (c === '$') {
@@ -229,6 +498,7 @@
     t.textContent = '';
     parseText(text).forEach(function (p) {
       if (p.math != null) t.appendChild(makeIsland(p.math, line));
+      else if (p.ref) t.appendChild(makeChip(p.ref));
       else {
         p.text.split('\n').forEach(function (piece, k) {
           if (k > 0) t.appendChild(document.createElement('br'));
@@ -236,6 +506,16 @@
         });
       }
     });
+  }
+
+  // A reference inside text, shown as (3).
+  function makeChip(id) {
+    var chip = document.createElement('span');
+    chip.className = 'dref chip';
+    chip.contentEditable = 'false';
+    chip.dataset.g = id;
+    chip.textContent = '(' + (numbers[id] || '?') + ')';
+    return chip;
   }
 
   function makeIsland(latex, line) {
@@ -372,7 +652,25 @@
     var i = indexOf(line);
     var collapsed = r.collapsed;
     var island;
-    if (e.key === '$') {
+    if (e.key === '@') {
+      e.preventDefault();
+      var saved = r.cloneRange();
+      openRefPicker(t, function (id) {
+        t.focus();
+        var s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(saved);
+        if (!id) return;
+        saved.deleteContents();
+        var chip = makeChip(id);
+        saved.insertNode(chip);
+        if (!chip.nextSibling || chip.nextSibling.nodeType !== 3) {
+          t.insertBefore(document.createTextNode(ZW), chip.nextSibling);
+        }
+        caretBeside(chip, 1);
+        changed();
+      });
+    } else if (e.key === '$') {
       e.preventDefault();
       r.deleteContents();
       var span = makeIsland('', line);
@@ -529,7 +827,11 @@
       version: 1,
       title: titleEl.value,
       lines: lines.map(function (l) {
-        if (l.kind === 'math') return { type: 'math', latex: l.field.latex() };
+        if (l.kind === 'math') {
+          var m = { type: 'math', latex: l.field.latex() };
+          if (l.step) m.step = true; else m.id = l.id;
+          return m;
+        }
         var text = lineText(l);
         if (l.kind === 'heading') return { type: 'heading', level: l.level, text: text };
         return { type: 'text', text: text };
@@ -544,10 +846,11 @@
     (doc.lines || []).forEach(function (l, i) {
       if (l.type === 'text') newText(l.text, 'text', 1, i);
       else if (l.type === 'heading') newText(l.text, 'heading', l.level || 1, i);
-      else newMath(l.latex || '', i);
+      else newMath(l.latex || '', i, { step: !!l.step, id: l.id });
     });
     if (!lines.length) newMath('', 0);
     loading--;
+    scheduleLayout();
   }
 
   function isBlank(doc) {
@@ -556,6 +859,7 @@
 
   function changed() {
     if (loading) return;
+    scheduleLayout();
     dirty = true;
     snapshot();
     showStatus('Edited');
@@ -758,6 +1062,25 @@
     else focusLine(lines.length, 'start', newMath('', lines.length));
   });
 
+  // Ctrl+Alt+P: the next "Problem N" heading, with a math line under it.
+  function insertProblem() {
+    var n = 0;
+    lines.forEach(function (l) {
+      var m = l.kind === 'heading' && /^problem\s+(\d+)/i.exec(lineText(l));
+      if (m) n = Math.max(n, +m[1]);
+    });
+    var at = Math.min(lastFocus + 1, lines.length);
+    var current = lines[lastFocus];
+    if (current && isEmpty(current)) {
+      at = lastFocus;
+      removeLine(current);
+    }
+    newText('Problem ' + (n + 1), 'heading', 1, at);
+    var math = newMath('', at + 1);
+    focusLine(at + 1, 'start', math);
+    changed();
+  }
+
   // ---- Switching views -----------------------------------------------------
 
   function show(doc) {
@@ -796,6 +1119,8 @@
     if (!visible()) return;
     var handled = true;
     if (helpBox.classList.contains('open') && e.key === 'Escape') openHelp(false);
+    else if (scBox.classList.contains('open') && e.key === 'Escape') closeShortcuts();
+    else if (scBox.classList.contains('open') && !(ctrl && e.altKey)) handled = false;
     else if (ctrl && !e.altKey && (k === 'z' || k === 'y') && e.target !== searchEl) {
       if (k === 'y' || e.shiftKey) undoTo(historyAt + 1); else undoTo(historyAt - 1);
     } else if (ctrl && !e.altKey && k === 's') {
@@ -808,6 +1133,8 @@
       newDocument();
     } else if (ctrl && !e.altKey && (k === '/' || k === '?')) {
       openHelp(!helpBox.classList.contains('open'));
+    } else if (ctrl && e.altKey && !e.shiftKey && k === 'p') {
+      insertProblem();
     } else {
       handled = false;
     }
@@ -816,6 +1143,188 @@
       e.stopPropagation();
     }
   }, true);
+
+  // ---- Shortcuts menu ------------------------------------------------------
+
+  var scBox = document.getElementById('doc-shortcuts');
+  var scList = scBox.querySelector('.sc-list');
+  var scTrigger = scBox.querySelector('.sc-trigger');
+  var scNote = scBox.querySelector('.sc-note');
+  var scWhere = scBox.querySelector('.sc-where');
+  var scWarn = scBox.querySelector('.sc-warn');
+  var scSave = scBox.querySelector('.sc-save');
+  var scTitle = scBox.querySelector('.sc-form-title');
+  var scTemplate = MQ.MathField(scBox.querySelector('.sc-template'),
+    Object.assign({}, DOC_OPTIONS, { handlers: { edit: function () { checkForm(); } } }));
+  var editing = null;   // the shortcut the form changes, or null to add one
+  var scReturn = null;  // where the keyboard goes back to
+
+  function sc() { return window.shortcuts; }
+
+  function renderShortcuts() {
+    scList.textContent = '';
+    var table = document.createElement('table');
+    table.innerHTML = '<tr><th>Trigger</th><th>Gives</th><th>Name</th><th>Works in</th><th>On</th><th></th></tr>';
+    sc().list().forEach(function (s) {
+      var tr = document.createElement('tr');
+      if (!s.on) tr.className = 'off';
+      var trig = document.createElement('td');
+      var code = document.createElement('code');
+      code.textContent = s.trigger;
+      trig.appendChild(code);
+      var gives = document.createElement('td');
+      var m = document.createElement('span');
+      m.textContent = s.latex;
+      gives.appendChild(m);
+      var note = document.createElement('td');
+      note.textContent = s.note || '';
+      var where = document.createElement('td');
+      where.textContent = s.where === 'both' ? 'Documents and calculator' : 'Documents';
+      var on = document.createElement('td');
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = s.on;
+      box.title = s.on ? 'Turn off' : 'Turn on';
+      box.addEventListener('change', function () { s.on = box.checked; sc().replace(sc().list()); });
+      on.appendChild(box);
+      var acts = document.createElement('td');
+      acts.className = 'acts';
+      var edit = document.createElement('button');
+      edit.textContent = 'Edit';
+      edit.addEventListener('click', function () { fillForm(s); });
+      acts.appendChild(edit);
+      var base = s.builtin && sc().builtIn().filter(function (b) { return b.base === s.base; })[0];
+      if (base) {
+        var changedFromBase = base.trigger !== s.trigger || base.latex !== s.latex || base.where !== s.where;
+        if (changedFromBase) {
+          var reset = document.createElement('button');
+          reset.textContent = 'Reset';
+          reset.title = 'Back to ' + base.trigger;
+          reset.addEventListener('click', function () {
+            var list = sc().list();
+            list[list.indexOf(s)] = base;
+            sc().replace(list);
+          });
+          acts.appendChild(reset);
+        }
+      } else {
+        var del = document.createElement('button');
+        del.textContent = 'Delete';
+        del.addEventListener('click', function () {
+          var list = sc().list().filter(function (x) { return x !== s; });
+          if (editing === s) fillForm(null);
+          sc().replace(list);
+        });
+        acts.appendChild(del);
+      }
+      [trig, gives, note, where, on, acts].forEach(function (td) { tr.appendChild(td); });
+      table.appendChild(tr);
+      try { MQ.StaticMath(m); } catch (err) { /* shown as LaTeX */ }
+    });
+    scList.appendChild(table);
+  }
+
+  function fillForm(s, latex) {
+    editing = s || null;
+    scTitle.textContent = s ? 'Change ' + s.trigger : 'Add a shortcut';
+    scSave.textContent = s ? 'Save changes' : 'Add shortcut';
+    scTrigger.value = s ? s.trigger : '';
+    scNote.value = s ? s.note || '' : '';
+    scWhere.value = s ? s.where : 'doc';
+    scTemplate.latex(s ? s.latex : latex || '');
+    checkForm();
+    (s || latex ? scTrigger : scTrigger).focus();
+  }
+
+  // Problems that stop the shortcut being saved, then ones only worth knowing.
+  function formProblems() {
+    var trigger = scTrigger.value.trim();
+    var all = sc().warnings(trigger, editing);
+    var blocking = all.filter(function (w) {
+      return /^Type a trigger|cannot contain spaces|already uses/.test(w);
+    });
+    if (!scTemplate.latex()) blocking.push('Type the math it should give.');
+    return { blocking: blocking, all: all.concat(scTemplate.latex() ? [] : ['Type the math it should give.']) };
+  }
+
+  function checkForm() {
+    var p = formProblems();
+    scWarn.textContent = '';
+    if (scTrigger.value || scTemplate.latex()) {
+      p.all.forEach(function (w) {
+        var li = document.createElement('li');
+        li.textContent = w;
+        if (p.blocking.indexOf(w) >= 0) li.className = 'stop';
+        scWarn.appendChild(li);
+      });
+    }
+    scSave.disabled = p.blocking.length > 0;
+  }
+  scTrigger.addEventListener('input', checkForm);
+
+  scBox.querySelector('.sc-slot').addEventListener('click', function () {
+    scTemplate.focus();
+    scTemplate.write(sc().SLOT);
+    checkForm();
+  });
+  scBox.querySelector('.sc-cancel').addEventListener('click', function () { fillForm(null); });
+  scSave.addEventListener('click', function () {
+    if (formProblems().blocking.length) return;
+    var list = sc().list();
+    var entry = editing || { on: true, builtin: false, base: '' };
+    entry.trigger = scTrigger.value.trim();
+    entry.latex = scTemplate.latex();
+    entry.note = scNote.value.trim();
+    entry.where = scWhere.value;
+    if (!editing) list.push(entry);
+    sc().replace(list);
+    fillForm(null);
+  });
+
+  function openShortcuts(latex) {
+    scReturn = document.activeElement;
+    scBox.classList.add('open');
+    renderShortcuts();
+    fillForm(null, latex);
+  }
+  function closeShortcuts() {
+    scBox.classList.remove('open');
+    if (scReturn && document.body.contains(scReturn)) scReturn.focus();
+  }
+  if (window.shortcuts) window.shortcuts.onChange(function () { if (scBox.classList.contains('open')) renderShortcuts(); });
+  document.getElementById('doc-shortcuts-btn').addEventListener('click', function () { openShortcuts(''); });
+  scBox.querySelector('.close').addEventListener('click', closeShortcuts);
+  scBox.addEventListener('mousedown', function (e) { if (e.target === scBox) closeShortcuts(); });
+
+  // Right-clicking math offers to make a shortcut of the selection, or of
+  // the whole line when nothing is selected.
+  var contextMenu = document.getElementById('doc-context');
+  var contextLatex = '';
+  linesEl.addEventListener('contextmenu', function (e) {
+    var math = e.target.closest && e.target.closest('.dmath, .dinl');
+    if (!math) return;
+    var root = math.querySelector('.mq-editable-field');
+    var field = root && MQ(root);
+    if (!field) return;
+    e.preventDefault();
+    var area = root.querySelector('textarea');
+    var selected = area && area.value;
+    contextLatex = selected || field.latex();
+    if (!contextLatex) return;
+    contextMenu.querySelector('button').textContent = selected ?
+      'Make a shortcut from the selection…' : 'Make a shortcut from this line…';
+    contextMenu.style.left = Math.min(e.clientX, window.innerWidth - 260) + 'px';
+    contextMenu.style.top = Math.min(e.clientY, window.innerHeight - 40) + 'px';
+    contextMenu.classList.add('open');
+  });
+  contextMenu.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    contextMenu.classList.remove('open');
+    openShortcuts(contextLatex);
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (!contextMenu.contains(e.target)) contextMenu.classList.remove('open');
+  });
 
   // ---- Called by Rust through evaluate_script ------------------------------
 
@@ -830,6 +1339,7 @@
         build(info.opened.doc);
         forgetHistory();
       }
+      if (window.shortcuts) window.shortcuts.set(info.shortcuts);
       if (info.view === 'doc') show(true);
     },
     load: function (opened) {
@@ -865,7 +1375,8 @@
       showStatus(message, true);
     },
     // For tests: the document as it would be saved.
-    serialize: serialize
+    serialize: serialize,
+    openShortcuts: openShortcuts
   };
 
   build({ title: '', lines: [] });

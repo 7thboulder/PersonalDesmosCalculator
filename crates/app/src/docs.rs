@@ -40,7 +40,18 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
                 let level = line["level"].as_u64().unwrap_or(1).clamp(1, 3);
                 json!({ "type": "heading", "level": level, "text": text("text") })
             }
-            _ => json!({ "type": "math", "latex": text("latex") }),
+            _ => {
+                let mut math = json!({ "type": "math", "latex": text("latex") });
+                // A step continues the group of steps above it; a group's
+                // first line keeps an id that references point at.
+                if line["step"] == true {
+                    math["step"] = Value::Bool(true);
+                }
+                if let Some(id) = line["id"].as_str().filter(|id| is_id(id)) {
+                    math["id"] = Value::String(id.to_owned());
+                }
+                math
+            }
         });
     }
     Ok(json!({
@@ -49,6 +60,39 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
         "title": doc["title"].as_str().unwrap_or_default(),
         "lines": out,
     }))
+}
+
+/// Line ids are short words, as MathQuill's embed data allows.
+fn is_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 32
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The person's own typing shortcuts, shared by every document.
+pub fn shortcuts_path() -> Option<PathBuf> {
+    crate::files::autosave_path().map(|p| p.with_file_name("shortcuts.json"))
+}
+
+/// The saved shortcuts, or null before any were changed (the panel then
+/// uses its built-in set).
+pub fn read_shortcuts() -> Value {
+    shortcuts_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(|v| v.is_array())
+        .unwrap_or(Value::Null)
+}
+
+pub fn write_shortcuts(list: &Value) -> Result<(), String> {
+    if !list.is_array() {
+        return Err("shortcuts must be a list".into());
+    }
+    let path = shortcuts_path().ok_or("no settings folder")?;
+    let text = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+    write(&path, &text)
 }
 
 /// The text of a document file.
@@ -230,7 +274,8 @@ mod tests {
             "lines": [
                 { "type": "heading", "level": 1, "text": "Problem 1" },
                 { "type": "text", "text": "Evaluate $\\int_0^1 x^2dx$." },
-                { "type": "math", "latex": "I=\\frac{1}{3}" },
+                { "type": "math", "latex": "I=\\frac{1}{3}", "id": "g1" },
+                { "type": "math", "latex": "=1/3", "step": true, "id": "bad id!" },
                 { "type": "mystery", "latex": "x" }
             ]
         });
@@ -239,8 +284,12 @@ mod tests {
         assert_eq!(back["title"], "Problem set 4");
         assert_eq!(back["lines"][1]["text"], "Evaluate $\\int_0^1 x^2dx$.");
         assert_eq!(back["lines"][2]["latex"], "I=\\frac{1}{3}");
+        assert_eq!(back["lines"][2]["id"], "g1");
+        assert_eq!(back["lines"][3]["step"], true);
+        assert!(back["lines"][3]["id"].is_null());
+        assert!(back["lines"][2]["step"].is_null());
         // Unknown kinds read as math lines.
-        assert_eq!(back["lines"][3]["type"], "math");
+        assert_eq!(back["lines"][4]["type"], "math");
     }
 
     #[test]
