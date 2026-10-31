@@ -5,12 +5,14 @@
 <title>Expressions</title>
 <style>{{MATHQUILL_CSS}}</style>
 <style>{{STYLE}}</style>
+<style>{{DOC_STYLE}}</style>
 </head>
 <body>
 <div id="panel">
   <div id="topbar">
     <button id="menu" class="icon" title="Graph menu">&#x2630;</button>
     <button id="add" class="icon" title="Add item">+</button>
+    <button id="to-doc" title="Math document (Ctrl+Alt+D)">Doc</button>
     <div id="mode" title="Graph in 2D or 3D">
       <button data-mode="2d" class="on">2D</button><button data-mode="3d">3D</button>
     </div>
@@ -58,6 +60,59 @@
   </div>
 </div>
 <div id="toast"></div>
+<div id="doc">
+  <div id="doc-bar">
+    <button id="doc-side-toggle" class="icon" title="Documents">&#x2630;</button>
+    <div id="views">
+      <button data-view="graph" title="Graphing calculator (Ctrl+Alt+G)">Graph</button><button data-view="doc" class="on" title="Math document (Ctrl+Alt+D)">Document</button>
+    </div>
+    <span class="doc-status"></span>
+    <span class="spacer"></span>
+    <button id="doc-undo" class="icon" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
+    <button id="doc-redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
+    <button id="doc-help" class="icon" title="Document shortcuts">?</button>
+  </div>
+  <div id="doc-main">
+    <aside id="doc-side">
+      <div class="side-head">
+        <button id="doc-new" title="New document (Ctrl+N)">+ New document</button>
+      </div>
+      <input id="doc-search" type="search" placeholder="Search documents" spellcheck="false">
+      <div id="doc-list"></div>
+      <div class="side-foot">
+        <button id="doc-open" title="Open a document from anywhere (Ctrl+O)">Open&hellip;</button>
+        <button id="doc-save-as" title="Save a copy somewhere else (Ctrl+Shift+S)">Save as&hellip;</button>
+        <div class="folder" title="Documents are saved here as .gcdoc files"></div>
+      </div>
+    </aside>
+    <div id="doc-scroll">
+      <div id="doc-page">
+        <input id="doc-title" placeholder="Untitled" spellcheck="true" autocomplete="off">
+        <div id="doc-lines"></div>
+        <div id="doc-tail" title="Click to add a line"></div>
+      </div>
+    </div>
+  </div>
+  <div id="doc-help-box" class="overlay">
+    <div class="box">
+      <div class="tabs"><b>Document shortcuts</b><button class="close" title="Close (Esc)">&times;</button></div>
+      <table>
+        <tr><td>Type</td><td>Every new line is math, typed as in Desmos</td></tr>
+        <tr><td><b>"</b> on an empty line</td><td>Make it a text line</td></tr>
+        <tr><td><b>$</b> in a text line</td><td>Math inside the text; <b>$</b> again or &rarr; leaves it</td></tr>
+        <tr><td><b>#</b> on an empty line, or <b>#</b> + space in text</td><td>Heading (<b>##</b> for a smaller one)</td></tr>
+        <tr><td>Enter</td><td>New math line below</td></tr>
+        <tr><td>Shift+Enter in text</td><td>Line break inside the paragraph</td></tr>
+        <tr><td>Up, Down, Left, Right</td><td>Move between lines</td></tr>
+        <tr><td>Backspace on an empty line</td><td>Delete it (text and headings turn back into math first)</td></tr>
+        <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
+        <tr><td>Ctrl+N / Ctrl+O / Ctrl+Shift+S</td><td>New / open / save a copy</td></tr>
+        <tr><td>Ctrl+S</td><td>Save now (documents also save as you type)</td></tr>
+        <tr><td>Ctrl+Alt+G / Ctrl+Alt+D</td><td>Graphing calculator / document</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
 <div id="add-menu">
   <button data-add="expression"><span class="glyph">/x</span> expression</button>
   <button data-add="note"><span class="glyph">&#x201C;</span> note</button>
@@ -174,5 +229,6 @@
 <script>{{JQUERY}}</script>
 <script>{{MATHQUILL_JS}}</script>
 <script>{{SCRIPT}}</script>
+<script>{{DOC_SCRIPT}}</script>
 </body>
 </html>

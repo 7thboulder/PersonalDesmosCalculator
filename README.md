@@ -199,6 +199,28 @@ Shading is computed by the GPU in single precision, so a
 very deep zoom on an implicit curve will eventually look grainy; a
 double-precision fallback at that zoom is still to come.
 
+## Math documents
+
+The **Doc** button at the top of the expression list (or Ctrl+Alt+D) switches
+the window to a document for typing math, such as homework or working through
+a hard integral. **Graph** at the top of the document, or Ctrl+Alt+G, goes back.
+The plan for this mode is in the
+[document plan](https://claude.ai/artifact/4fZeSHt4D1JboMgPmCWN1A); this is
+its first phase.
+
+- Every line is math, typed exactly as in a Desmos row.
+- `"` on an empty line makes a text line. In text, `$` starts math and `$`
+  (or →) leaves it. `#` makes a heading (`# ` and `## ` at the start of text
+  work too).
+- Enter makes a new math line, Shift+Enter breaks a text line, and the arrow
+  keys and Backspace move between and remove lines as in the expression list.
+- Documents save as you type, as `.gcdoc` files in
+  `Documents\Graph Calculator`. The sidebar lists that folder and one level of
+  subfolders (one per class, say). Ctrl+N starts a new document, Ctrl+O opens
+  one from anywhere and Ctrl+Shift+S saves a copy. Renaming the title renames
+  the file.
+- The app reopens whichever view and document were open last.
+
 ## Trying it on Windows 10 or 11
 
 1. Open the latest successful run of the **Windows build** workflow under the
@@ -233,6 +255,7 @@ from a command prompt and note whether that looks better.
 | `crates/graph-core` | Viewport, grid, curve sampling, the implicit quadtree tracer, line styles, axis labels and tessellation. Pure Rust, unit tested. |
 | `crates/graph-render` | Draws scenes with wgpu (DirectX 12 on Windows), on screen or offscreen, including per-pixel shading of relations. |
 | `crates/app` | The `graphcalc` executable: window, input, and the WebView2 expression panel. |
+| `crates/app/src/docs.rs` | Math document files (`.gcdoc`): checking, naming and listing them. The editor is `crates/app/ui/doc.js`. |
 | `crates/app/ui` | Panel HTML, CSS and JS, plus vendored MathQuill 0.10.1 (MPL-2.0) and jQuery 3.7.1 (MIT). Everything is embedded in the exe. |
 
 ## Developing

@@ -1,6 +1,7 @@
 // Release builds are a windowed app with no console window behind them.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod docs;
 mod engine;
 mod files;
 #[cfg(windows)]
