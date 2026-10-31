@@ -235,6 +235,10 @@ its first phase.
   the document bar adds, changes, turns off or resets them (each one can
   also work in the graphing calculator), and right-clicking math makes a
   shortcut from it. They are saved in `%APPDATA%\graphcalc\shortcuts.json`.
+- **Export PDF** (or Ctrl+P) saves the document as a PDF through WebView2's
+  own printer: Letter or A4, a header with your name, the title and the
+  date, page numbers, and optionally a new page for each "Problem" heading.
+  Empty lines are left out and the app around the page isn't printed.
 
 ## Trying it on Windows 10 or 11
 
