@@ -13,7 +13,7 @@ use crate::symbolic::{Choice, Report, Step};
 use crate::{analyze, RowInput, Value};
 
 /// How names in the problem are written for Giac. Every name the person
-/// wrote gets a `g_` in front, so `D`, `E` or `beta` can't clash with one of
+/// wrote gets a `QQ` in front, so `D`, `E` or `beta` can't clash with one of
 /// Giac's own commands; Giac's answers have it taken off again.
 #[derive(Clone, Debug, Default)]
 pub struct Names {
@@ -29,10 +29,15 @@ impl Names {
             "infty" | "infinity" => return "inf".into(),
             _ => {}
         }
+        // No underscores: Giac reads _s, _t, _m and so on as units.
         let giac: String = format!(
-            "g_{}",
+            "QQ{}",
             name.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .map(|c| if c.is_ascii_alphanumeric() {
+                    c.to_string()
+                } else {
+                    "QU".into()
+                })
                 .collect::<String>()
         );
         self.back.insert(giac.clone(), name.to_owned());
@@ -503,9 +508,9 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             "expand" => format!("expand({g})"),
                             "partfrac" => format!("partfrac({g},{v})"),
                             "series" => format!("series({g},{v},0,6)"),
-                            // Giac's transforms refuse g_ names ("Bad Argument
-                            // Value"), so they work in plain t and s, which no
-                            // name of the person's can be.
+                            // The transform works in plain t and s, so the
+                            // answer is in s (or t) whatever the row's
+                            // variable was called.
                             "laplace" => format!("laplace(subst({g},{v}=t),t,s)"),
                             "ilaplace" => format!("ilaplace(subst({g},{v}=s),s,t)"),
                             "integrate" => format!("integrate({g},{v})"),
@@ -928,7 +933,7 @@ impl Printer<'_> {
             "euler_gamma" => "\\gamma".into(),
             _ => {
                 let name = self.names.original(s).unwrap_or(s);
-                if let Some(rest) = name.strip_prefix("g_") {
+                if let Some(rest) = name.strip_prefix("QQ") {
                     return Ok(name_latex(rest));
                 }
                 let (base, sub) = match name.split_once('_') {
@@ -1174,7 +1179,7 @@ fn tidy_tex(tex: &str, names: &Names) -> String {
     let mut names: Vec<(&String, &String)> = names.back.iter().collect();
     names.sort_by_key(|(g, _)| std::cmp::Reverse(g.len()));
     for (g, original) in names {
-        // Giac's LaTeX writes g_x as \mathrm{g\_x}.
+        // Giac's LaTeX writes QQx as \mathrm{QQx}.
         let escaped = g.replace('_', "\\_");
         let to = name_latex(original);
         for from in [
@@ -1713,8 +1718,8 @@ fn ode_check(
     same_function(&lhs, &rhs, var, &rows)
 }
 
-/// `giac` with each `dep`, `dep'`, `dep''`, … written `g_Q0chk`,
-/// `g_Q1chk`, …, and the most primes seen.
+/// `giac` with each `dep`, `dep'`, `dep''`, … written `QQQ0chk`,
+/// `QQQ1chk`, …, and the most primes seen.
 fn mark_dep(giac: &str, dep: &str) -> (String, usize) {
     let b = giac.as_bytes();
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -1732,7 +1737,7 @@ fn mark_dep(giac: &str, dep: &str) -> (String, usize) {
             }
             let k = j - i - dep.len();
             most = most.max(k);
-            out.push_str(&format!("g_Q{k}chk"));
+            out.push_str(&format!("QQQ{k}chk"));
             i = j;
         } else {
             let c = giac[i..].chars().next().unwrap();
@@ -1808,46 +1813,46 @@ mod tests {
     fn writes_problems_for_giac() {
         assert_eq!(
             giac_of("\\int_{ }^{ }x^2e^xdx"),
-            "integrate(((g_x^2)*exp(g_x)),g_x)"
+            "integrate(((QQx^2)*exp(QQx)),QQx)"
         );
         assert_eq!(
             giac_of("\\int_0^{\\infty}e^{-x^2}dx"),
-            "integrate(exp((-(g_x^2))),g_x,0,inf)"
+            "integrate(exp((-(QQx^2))),QQx,0,inf)"
         );
-        assert_eq!(giac_of("x^2-5x+6=0"), "solve((((g_x^2)-(5*g_x))+6)=0,g_x)");
+        assert_eq!(giac_of("x^2-5x+6=0"), "solve((((QQx^2)-(5*QQx))+6)=0,QQx)");
         assert_eq!(
             giac_of("y''+y=\\sin\\left(x\\right)"),
-            "desolve((g_y''+g_y)=sin(g_x),g_x,g_y)"
+            "desolve((QQy''+QQy)=sin(QQx),QQx,QQy)"
         );
         assert_eq!(
             giac_of("\\lim_{x\\to0}\\frac{\\sin x}{x}"),
-            "limit((sin(g_x)/g_x),g_x,0)"
+            "limit((sin(QQx)/QQx),QQx,0)"
         );
         assert_eq!(
             giac_of("\\lim_{x\\to 0^{+}}x\\ln x"),
-            "limit((g_x*ln(g_x)),g_x,0,1)"
+            "limit((QQx*ln(QQx)),QQx,0,1)"
         );
         assert_eq!(
             giac_of("\\sum_{n=1}^{\\infty}\\frac{1}{n^2}"),
-            "simplify(sum((1/(g_n^2)),g_n,1,inf))"
+            "simplify(sum((1/(QQn^2)),QQn,1,inf))"
         );
-        assert_eq!(giac_of("0.25x"), "simplify(((25/100)*g_x))");
-        assert_eq!(giac_of("\\Gamma\\left(x\\right)"), "simplify(Gamma(g_x))");
-        assert_eq!(giac_of("J_{0}\\left(x\\right)"), "simplify(BesselJ(0,g_x))");
+        assert_eq!(giac_of("0.25x"), "simplify(((25/100)*QQx))");
+        assert_eq!(giac_of("\\Gamma\\left(x\\right)"), "simplify(Gamma(QQx))");
+        assert_eq!(giac_of("J_{0}\\left(x\\right)"), "simplify(BesselJ(0,QQx))");
         let p = plan("\\frac{1}{x^2-1}", &[], Some("giac:partfrac")).unwrap();
-        assert_eq!(p.command, "partfrac((1/((g_x^2)-1)),g_x)");
+        assert_eq!(p.command, "partfrac((1/((QQx^2)-1)),QQx)");
     }
 
     #[test]
     fn working_out_is_not_done_twice() {
         let p = plan("\\int_{ }^{ }e^{-x^2}dx", &[], Some("giac:integrate")).unwrap();
-        assert_eq!(p.command, "integrate(exp((-(g_x^2))),g_x)");
+        assert_eq!(p.command, "integrate(exp((-(QQx^2))),QQx)");
         let p = plan("\\int_{0}^{1}x dx", &[], Some("giac:simplify")).unwrap();
-        assert_eq!(p.command, "integrate(g_x,g_x,0,1)");
+        assert_eq!(p.command, "integrate(QQx,QQx,0,1)");
         let mut names = Names::default();
         names.var("x");
         assert_eq!(
-            tidy_tex("\\mathrm{g\\_x}^{2}+\\operatorname{rootof}(g\\_x)", &names),
+            tidy_tex("\\mathrm{QQx}^{2}+\\operatorname{rootof}(QQx)", &names),
             "x^{2}+\\operatorname{rootof}(x)"
         );
     }
@@ -1860,8 +1865,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(p.setup, vec!["restart", "g_a:=2", "g_f(g_t):=(g_t^2)"]);
-        assert_eq!(p.command, "integrate(g_f(g_x),g_x,0,g_a)");
+        assert_eq!(p.setup, vec!["restart", "QQa:=2", "QQf(QQt):=(QQt^2)"]);
+        assert_eq!(p.command, "integrate(QQf(QQx),QQx,0,QQa)");
     }
 
     #[test]
@@ -1870,33 +1875,33 @@ mod tests {
         names.var("x");
         let l = |t: &str| latex_of(t, &names).unwrap();
         assert_eq!(
-            l("1/2*sqrt(pi)*erf(g_x)"),
+            l("1/2*sqrt(pi)*erf(QQx)"),
             "\\frac{1}{2}\\sqrt{\\pi}\\operatorname{erf}\\left(x\\right)"
         );
         assert_eq!(
-            l("g_x^2*exp(g_x)-2*g_x*exp(g_x)+2*exp(g_x)"),
+            l("QQx^2*exp(QQx)-2*QQx*exp(QQx)+2*exp(QQx)"),
             "x^{2}e^{x}-2\\cdot x e^{x}+2\\cdot e^{x}"
                 .replace("\\cdot x e", "xe")
                 .replace("\\cdot e", "e")
         );
         assert_eq!(l("[2,3]"), "\\left[2,3\\right]");
         assert_eq!(l("list[2,3]"), "\\left[2,3\\right]");
-        assert_eq!(l("-(g_x+1)"), "-\\left(x+1\\right)");
-        assert_eq!(l("sin(g_x)^2"), "\\sin^{2}\\left(x\\right)");
+        assert_eq!(l("-(QQx+1)"), "-\\left(x+1\\right)");
+        assert_eq!(l("sin(QQx)^2"), "\\sin^{2}\\left(x\\right)");
         assert_eq!(l("Gamma(1/3)"), "\\Gamma\\left(\\frac{1}{3}\\right)");
-        assert_eq!(l("BesselJ(0,g_x)"), "J_{0}\\left(x\\right)");
-        assert_eq!(l("c_0*cos(g_x)"), "c_{0}\\cos\\left(x\\right)");
+        assert_eq!(l("BesselJ(0,QQx)"), "J_{0}\\left(x\\right)");
+        assert_eq!(l("c_0*cos(QQx)"), "c_{0}\\cos\\left(x\\right)");
         assert_eq!(l("pi^2/6"), "\\frac{\\pi^{2}}{6}");
         // As the Windows worker prints them.
         assert_eq!(l("√pi/4"), "\\frac{\\sqrt{\\pi}}{4}");
         assert_eq!(
-            l("-√2/8*ln(g_x^2-√2*g_x+1)"),
-            l("-sqrt(2)/8*ln(g_x^2-sqrt(2)*g_x+1)")
+            l("-√2/8*ln(QQx^2-√2*QQx+1)"),
+            l("-sqrt(2)/8*ln(QQx^2-sqrt(2)*QQx+1)")
         );
-        assert_eq!(l("(g_x-(-√2)/2)"), l("(g_x-(-sqrt(2))/2)"));
+        assert_eq!(l("(QQx-(-√2)/2)"), l("(QQx-(-sqrt(2))/2)"));
         assert_eq!(l("+infinity"), "\\infty");
         assert_eq!(
-            l("g_x+g_x^2+g_x^3/3+g_x^6*order_size(g_x)"),
+            l("QQx+QQx^2+QQx^3/3+QQx^6*order_size(QQx)"),
             "x+x^{2}+\\frac{x^{3}}{3}+O\\left(x^{6}\\right)"
         );
         assert!(latex_of("rootof([1,0,-2],[1,0,1])", &names).is_err());
@@ -1906,7 +1911,7 @@ mod tests {
     fn finishes_and_checks_answers() {
         // ∫x² eˣ dx, as Giac answers it.
         let p = plan("\\int_{ }^{ }x^2e^xdx", &[], None).unwrap();
-        let r = finish(&p, Ok(("(g_x^2-2*g_x+2)*exp(g_x)".into(), String::new())));
+        let r = finish(&p, Ok(("(QQx^2-2*QQx+2)*exp(QQx)".into(), String::new())));
         assert_eq!(
             r.result.as_deref(),
             Some("\\left(x^{2}-2x+2\\right)e^{x}+C"),
@@ -1917,7 +1922,7 @@ mod tests {
             "Checked numerically at 6 points"
         );
         // A wrong answer is caught.
-        let r = finish(&p, Ok(("(g_x^2+2)*exp(g_x)".into(), String::new())));
+        let r = finish(&p, Ok(("(QQx^2+2)*exp(QQx)".into(), String::new())));
         assert!(
             r.steps.last().unwrap().note.contains("doesn't agree"),
             "{r:?}"
@@ -1949,45 +1954,45 @@ mod tests {
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
         // Special functions in the answer are checked too.
         let p = plan("\\int_{ }^{ }e^{-x^2}dx", &[], None).unwrap();
-        let r = finish(&p, Ok(("1/2*sqrt(pi)*erf(g_x)".into(), String::new())));
+        let r = finish(&p, Ok(("1/2*sqrt(pi)*erf(QQx)".into(), String::new())));
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
         // Rewrites.
         let p = plan("x^4-1", &[], Some("giac:factor")).unwrap();
-        let r = finish(&p, Ok(("(g_x-1)*(g_x+1)*(g_x^2+1)".into(), String::new())));
+        let r = finish(&p, Ok(("(QQx-1)*(QQx+1)*(QQx^2+1)".into(), String::new())));
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
         // Answers as the Windows worker prints them.
         let p = plan("\\int_{ }^{ }\\frac{1}{x^4+1}dx", &[], None).unwrap();
-        let text = "-√2/8*ln(g_x^2-√2*g_x+1)+√2/4*atan((g_x-√2/2)/(√2/2))+√2/8*ln(g_x^2+√2*g_x+1)+√2/4*atan((g_x-(-√2)/2)/(√2/2))";
+        let text = "-√2/8*ln(QQx^2-√2*QQx+1)+√2/4*atan((QQx-√2/2)/(√2/2))+√2/8*ln(QQx^2+√2*QQx+1)+√2/4*atan((QQx-(-√2)/2)/(√2/2))";
         let r = finish(&p, Ok((text.into(), String::new())));
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
         let p = plan("y''+y=\\sin\\left(x\\right)", &[], None).unwrap();
-        let text = "c_0*cos(g_x)+c_1*sin(g_x)+(-2*g_x*cos(g_x)+sin(g_x))/4";
+        let text = "c_0*cos(QQx)+c_1*sin(QQx)+(-2*QQx*cos(QQx)+sin(QQx))/4";
         let r = finish(&p, Ok((text.into(), String::new())));
         assert_eq!(
             r.steps.last().unwrap().note,
             "Checked numerically at 6 points",
             "{r:?}"
         );
-        let text = "c_0*cos(g_x)+c_1*sin(g_x)+(-2*g_x*cos(g_x)+g_x)/4";
+        let text = "c_0*cos(QQx)+c_1*sin(QQx)+(-2*QQx*cos(QQx)+QQx)/4";
         let r = finish(&p, Ok((text.into(), String::new())));
         assert!(
             r.steps.last().unwrap().note.contains("doesn't agree"),
             "{r:?}"
         );
         let p = plan("\\sin\\left(2t\\right)", &[], Some("giac:laplace")).unwrap();
-        let r = finish(&p, Ok(("2/(g_s^2+4)".into(), String::new())));
+        let r = finish(&p, Ok(("2/(QQs^2+4)".into(), String::new())));
         assert_eq!(
             r.steps.last().unwrap().note,
             "Checked numerically at 3 points",
             "{r:?}"
         );
-        let r = finish(&p, Ok(("2/(g_s^2+2)".into(), String::new())));
+        let r = finish(&p, Ok(("2/(QQs^2+2)".into(), String::new())));
         assert!(
             r.steps.last().unwrap().note.contains("doesn't agree"),
             "{r:?}"
         );
         let p = plan("\\frac{1}{s^{2}+1}", &[], Some("giac:ilaplace")).unwrap();
-        let r = finish(&p, Ok(("sin(g_t)".into(), String::new())));
+        let r = finish(&p, Ok(("sin(QQt)".into(), String::new())));
         assert_eq!(
             r.steps.last().unwrap().note,
             "Checked numerically at 3 points",
@@ -2008,7 +2013,7 @@ mod tests {
         assert_eq!(r.steps.last().unwrap().note, "Checked numerically", "{r:?}");
         // Series and derivatives.
         let p = plan("e^{x}\\sin\\left(x\\right)", &[], Some("giac:series")).unwrap();
-        let text = "g_x+g_x^2+1/3*g_x^3-1/30*g_x^5-1/90*g_x^6+g_x^7*order_size(g_x)";
+        let text = "QQx+QQx^2+1/3*QQx^3-1/30*QQx^5-1/90*QQx^6+QQx^7*order_size(QQx)";
         let r = finish(&p, Ok((text.into(), String::new())));
         assert_eq!(
             r.steps.last().unwrap().note,
@@ -2017,7 +2022,7 @@ mod tests {
         );
         let r = finish(
             &p,
-            Ok(("g_x+g_x^2+g_x^7*order_size(g_x)".into(), String::new())),
+            Ok(("QQx+QQx^2+QQx^7*order_size(QQx)".into(), String::new())),
         );
         assert!(
             r.steps.last().unwrap().note.contains("doesn't agree"),
@@ -2031,11 +2036,11 @@ mod tests {
         .unwrap();
         let r = finish(
             &p,
-            Ok(("2*g_x*sin(g_x)+g_x^2*cos(g_x)".into(), String::new())),
+            Ok(("2*QQx*sin(QQx)+QQx^2*cos(QQx)".into(), String::new())),
         );
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
         let p = plan("x^{2}\\sin\\left(x\\right)", &[], Some("giac:diff")).unwrap();
-        let r = finish(&p, Ok(("2*g_x*sin(g_x)".into(), String::new())));
+        let r = finish(&p, Ok(("2*QQx*sin(QQx)".into(), String::new())));
         assert!(
             r.steps.last().unwrap().note.contains("doesn't agree"),
             "{r:?}"
