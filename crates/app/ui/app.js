@@ -39,7 +39,10 @@
       'ln log exp abs min max floor ceil round sign mod mean median total length ' +
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
       'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
-      'mandelbrot julia cobweb bifurcation'
+      'mandelbrot julia cobweb bifurcation ' +
+      // Special functions, beyond Desmos. Γ, ψ, ζ, B, W, K, E and the
+      // Bessel J_n, Y_n, I_n, K_n are letters, so they need no name here.
+      'erf erfc erfi Si Ci Ei li Li Ai Bi'
   };
 
   // Desmos subscripts hold only letters and digits, so typing anything else

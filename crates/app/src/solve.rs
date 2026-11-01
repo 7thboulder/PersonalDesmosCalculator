@@ -52,6 +52,22 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
     })
 }
 
+/// A document's live lines as rows for `reply`, numbered from 1 so the
+/// line being solved can be row 0.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn doc_rows(lines: &Value) -> Value {
+    Value::Array(
+        lines
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .enumerate()
+            .map(|(i, latex)| json!({ "id": i + 1, "latex": latex }))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

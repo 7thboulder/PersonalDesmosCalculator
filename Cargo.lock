@@ -1158,6 +1158,9 @@ dependencies = [
 [[package]]
 name = "graph-expr"
 version = "0.0.1"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "graph-render"

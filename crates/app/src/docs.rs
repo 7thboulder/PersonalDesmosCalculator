@@ -47,6 +47,10 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
                 if line["step"] == true {
                     math["step"] = Value::Bool(true);
                 }
+                // A live line computes; every other line is only typeset.
+                if line["live"] == true {
+                    math["live"] = Value::Bool(true);
+                }
                 if let Some(id) = line["id"].as_str().filter(|id| is_id(id)) {
                     math["id"] = Value::String(id.to_owned());
                 }
@@ -278,7 +282,7 @@ mod tests {
             "lines": [
                 { "type": "heading", "level": 1, "text": "Problem 1" },
                 { "type": "text", "text": "Evaluate $\\int_0^1 x^2dx$." },
-                { "type": "math", "latex": "I=\\frac{1}{3}", "id": "g1" },
+                { "type": "math", "latex": "I=\\frac{1}{3}", "id": "g1", "live": true },
                 { "type": "math", "latex": "=1/3", "step": true, "id": "bad id!" },
                 { "type": "mystery", "latex": "x" }
             ]
@@ -292,6 +296,8 @@ mod tests {
         assert_eq!(back["lines"][3]["step"], true);
         assert!(back["lines"][3]["id"].is_null());
         assert!(back["lines"][2]["step"].is_null());
+        assert_eq!(back["lines"][2]["live"], true);
+        assert!(back["lines"][3]["live"].is_null());
         // Unknown kinds read as math lines.
         assert_eq!(back["lines"][4]["type"], "math");
     }

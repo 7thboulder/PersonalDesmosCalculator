@@ -937,7 +937,21 @@ fn has_complex_form(f: Builtin) -> bool {
     use Builtin::*;
     matches!(
         f,
-        Abs | Exp | Sqrt | Sin | Cos | Tan | Csc | Sec | Cot | Sinh | Cosh | Tanh | Ln | Log
+        Abs | Exp
+            | Sqrt
+            | Sin
+            | Cos
+            | Tan
+            | Csc
+            | Sec
+            | Cot
+            | Sinh
+            | Cosh
+            | Tanh
+            | Ln
+            | Log
+            | Gamma
+            | Zeta
     )
 }
 
@@ -996,6 +1010,17 @@ fn complex_call(f: Builtin, a: Low, b: Low) -> Option<Result<Item, String>> {
             ),
         )),
         Exp => complex_exp(a, b),
+        Gamma | Zeta => {
+            let (re, im) = if f == Gamma {
+                (GammaRe, GammaIm)
+            } else {
+                (ZetaRe, ZetaIm)
+            };
+            Item::complex(
+                shallow(Low::Call(re, vec![a.clone(), b.clone()])),
+                shallow(Low::Call(im, vec![a, b])),
+            )
+        }
         Sqrt => {
             return Some(complex_op(
                 BinOp::Pow,
@@ -1266,6 +1291,29 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         .iter()
         .map(|r| r.table.as_deref().map(Table::read))
         .collect();
+
+    // Special functions written as letters, Γ(x) or J_n(x), are calls
+    // wherever the graph doesn't define the name itself.
+    {
+        let mut defined: HashSet<String> = parsed
+            .iter()
+            .filter_map(|p| match p {
+                Some(Ok(statement)) => definition(statement),
+                _ => None,
+            })
+            .flatten()
+            .map(|d| def_name(&d).to_owned())
+            .collect();
+        for table in tables.iter().flatten() {
+            defined.extend(table.defined_names().map(str::to_owned));
+        }
+        for grid in grids.iter().flatten().flatten() {
+            defined.insert(grid.name.clone());
+        }
+        for statement in parsed.iter_mut().flatten().flatten() {
+            special_calls(statement, &defined);
+        }
+    }
 
     // Collect definitions, refusing duplicates and reserved names.
     let define = |p: &Option<Result<Statement, String>>| match p {
@@ -1682,6 +1730,65 @@ fn failed_row(id: u64, f: matrix::Failure) -> RowAnalysis {
     let mut row = RowAnalysis::error(id, f.message);
     row.missing = slider_names(&f.missing);
     row
+}
+
+/// Rewrites `Γ(x)`, `ζ(s)`, `J_n(x)` and the other special functions
+/// written with letters as calls, unless `defined` (or the parameters of
+/// the function this row defines) has the name.
+fn special_calls(statement: &mut Statement, defined: &HashSet<String>) {
+    let mut params: Vec<String> = Vec::new();
+    if let Statement::Relation(Expr::Apply(_, args), Relation::Eq, _) = statement {
+        params = args
+            .iter()
+            .filter_map(|a| match a {
+                Expr::Var(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+    }
+    let skip = |name: &str| defined.contains(name) || params.iter().any(|p| p == name);
+    let fix = |e: &mut Expr| {
+        let taken = std::mem::replace(e, Expr::Num(0.0));
+        *e = special_expr(taken, &skip);
+    };
+    match statement {
+        Statement::Expr(e) => fix(e),
+        Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
+            // The left of a definition is its name, not a call.
+            if !matches!(a, Expr::Apply(..)) {
+                fix(a);
+            }
+            fix(b);
+        }
+        Statement::Chain(c) => c.operands.iter_mut().for_each(fix),
+    }
+}
+
+fn special_expr(e: Expr, skip: &dyn Fn(&str) -> bool) -> Expr {
+    units::rewrite(e, &mut |e| match e {
+        Expr::Apply(name, args) if !skip(&name) => {
+            let lower = |args: Vec<Expr>| -> Vec<Expr> {
+                args.into_iter().map(|a| special_expr(a, skip)).collect()
+            };
+            if let Some(b) = crate::builtins::from_letter(&name, args.len()) {
+                return Ok(Expr::Call(b, lower(args)));
+            }
+            // J_n(x): the subscript is the order, a number or a variable.
+            if let Some((letter, sub)) = name.split_once('_') {
+                if let (Some(b), 1) = (crate::builtins::bessel(letter), args.len()) {
+                    let order = sub
+                        .parse::<f64>()
+                        .map(Expr::Num)
+                        .unwrap_or_else(|_| Expr::Var(sub.to_owned()));
+                    let mut all = vec![order];
+                    all.extend(lower(args));
+                    return Ok(Expr::Call(b, all));
+                }
+            }
+            Err(Expr::Apply(name, args))
+        }
+        e => Err(e),
+    })
 }
 
 fn def_name(def: &Def) -> &str {

@@ -240,6 +240,25 @@ fn call_derivative(e: &Low, f: Builtin, args: &[Low], v: &Low) -> Low {
         (Total, _) => args.iter().map(d).fold(c(0.0), add),
         (Mean, n) if n > 0 => div(args.iter().map(d).fold(c(0.0), add), c(n as f64)),
         (Length, _) => c(0.0),
+        (Erf, 1) => one(mul(
+            c(std::f64::consts::FRAC_2_SQRT_PI),
+            call(Exp, neg(sq(&a()))),
+        )),
+        (Erfc, 1) => one(mul(
+            c(-std::f64::consts::FRAC_2_SQRT_PI),
+            call(Exp, neg(sq(&a()))),
+        )),
+        (Erfi, 1) => one(mul(
+            c(std::f64::consts::FRAC_2_SQRT_PI),
+            call(Exp, sq(&a())),
+        )),
+        (Si, 1) => one(div(call(Sin, a()), a())),
+        (Ci, 1) => one(div(call(Cos, a()), a())),
+        (Ei, 1) => one(div(call(Exp, a()), a())),
+        (Li, 1) => one(div(c(1.0), call(Ln, a()))),
+        (Gamma, 1) => one(mul(e.clone(), call(Digamma, a()))),
+        // W' = W / (x (1 + W))
+        (LambertW, 1) => one(div(e.clone(), mul(a(), add(c(1.0), e.clone())))),
         _ => numeric_derivative(e, v),
     }
 }

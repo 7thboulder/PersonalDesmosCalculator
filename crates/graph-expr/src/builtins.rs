@@ -2,6 +2,8 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
+use crate::special;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Builtin {
     Sin,
@@ -51,6 +53,34 @@ pub enum Builtin {
     Total,
     Length,
     Factorial,
+    // Special functions, beyond Desmos.
+    Gamma,
+    Digamma,
+    Beta,
+    Erf,
+    Erfc,
+    Erfi,
+    Zeta,
+    BesselJ,
+    BesselY,
+    BesselI,
+    BesselK,
+    AiryAi,
+    AiryBi,
+    Si,
+    Ci,
+    Ei,
+    Li,
+    LambertW,
+    Polylog,
+    EllipticK,
+    EllipticE,
+    /// The real and imaginary parts of Γ and ζ at a complex number,
+    /// for complex rows. They take (re, im) and are never typed.
+    GammaRe,
+    GammaIm,
+    ZetaRe,
+    ZetaIm,
 }
 
 /// How many arguments a function takes.
@@ -110,7 +140,45 @@ const NAMES: &[(&str, Builtin)] = &[
     ("median", Median),
     ("total", Total),
     ("length", Length),
+    ("erf", Erf),
+    ("erfc", Erfc),
+    ("erfi", Erfi),
+    ("Si", Si),
+    ("Ci", Ci),
+    ("Ei", Ei),
+    ("li", Li),
+    ("Ai", AiryAi),
+    ("Bi", AiryBi),
+    // Li_s(x), with the order as a subscript.
+    ("Li", Polylog),
 ];
+
+/// Special functions written with a letter rather than a name, such as
+/// Γ(x) or J_n(x). They are only functions when the name isn't defined in
+/// the graph, and `args` is how many arguments each takes as written.
+pub fn from_letter(name: &str, args: usize) -> Option<Builtin> {
+    Some(match (name, args) {
+        ("Gamma", 1) => Gamma,
+        ("psi", 1) => Digamma,
+        ("B", 2) => Beta,
+        ("zeta", 1) => Zeta,
+        ("W", 1) => LambertW,
+        ("K", 1) => EllipticK,
+        ("E", 1) => EllipticE,
+        _ => return None,
+    })
+}
+
+/// The Bessel function a subscripted letter names: J, Y, I or K.
+pub fn bessel(letter: &str) -> Option<Builtin> {
+    Some(match letter {
+        "J" => BesselJ,
+        "Y" => BesselY,
+        "I" => BesselI,
+        "K" => BesselK,
+        _ => return None,
+    })
+}
 
 pub fn from_name(name: &str) -> Option<Builtin> {
     NAMES.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
@@ -127,6 +195,17 @@ impl Builtin {
             Root => "nthroot",
             LogBase => "log",
             Factorial => "factorial",
+            Gamma | GammaRe | GammaIm => "Γ",
+            Digamma => "ψ",
+            Beta => "B",
+            Zeta | ZetaRe | ZetaIm => "ζ",
+            BesselJ => "J",
+            BesselY => "Y",
+            BesselI => "I",
+            BesselK => "K",
+            LambertW => "W",
+            EllipticK => "K",
+            EllipticE => "E",
             other => NAMES
                 .iter()
                 .find(|(_, b)| *b == other)
@@ -137,7 +216,8 @@ impl Builtin {
 
     pub fn arity(self) -> Arity {
         let (min, max) = match self {
-            LogBase | Root | Mod | NCr | NPr => (2, 2),
+            LogBase | Root | Mod | NCr | NPr | Beta | BesselJ | BesselY | BesselI | BesselK
+            | Polylog | GammaRe | GammaIm | ZetaRe | ZetaIm => (2, 2),
             Arctan | Round => (1, 2),
             Min | Max | Gcd | Lcm | Mean | Median | Total | Length => (1, usize::MAX),
             _ => (1, 1),
@@ -239,6 +319,31 @@ impl Builtin {
             Total => a.iter().sum(),
             Length => a.len() as f64,
             Factorial => factorial(x),
+            Gamma => special::gamma(x),
+            Digamma => special::digamma(x),
+            Beta => special::beta(x, a[1]),
+            Erf => special::erf(x),
+            Erfc => special::erfc(x),
+            Erfi => special::erfi(x),
+            Zeta => special::zeta(x),
+            BesselJ => special::bessel_j(x, a[1]),
+            BesselY => special::bessel_y(x, a[1]),
+            BesselI => special::bessel_i(x, a[1]),
+            BesselK => special::bessel_k(x, a[1]),
+            AiryAi => special::airy_ai(x),
+            AiryBi => special::airy_bi(x),
+            Si => special::si(x),
+            Ci => special::ci(x),
+            Ei => special::ei(x),
+            Li => special::li(x),
+            LambertW => special::lambert_w(x),
+            Polylog => special::polylog(x, a[1]),
+            EllipticK => special::elliptic_k(x),
+            EllipticE => special::elliptic_e(x),
+            GammaRe => special::gamma_complex(special::C::new(x, a[1])).re,
+            GammaIm => special::gamma_complex(special::C::new(x, a[1])).im,
+            ZetaRe => special::zeta_complex(special::C::new(x, a[1])).re,
+            ZetaIm => special::zeta_complex(special::C::new(x, a[1])).im,
         }
     }
 }
