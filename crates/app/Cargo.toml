@@ -21,6 +21,9 @@ serde_json = "1"
 [target.'cfg(windows)'.dependencies]
 winit = "0.30"
 wry = "0.57"
+# WebView2's print-to-PDF, which wry doesn't wrap. Versions match wry's.
+webview2-com = "0.39"
+windows-core = "0.62"
 # Fetches a pasted desmos.com link; native-tls uses Windows's own TLS
 # (SChannel), so nothing extra ships or needs installing.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }

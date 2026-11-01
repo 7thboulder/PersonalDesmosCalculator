@@ -48,6 +48,12 @@ pub enum UserEvent {
         url: String,
         reply: Result<String, String>,
     },
+    /// WebView2 finished writing a PDF of the document.
+    PdfSaved {
+        path: PathBuf,
+        result: Result<(), String>,
+        open: bool,
+    },
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -137,6 +143,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Ipc(message) => state.on_panel_message(&message),
             UserEvent::Fetched { url, reply } => state.fetched(&url, reply),
+            UserEvent::PdfSaved { path, result, open } => state.pdf_saved(path, result, open),
         }
     }
 
@@ -675,6 +682,7 @@ impl Running {
             Some("docOpen") => self.doc_open(value["path"].as_str().map(PathBuf::from)),
             Some("docRename") => self.doc_rename(&value),
             Some("docList") => self.doc_list(),
+            Some("exportPdf") => self.export_pdf(&value),
             Some("shortcutsSave") => {
                 if let Err(e) = docs::write_shortcuts(&value["list"]) {
                     self.doc_error(format!("Could not save the shortcuts: {e}"));
@@ -944,6 +952,7 @@ impl Running {
                 "opened": opened,
                 "view": if view { "doc" } else { "graph" },
                 "shortcuts": docs::read_shortcuts(),
+                "pdf": self.docs.pdf,
             }),
         );
         self.doc_list();
@@ -1024,6 +1033,71 @@ impl Running {
         }
     }
 
+    /// Asks where to save, then has WebView2 print the document (with its
+    /// print styles) to a PDF. The panel has already laid it out for print.
+    fn export_pdf(&mut self, value: &serde_json::Value) {
+        let options = &value["options"];
+        self.docs.pdf = options.clone();
+        self.remember_docs();
+        let title = value["title"].as_str().unwrap_or_default();
+        let start = match &self.docs.path {
+            Some(doc) => doc.with_extension("pdf"),
+            None => self
+                .library()
+                .join(format!("{}.pdf", docs::file_stem(title))),
+        };
+        let Some(path) = dialogs::save_pdf(&self.window, &start) else {
+            self.doc_reply("pdfDone", serde_json::json!({ "cancelled": true }));
+            return;
+        };
+        let path = path.with_extension("pdf");
+        let letter = options["page"] != "a4";
+        let header = options["header"] != false;
+        let name = options["name"].as_str().unwrap_or_default().trim();
+        let header_title = match (name.is_empty(), title.trim().is_empty()) {
+            (false, false) => format!("{name} \u{b7} {}", title.trim()),
+            (false, true) => name.to_owned(),
+            _ => title.trim().to_owned(),
+        };
+        let settings = pdf::Settings {
+            width: if letter { 8.5 } else { 8.27 },
+            height: if letter { 11.0 } else { 11.69 },
+            header,
+            title: header_title,
+        };
+        let open = options["open"] != false;
+        let proxy = self.proxy.clone();
+        let done_path = path.clone();
+        let started = match &self.webview {
+            Some(webview) => pdf::print(webview, &path, &settings, move |result| {
+                let _ = proxy.send_event(UserEvent::PdfSaved {
+                    path: done_path,
+                    result,
+                    open,
+                });
+            }),
+            None => Err("the panel is not running".into()),
+        };
+        if let Err(e) = started {
+            self.pdf_saved(path, Err(e), false);
+        }
+    }
+
+    fn pdf_saved(&mut self, path: PathBuf, result: Result<(), String>, open: bool) {
+        match result {
+            Ok(()) => {
+                self.doc_reply("pdfDone", serde_json::json!({ "path": path }));
+                if open {
+                    open_file(&path);
+                }
+            }
+            Err(e) => self.doc_reply(
+                "pdfDone",
+                serde_json::json!({ "error": format!("Could not save the PDF: {e}") }),
+            ),
+        }
+    }
+
     fn doc_list(&self) {
         let library = self.library();
         let items = docs::list(&library);
@@ -1048,6 +1122,105 @@ fn panel_bounds(window: &Window, doc_view: bool) -> Rect {
     Rect {
         position: wry::dpi::LogicalPosition::new(0.0, 0.0).into(),
         size: wry::dpi::LogicalSize::new(width, size.height).into(),
+    }
+}
+
+/// Opens a file in its usual app, as double-clicking it would.
+fn open_file(path: &std::path::Path) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &std::ffi::OsStr| {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let (verb, file) = (wide("open".as_ref()), wide(path.as_os_str()));
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// Printing the panel's page to a PDF with WebView2's own printer.
+mod pdf {
+    use std::path::Path;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment6, ICoreWebView2_7, COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT,
+    };
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows_core::{Interface, HSTRING};
+    use wry::WebViewExtWindows;
+
+    pub struct Settings {
+        /// Page size in inches.
+        pub width: f64,
+        pub height: f64,
+        /// Chromium's header (date, title) and footer (page numbers).
+        pub header: bool,
+        pub title: String,
+    }
+
+    /// Starts writing the PDF; `done` runs on the UI thread when it is
+    /// written or has failed.
+    pub fn print(
+        webview: &wry::WebView,
+        path: &Path,
+        settings: &Settings,
+        done: impl FnOnce(Result<(), String>) + 'static,
+    ) -> Result<(), String> {
+        let too_old = |_| {
+            "this version of Microsoft Edge WebView2 cannot save PDFs; updating Windows updates it"
+                .to_string()
+        };
+        let core: ICoreWebView2_7 = webview.webview().cast().map_err(too_old)?;
+        let environment: ICoreWebView2Environment6 =
+            webview.environment().cast().map_err(too_old)?;
+        let failed = |e: windows_core::Error| e.message().to_string();
+        // SAFETY: plain COM calls on live WebView2 objects, on the UI
+        // thread that owns them; the strings outlive each call.
+        unsafe {
+            let print = environment.CreatePrintSettings().map_err(failed)?;
+            print
+                .SetOrientation(COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT)
+                .map_err(failed)?;
+            print.SetPageWidth(settings.width).map_err(failed)?;
+            print.SetPageHeight(settings.height).map_err(failed)?;
+            print.SetMarginTop(0.6).map_err(failed)?;
+            print.SetMarginBottom(0.6).map_err(failed)?;
+            print.SetMarginLeft(0.75).map_err(failed)?;
+            print.SetMarginRight(0.75).map_err(failed)?;
+            print.SetShouldPrintBackgrounds(true).map_err(failed)?;
+            print
+                .SetShouldPrintHeaderAndFooter(settings.header)
+                .map_err(failed)?;
+            if settings.header {
+                print
+                    .SetHeaderTitle(&HSTRING::from(settings.title.as_str()))
+                    .map_err(failed)?;
+                // No address in the footer, just the page numbers.
+                print.SetFooterUri(&HSTRING::new()).map_err(failed)?;
+            }
+            let handler = PrintToPdfCompletedHandler::create(Box::new(
+                move |status: windows_core::Result<()>, ok: bool| {
+                    done(match status {
+                        Ok(()) if ok => Ok(()),
+                        Ok(()) => Err("WebView2 could not write the file".into()),
+                        Err(e) => Err(e.message().to_string()),
+                    });
+                    Ok(())
+                },
+            ));
+            core.PrintToPdf(&HSTRING::from(path.as_os_str()), &print, &handler)
+                .map_err(failed)
+        }
     }
 }
 
@@ -1259,6 +1432,15 @@ mod dialogs {
     pub fn open_doc(window: &Window, library: &Path) -> Option<PathBuf> {
         let _ = std::fs::create_dir_all(library);
         run_dialog(window, false, None, Some(library), DOC_FILTER, "gcdoc")
+    }
+
+    /// Where to save a PDF, suggesting `start`.
+    pub fn save_pdf(window: &Window, start: &Path) -> Option<PathBuf> {
+        if let Some(dir) = start.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let filter = "PDF documents (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0\0";
+        run_dialog(window, true, Some(start), None, filter, "pdf")
     }
 
     /// Saves a math document somewhere new, suggesting `start`.

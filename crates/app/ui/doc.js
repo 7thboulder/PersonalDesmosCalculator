@@ -1120,6 +1120,8 @@
     var handled = true;
     if (helpBox.classList.contains('open') && e.key === 'Escape') openHelp(false);
     else if (scBox.classList.contains('open') && e.key === 'Escape') closeShortcuts();
+    else if (pdfBox.classList.contains('open') && e.key === 'Escape') closePdf();
+    else if (ctrl && !e.altKey && !e.shiftKey && k === 'p') openPdf();
     else if (scBox.classList.contains('open') && !(ctrl && e.altKey)) handled = false;
     else if (ctrl && !e.altKey && (k === 'z' || k === 'y') && e.target !== searchEl) {
       if (k === 'y' || e.shiftKey) undoTo(historyAt + 1); else undoTo(historyAt - 1);
@@ -1326,6 +1328,87 @@
     if (!contextMenu.contains(e.target)) contextMenu.classList.remove('open');
   });
 
+  // ---- PDF export ----------------------------------------------------------
+
+  // The engine has WebView2 print this page with its print styles (doc.css,
+  // @media print): only the title and the lines, without the app around them.
+  var pdfBox = document.getElementById('doc-pdf');
+  var pdfName = document.getElementById('pdf-name');
+  var pdfPage = document.getElementById('pdf-page');
+  var pdfHeader = document.getElementById('pdf-header');
+  var pdfBreaks = document.getElementById('pdf-breaks');
+  var pdfOpen = document.getElementById('pdf-open');
+  var pdfPrefs = {};
+  var pdfBusy = false;
+
+  function showPdfPrefs(prefs) {
+    pdfPrefs = prefs && typeof prefs === 'object' ? prefs : {};
+    pdfName.value = pdfPrefs.name || '';
+    pdfPage.value = pdfPrefs.page === 'a4' ? 'a4' : 'letter';
+    pdfHeader.checked = pdfPrefs.header !== false;
+    pdfBreaks.checked = !!pdfPrefs.breaks;
+    pdfOpen.checked = pdfPrefs.open !== false;
+  }
+
+  function openPdf() {
+    if (pdfBusy) return;
+    showPdfPrefs(pdfPrefs);
+    pdfBox.classList.add('open');
+    (pdfName.value ? pdfBox.querySelector('.go') : pdfName).focus();
+  }
+  function closePdf() { pdfBox.classList.remove('open'); }
+
+  // Marks the lines for print: empty ones are left out, and Problem
+  // headings after the first can start a page.
+  function preparePrint(breaks) {
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    lines.forEach(function (l) { l.el.classList.remove('focused'); });
+    var seenProblem = false;
+    lines.forEach(function (l) {
+      l.el.classList.toggle('print-empty', isEmpty(l));
+      var problem = l.kind === 'heading' && /^problem\b/i.test(lineText(l));
+      l.el.classList.toggle('page-break', breaks && problem && seenProblem);
+      if (problem) seenProblem = true;
+    });
+    document.body.classList.toggle('print-untitled', !titleEl.value.trim());
+  }
+
+  function exportPdf() {
+    var options = {
+      name: pdfName.value.trim(),
+      page: pdfPage.value,
+      header: pdfHeader.checked,
+      breaks: pdfBreaks.checked,
+      open: pdfOpen.checked
+    };
+    pdfPrefs = options;
+    closePdf();
+    flush();
+    layout();
+    preparePrint(options.breaks);
+    pdfBusy = true;
+    showStatus('Saving PDF…');
+    send({ type: 'exportPdf', title: titleEl.value || 'Untitled', options: options });
+  }
+
+  pdfBox.querySelector('.go').addEventListener('click', exportPdf);
+  pdfBox.querySelector('.cancel').addEventListener('click', closePdf);
+  pdfBox.querySelector('.close').addEventListener('click', closePdf);
+  pdfBox.addEventListener('mousedown', function (e) { if (e.target === pdfBox) closePdf(); });
+  pdfBox.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); exportPdf(); }
+  });
+  document.getElementById('doc-pdf-btn').addEventListener('click', openPdf);
+
+  function pdfDone(result) {
+    pdfBusy = false;
+    lines.forEach(function (l) { l.el.classList.remove('print-empty', 'page-break'); });
+    if (result.error) showStatus(result.error, true);
+    else if (result.path) showStatus('Saved ' + String(result.path).split(/[\\/]/).pop());
+    else showStatus('');
+    focusLine(Math.min(lastFocus, lines.length - 1), 'end');
+  }
+
   // ---- Called by Rust through evaluate_script ------------------------------
 
   window.doc = {
@@ -1340,6 +1423,7 @@
         forgetHistory();
       }
       if (window.shortcuts) window.shortcuts.set(info.shortcuts);
+      showPdfPrefs(info.pdf);
       if (info.view === 'doc') show(true);
     },
     load: function (opened) {
@@ -1376,6 +1460,9 @@
     },
     // For tests: the document as it would be saved.
     serialize: serialize,
+    pdfDone: pdfDone,
+    // For tests: lay the page out as the PDF export does.
+    preparePrint: preparePrint,
     openShortcuts: openShortcuts
   };
 

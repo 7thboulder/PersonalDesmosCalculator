@@ -362,3 +362,55 @@ body.doc-view #doc {
 #doc-context.open { display: block; }
 #doc-context button { border: 0; background: transparent; padding: 7px 12px; font: 13px "Segoe UI", Arial, sans-serif; cursor: pointer; }
 #doc-context button:hover { background: #eef3fb; }
+
+#doc-pdf-btn {
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  padding: 4px 10px;
+  background: #fff;
+  color: #555;
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+#doc-pdf-btn:hover { background: #eef3fb; }
+#doc-pdf .box { width: 420px; font-size: 13px; }
+#doc-pdf .tabs { display: flex; align-items: center; margin-bottom: 10px; font-size: 14px; }
+#doc-pdf .close { margin-left: auto; border: 0; background: transparent; font-size: 18px; cursor: pointer; }
+#doc-pdf .pdf-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+#doc-pdf .pdf-row input, #doc-pdf .pdf-row select {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  user-select: text;
+}
+#doc-pdf .pdf-check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; cursor: pointer; }
+#doc-pdf .pdf-note { margin: 6px 0 12px; font-size: 12px; color: #777; }
+#doc-pdf .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+#doc-pdf .buttons button { padding: 5px 14px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font: 13px "Segoe UI", Arial, sans-serif; }
+#doc-pdf .buttons .go { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+
+/* The PDF: the title and the lines only, black on white. */
+@media print {
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+  #panel, #doc-bar, #doc-side, #doc-tail, .overlay, #ref-pick, #doc-context, #toast, #keypad,
+  #file-menu, #add-menu, #style-menu { display: none !important; }
+  body.doc-view #doc { position: static; display: block; }
+  #doc-main, #doc-scroll { display: block; overflow: visible; height: auto; }
+  #doc-page { max-width: none; margin: 0; padding: 0; }
+  #doc-title { padding-left: 40px; margin-bottom: 6px; font-size: 22px; }
+  body.print-untitled #doc-title { display: none; }
+  .dline { border-bottom: 0 !important; background: none !important; break-inside: avoid; min-height: 36px; }
+  .dline.math.step { min-height: 34px; }
+  .dline.print-empty { display: none; }
+  .dline.page-break { break-before: page; }
+  .dline.heading { break-after: avoid; }
+  .dline .gut::before, .dline .gut::after { display: none !important; }
+  .dline .gut { color: #555; }
+  .dline .dtext:empty::before { content: none; }
+  .dline .dmath { overflow: visible; }
+  .mq-slot { color: #999; }
+  .dref, .dref.missing { color: #000; }
+  .mq-editable-field .mq-cursor { display: none !important; }
+}

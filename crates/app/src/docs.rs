@@ -230,6 +230,8 @@ pub struct State {
     pub doc_view: bool,
     pub path: Option<PathBuf>,
     pub library: Option<PathBuf>,
+    /// The PDF export choices last used (page size, header, ...).
+    pub pdf: Value,
 }
 
 pub fn read_state() -> State {
@@ -241,6 +243,7 @@ pub fn read_state() -> State {
         doc_view: value["view"] == "doc",
         path: value["path"].as_str().map(PathBuf::from),
         library: value["library"].as_str().map(PathBuf::from),
+        pdf: value["pdf"].clone(),
     }
 }
 
@@ -250,6 +253,7 @@ pub fn write_state(state: &State) {
         "view": if state.doc_view { "doc" } else { "graph" },
         "path": state.path,
         "library": state.library,
+        "pdf": state.pdf,
     });
     // Losing this only means starting in the graph view.
     let _ = write(&path, &value.to_string());
