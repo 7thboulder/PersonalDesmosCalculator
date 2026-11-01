@@ -453,6 +453,16 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                 };
                 let g = w.expr(&e)?;
                 let v = w.names.var(&var);
+                // Integrating an integral, or simplifying a sum, is working
+                // it out.
+                if matches!(
+                    (&e, chosen.as_deref()),
+                    (Expr::Integral(..), Some("integrate" | "simplify"))
+                        | (Expr::Derivative(..), Some("diff" | "simplify"))
+                        | (Expr::Repeat(..), Some("sum" | "simplify"))
+                ) {
+                    chosen = None;
+                }
                 match (&e, chosen.as_deref()) {
                     (Expr::Integral(iv, lo, ..), None) => {
                         if matches!(&**lo, Expr::Var(n) if n == crate::ast::INDEFINITE) {
@@ -1161,7 +1171,16 @@ fn tidy_tex(tex: &str, names: &Names) -> String {
     let mut names: Vec<(&String, &String)> = names.back.iter().collect();
     names.sort_by_key(|(g, _)| std::cmp::Reverse(g.len()));
     for (g, original) in names {
-        s = s.replace(g.as_str(), &name_latex(original));
+        // Giac's LaTeX writes g_x as \mathrm{g\_x}.
+        let escaped = g.replace('_', "\\_");
+        let to = name_latex(original);
+        for from in [
+            format!("\\operatorname{{{escaped}}}"),
+            escaped.clone(),
+            g.clone(),
+        ] {
+            s = s.replace(&from, &to);
+        }
     }
     s
 }
@@ -1784,6 +1803,20 @@ mod tests {
         assert_eq!(giac_of("J_{0}\\left(x\\right)"), "simplify(BesselJ(0,g_x))");
         let p = plan("\\frac{1}{x^2-1}", &[], Some("giac:partfrac")).unwrap();
         assert_eq!(p.command, "partfrac((1/((g_x^2)-1)),g_x)");
+    }
+
+    #[test]
+    fn working_out_is_not_done_twice() {
+        let p = plan("\\int_{ }^{ }e^{-x^2}dx", &[], Some("giac:integrate")).unwrap();
+        assert_eq!(p.command, "integrate(exp((-(g_x^2))),g_x)");
+        let p = plan("\\int_{0}^{1}x dx", &[], Some("giac:simplify")).unwrap();
+        assert_eq!(p.command, "integrate(g_x,g_x,0,1)");
+        let mut names = Names::default();
+        names.var("x");
+        assert_eq!(
+            tidy_tex("\\mathrm{g\\_x}^{2}+\\operatorname{rootof}(g\\_x)", &names),
+            "x^{2}+\\operatorname{rootof}(x)"
+        );
     }
 
     #[test]
