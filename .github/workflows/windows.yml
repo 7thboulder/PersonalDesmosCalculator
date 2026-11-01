@@ -7,10 +7,76 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  # The Giac worker, the computer algebra system behind Solve. It is built
+  # with MSYS2's clang from GeoGebra's mirror of Giac, and kept in the cache
+  # until the pinned commit or the worker's own files change.
+  giac:
     runs-on: windows-latest
+    env:
+      GIAC_COMMIT: 19a710aea9d528afa272ea582f3283f242e17af3
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache the Giac worker
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: giac-build/giac-worker.exe
+          key: giac-worker-${{ env.GIAC_COMMIT }}-${{ hashFiles('giac/CMakeLists.txt', 'giac/worker.cc') }}
+
+      - name: Check out Giac
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: geogebra/giac
+          ref: ${{ env.GIAC_COMMIT }}
+          path: giac-src
+
+      - name: Set up MSYS2
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: false
+          install: >-
+            mingw-w64-clang-x86_64-cc
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+
+      - name: Build the Giac worker
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          cmake -S giac -B giac-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DGIAC_SRC="$(cygpath -m "$PWD/giac-src")"
+          cmake --build giac-build
+
+      - name: Try the worker
+        shell: pwsh
+        run: |
+          "giac-worker.exe is {0:N1} MB" -f ((Get-Item ./giac-build/giac-worker.exe).Length / 1MB)
+          Get-Content giac/smoke.txt | ./giac-build/giac-worker.exe
+
+      - name: Upload the worker
+        uses: actions/upload-artifact@v4
+        with:
+          name: giac-worker
+          path: giac-build/giac-worker.exe
+
+  build:
+    runs-on: windows-latest
+    needs: giac
+    env:
+      GIAC_WORKER: ${{ github.workspace }}\giac-build\giac-worker.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the Giac worker
+        uses: actions/download-artifact@v4
+        with:
+          name: giac-worker
+          path: giac-build
 
       - name: Cache cargo
         uses: actions/cache@v4
