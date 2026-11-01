@@ -1044,8 +1044,8 @@
     line.el.classList.remove('has-solve');
   }
 
-  // Stops waiting for every solve in progress. The engine's answer, if it
-  // comes, is dropped.
+  // Stops waiting for every solve in progress, and stops Giac if it is
+  // working on one. The engine's answer, if it comes, is dropped.
   function cancelSolves() {
     var any = false;
     lines.forEach(function (l) {
@@ -1054,6 +1054,7 @@
         closeSolve(l);
       }
     });
+    if (any) send({ type: 'docCancel' });
     return any;
   }
 

@@ -988,6 +988,11 @@ button.icon:disabled { color: #bbb; cursor: default; }
   background: #fff;
   cursor: pointer;
 }
+/* An indefinite ∫ shows no empty boxes for its limits. They come back
+   while the cursor is in one, and once either has something in it. */
+.mq-math-mode .mq-int > .mq-supsub:has(> .mq-sub.mq-empty):has(> .mq-sup > .mq-sup-inner.mq-empty) {
+  display: none;
+}
 /* An indefinite ∫ has no limits; MathQuill would show empty boxes. */
 .steps .mq-math-mode .mq-empty { display: none; }
 

@@ -123,6 +123,15 @@ on the right. What you type is graphed as you type it:
   **Add to graph** draws the exact solution over the numerical one; the
   **General solution** chip keeps C, C₁, C₂, which become sliders. Each
   solution is checked in the equation before it is shown.
+- When Solve's own algebra can't do a row, it hands the row to **Giac**, a
+  computer algebra system built into the exe: limits (`\lim_{x\to0^+}`),
+  infinite sums, series, Laplace transforms and their inverses, harder
+  integrals and ODEs, and answers in terms of special functions such as
+  erf, Γ, Si or Bessel functions. Giac's choices (factor, partial
+  fractions, series, Laplace and so on) appear after Solve's own. Every
+  Giac answer is checked numerically at several points before it is
+  shown, and the last step says whether it passed. Giac runs in its own
+  process: Esc stops it, and it gives up after 30 seconds.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
 - On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
   opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
@@ -305,6 +314,8 @@ from a command prompt and note whether that looks better.
 | `crates/graph-render` | Draws scenes with wgpu (DirectX 12 on Windows), on screen or offscreen, including per-pixel shading of relations. |
 | `crates/app` | The `graphcalc` executable: window, input, and the WebView2 expression panel. |
 | `crates/app/src/docs.rs` | Math document files (`.gcdoc`): checking, naming and listing them. The editor is `crates/app/ui/doc.js`. |
+| `crates/graph-expr/src/cas.rs` | Writes rows as Giac commands, reads Giac's answers back as LaTeX and checks them numerically. |
+| `giac/` | The Giac worker (`worker.cc`) and its CMake build. CI builds it from GeoGebra's Giac mirror with MSYS2 (clang64); Giac is GPL-3.0. |
 | `crates/app/ui` | Panel HTML, CSS and JS, plus vendored MathQuill 0.10.1 (MPL-2.0) and jQuery 3.7.1 (MIT). Everything is embedded in the exe. |
 
 ## Developing
@@ -321,6 +332,10 @@ echo '[{"id":1,"latex":"1+1"}]' | graphcalc --analyze   # the engine's reply to 
 graphcalc --dump-panel-html panel.html          # the panel page, for testing in a browser
 cargo check -p app --target x86_64-pc-windows-msvc   # type-check the window code from Linux or macOS
 ```
+
+Builds include Giac when `GIAC_WORKER` names a built `giac-worker.exe`;
+without it Solve uses only its own algebra. `GRAPHCALC_GIAC` points a
+build at a worker at run time instead (the Windows CI tests use it).
 
 The window code is Windows-only. On other systems the binary supports the
 offscreen commands above.
