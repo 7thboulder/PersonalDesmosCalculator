@@ -4,6 +4,7 @@
 mod docs;
 mod engine;
 mod files;
+mod giac;
 #[cfg(windows)]
 mod gui;
 mod headless;

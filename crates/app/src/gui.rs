@@ -720,6 +720,8 @@ impl Running {
                     format!("window.doc.solved({reply})")
                 });
             }
+            // Esc while solving: Giac stops; the answer is dropped.
+            Some("docCancel") => crate::giac::cancel(),
             // The live lines, in chunks: a name defined again starts a new
             // chunk, so each definition holds for the lines below it.
             Some("docEval") => {

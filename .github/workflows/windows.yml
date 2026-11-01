@@ -94,6 +94,13 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Solve with Giac
+        # The same Solve the app runs, with the real worker: answers come
+        # back, read correctly and pass their numeric checks.
+        env:
+          GRAPHCALC_GIAC: ${{ github.workspace }}\giac-build\giac-worker.exe
+        run: cargo test -p app giac_answers -- --nocapture
+
       - name: Build release exe
         run: cargo build --release -p app
 
