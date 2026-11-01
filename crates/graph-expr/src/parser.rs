@@ -12,7 +12,7 @@ pub fn parse(latex: &str) -> Result<Statement, String> {
 
 /// As `parse`, keeping units and conversions as written, for checking them.
 pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
-    let toks = derivatives(tokenize(latex)?);
+    let toks = derivatives(crate::dots::rewrite(tokenize(latex)?)?);
     let mut p = Parser {
         toks,
         pos: 0,
@@ -65,6 +65,25 @@ pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
     match p.peek() {
         None => Ok(statement),
         Some(tok) => Err(unexpected(tok)),
+    }
+}
+
+/// One expression from tokens already read, as Solve's n-fold integrals
+/// rebuild their parts.
+pub(crate) fn parse_tokens(toks: Vec<Tok>) -> Result<Expr, String> {
+    let mut p = Parser {
+        toks: derivatives(toks),
+        pos: 0,
+        pipe_depth: 0,
+        integral_depth: 0,
+    };
+    let e = p.expr()?;
+    if let Some(tok) = p.peek() {
+        return Err(unexpected(tok));
+    }
+    match crate::units::lower_statement(Statement::Expr(e)) {
+        Statement::Expr(e) => Ok(e),
+        _ => Err("Expected an expression".into()),
     }
 }
 

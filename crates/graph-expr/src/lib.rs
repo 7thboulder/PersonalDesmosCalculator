@@ -7,6 +7,7 @@ pub mod builtins;
 pub mod calculus;
 pub mod cas;
 pub mod compile;
+pub mod dots;
 mod fastsum;
 pub mod format;
 pub mod interval;

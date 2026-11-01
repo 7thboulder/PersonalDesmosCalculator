@@ -132,6 +132,18 @@ on the right. What you type is graphed as you type it:
   Giac answer is checked numerically at several points before it is
   shown, and the last step says whether it passed. Giac runs in its own
   process: Esc stops it, and it gives up after 30 seconds.
+- `...` (or `\ldots`, `\cdots`) for repetition outside lists, as on paper.
+  The terms before the dots set the pattern and the one after ends it:
+  `1+2+...+10` and `x_1x_2...x_3` are written out, and `1+2+...+n` or
+  `1^2+2^2+...+n^2` become Σ (`2\cdot4\cdot...\cdot2n` becomes ∏) so they
+  follow a slider. An n-fold integral such as
+  `\int_1^2\int_2^3...\int_n^{n+1} f(x_1x_2...x_n) dx_1dx_2...dx_n` (or
+  `\int_0^1\int_0^1...\int_0^1`) gives no warning, and Solve works it out
+  when the integrand depends only on the product of the variables, built
+  from powers and its logarithm: it splits the integral into one-variable
+  ones and finds the product and sum in closed form (factorials, sums of
+  powers, logarithms that telescope). The answer is checked against the
+  integral worked out numerically for n = 1, 2, 3.
 - Undo and redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and the arrows at the top.
 - On-screen keypad: the keyboard button at the bottom left (or Ctrl+Alt+K)
   opens Desmos's keypad, with its 123, ABC and functions panels. Its keys
