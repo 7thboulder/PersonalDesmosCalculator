@@ -48,6 +48,8 @@ USAGE:
                                        takes it (warnings go to stderr)
     graphcalc --analyze                read the panel's rows as JSON on stdin and
                                        print the engine's reply, for testing
+    graphcalc --graph-block            draw a document's graph block, read as JSON
+                                       on stdin, and print it as a PNG data URL
     graphcalc --solve LATEX [OP [SEEDS [DERIVS...]]]
                                        run the Solve button on one row and print
                                        the working as JSON (OP as in its choices,
@@ -90,6 +92,17 @@ fn run(args: &[String]) -> Result<(), String> {
             let rows: serde_json::Value =
                 serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
             println!("{}", engine::Engine::default().update(&rows));
+            Ok(())
+        }
+        Some("--graph-block") => {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let ask: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
+            let gpu = graph_render::Gpu::new(&graph_render::new_instance(), None)?;
+            let mut text = graph_core::TextAtlas::system();
+            println!("{}", headless::block_image(&gpu, &mut text, &ask)?);
             Ok(())
         }
         Some("--solve") => {

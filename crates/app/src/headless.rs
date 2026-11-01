@@ -42,6 +42,95 @@ fn write_png(path: &str, width: u32, height: u32, pixels: &[u8]) -> Result<(), S
     writer.write_image_data(pixels).map_err(|e| e.to_string())
 }
 
+/// Rows as a graph block keeps them, ready for the engine: numbered from 1,
+/// with Desmos's colors for rows that have none.
+pub fn block_rows(rows: &serde_json::Value) -> serde_json::Value {
+    let mut out = Vec::new();
+    for (i, r) in rows.as_array().into_iter().flatten().enumerate() {
+        let mut r = r.clone();
+        if !r.is_object() {
+            continue;
+        }
+        if r["id"].as_u64().is_none() {
+            r["id"] = json!(i + 1);
+        }
+        if r["color"].as_str().is_none() {
+            let c = DESMOS_COLORS[i % DESMOS_COLORS.len()];
+            r["color"] = json!(format!(
+                "#{:02x}{:02x}{:02x}",
+                (c[0] * 255.0).round() as u8,
+                (c[1] * 255.0).round() as u8,
+                (c[2] * 255.0).round() as u8
+            ));
+        }
+        out.push(r);
+    }
+    serde_json::Value::Array(out)
+}
+
+/// A document's graph block drawn offscreen as a PNG: `rows` centred on
+/// (`x`, `y`), `units` across, `width` x `height` pixels at `scale` (the
+/// screen's pixels per CSS pixel, for line widths and labels).
+#[allow(clippy::too_many_arguments)]
+pub fn block_png(
+    gpu: &Gpu,
+    text: &mut TextAtlas,
+    rows: &serde_json::Value,
+    [x, y, units]: [f64; 3],
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Result<Vec<u8>, String> {
+    let (width, height) = (width.clamp(16, 4096), height.clamp(16, 4096));
+    let mut vp = Viewport::new(width as f64, height as f64);
+    vp.center = [x, y];
+    if units.is_finite() && units > 0.0 {
+        vp.units_per_px = units / width as f64;
+    }
+    let mut engine = Engine::default();
+    engine.update(&block_rows(rows));
+    let scene = engine.with_plot(&vp, scale, |plot| build_scene(&vp, scale, plot, text));
+    let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, scale);
+    let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
+    let pixels = render_offscreen(gpu, width, height, &scene, text, &shadings, &fractals);
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer
+            .write_image_data(&pixels)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(png_bytes)
+}
+
+/// A graph block the document asked for, `{rows, view: {x, y, w}, width,
+/// height, scale}`, as a PNG data URL for an <img>.
+pub fn block_image(
+    gpu: &Gpu,
+    text: &mut TextAtlas,
+    ask: &serde_json::Value,
+) -> Result<String, String> {
+    let num = |v: &serde_json::Value, d: f64| v.as_f64().filter(|n| n.is_finite()).unwrap_or(d);
+    let view = &ask["view"];
+    let png = block_png(
+        gpu,
+        text,
+        &ask["rows"],
+        [
+            num(&view["x"], 0.0),
+            num(&view["y"], 0.0),
+            num(&view["w"], 20.0),
+        ],
+        num(&ask["width"], 600.0) as u32,
+        num(&ask["height"], 360.0) as u32,
+        num(&ask["scale"], 1.0).clamp(0.5, 4.0) as f32,
+    )?;
+    Ok(format!("data:image/png;base64,{}", crate::ui::base64(&png)))
+}
+
 pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Result<(), String> {
     let gpu = Gpu::new(&new_instance(), None)?;
     let mut vp = Viewport::new(width as f64, height as f64);
@@ -1146,6 +1235,40 @@ pub fn desmos_script() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn graph_blocks_draw_their_rows_in_their_view() {
+        let rows = serde_json::json!([{ "latex": "y=1" }, { "latex": "a=2", "color": "#2d70b3" }]);
+        let rows = super::block_rows(&rows);
+        assert_eq!(rows[0]["id"], 1);
+        assert_eq!(rows[1]["color"], "#2d70b3");
+        assert!(rows[0]["color"].as_str().unwrap().starts_with('#'));
+        let Ok(gpu) = graph_render::Gpu::new(&graph_render::new_instance(), None) else {
+            return;
+        };
+        let mut text = graph_core::TextAtlas::system();
+        let (w, h) = (200u32, 100u32);
+        // y = 1 crosses the middle of a view centred on (0, 1).
+        let png = super::block_png(&gpu, &mut text, &rows, [0.0, 1.0, 10.0], w, h, 1.0).unwrap();
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().unwrap();
+        let mut px = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut px).unwrap();
+        let at = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [px[i], px[i + 1], px[i + 2]]
+        };
+        let red = |c: [u8; 3]| c[0] > 150 && c[1] < 120 && c[2] < 120;
+        assert!((h / 2 - 2..=h / 2 + 2).any(|y| red(at(w / 3, y))));
+        assert!(!red(at(w / 3, 10)));
+        let url = super::block_image(
+            &gpu,
+            &mut text,
+            &serde_json::json!({ "rows": [{ "latex": "y=x" }], "width": 50, "height": 40 }),
+        )
+        .unwrap();
+        assert!(url.starts_with("data:image/png;base64,iVBOR"));
+    }
+
     #[test]
     fn suite_3d_graphs_open_in_3d_and_the_desmos_script_is_current() {
         for (name, state) in super::SUITE_3D {

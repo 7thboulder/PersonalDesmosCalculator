@@ -5,6 +5,7 @@
 use crate::docs;
 use crate::engine::Engine;
 use crate::files::{self, BoxView, Document, Space};
+use crate::headless;
 use crate::interact::{Effect, Interaction};
 use graph_core::{build_scene_cached, LineCache, TextAtlas, View3, Viewport};
 use graph_expr::Mode;
@@ -125,6 +126,17 @@ struct Running {
     doc_view: bool,
     /// The open document and the library folder, remembered across starts.
     docs: docs::State,
+    /// A document's graph block open in the graph view, with the graph it
+    /// took the place of.
+    block_edit: Option<BlockEdit>,
+}
+
+/// The calculator's own graph, put aside while a graph block is edited.
+struct BlockEdit {
+    doc: Document,
+    rows: serde_json::Value,
+    viewport: Viewport,
+    space: Space,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -326,6 +338,7 @@ impl Running {
             proxy,
             doc_view: false,
             docs: docs::read_state(),
+            block_edit: None,
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -681,7 +694,28 @@ impl Running {
                 let command = command.to_owned();
                 self.file_command(&command);
             }
-            Some("view") => self.set_view(value["view"] == "doc"),
+            Some("view") => {
+                let doc_view = value["view"] == "doc";
+                if doc_view && self.block_edit.is_some() {
+                    self.end_block_edit(true);
+                } else {
+                    self.set_view(doc_view);
+                }
+            }
+            // A graph block drawn for the page.
+            Some("docGraph") => {
+                let reply = match headless::block_image(&self.gpu, &mut self.text, &value) {
+                    Ok(png) => {
+                        serde_json::json!({ "id": value["id"], "seq": value["seq"], "png": png })
+                    }
+                    Err(e) => {
+                        serde_json::json!({ "id": value["id"], "seq": value["seq"], "error": e })
+                    }
+                };
+                self.doc_reply("graphRendered", reply);
+            }
+            Some("graphEdit") => self.start_block_edit(&value),
+            Some("graphDone") => self.end_block_edit(true),
             Some("docInit") => self.doc_init(),
             Some("docSave") => self.doc_save(&value),
             Some("docSaveAs") => self.doc_save_as(&value),
@@ -735,10 +769,16 @@ impl Running {
             }
             Some("rows") => {
                 self.rows = value["rows"].clone();
-                self.doc.rows_changed(&self.rows);
-                self.update_title();
-                if !self.smoke_test && self.autosave_due.is_none() {
-                    self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
+                if self.block_edit.is_some() {
+                    // The document keeps the block's rows as they change.
+                    let reply = serde_json::json!({ "rows": self.rows, "done": false });
+                    self.doc_reply("graphEdited", reply);
+                } else {
+                    self.doc.rows_changed(&self.rows);
+                    self.update_title();
+                    if !self.smoke_test && self.autosave_due.is_none() {
+                        self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
+                    }
                 }
                 let results = self.engine.update(&value["rows"]);
                 self.rows_received = true;
@@ -750,11 +790,89 @@ impl Running {
     }
 
     fn update_title(&self) {
-        self.window.set_title(&self.doc.title());
+        if self.block_edit.is_some() {
+            self.window.set_title("Graph in a document");
+        } else {
+            self.window.set_title(&self.doc.title());
+        }
+    }
+
+    /// Opens a document's graph block in the graph view: its rows and view
+    /// replace the graph until Done, which puts the graph back.
+    fn start_block_edit(&mut self, value: &serde_json::Value) {
+        if self.block_edit.is_none() {
+            self.block_edit = Some(BlockEdit {
+                doc: std::mem::take(&mut self.doc),
+                rows: self.rows.clone(),
+                viewport: self.viewport,
+                space: self.space(),
+            });
+        }
+        self.set_mode(false);
+        let area = self.graph_area();
+        let mut vp = Viewport::new(area.width as f64, area.height as f64);
+        let view = &value["view"];
+        if let (Some(x), Some(y), Some(w)) =
+            (view["x"].as_f64(), view["y"].as_f64(), view["w"].as_f64())
+        {
+            if w > 0.0 && w.is_finite() {
+                vp.center = [x, y];
+                vp.units_per_px = w / area.width.max(1) as f64;
+            }
+        }
+        self.viewport = vp;
+        let rows = headless::block_rows(&value["rows"]);
+        let title = serde_json::Value::String(value["title"].as_str().unwrap_or("").to_owned());
+        self.run_script(&format!("window.engine.load({rows})"));
+        self.run_script(&format!("window.engine.blockMode({title})"));
+        self.set_view(false);
+        self.update_title();
+        self.window.request_redraw();
+    }
+
+    /// Ends editing a graph block: the document gets its rows and view, and
+    /// the graph that was put aside comes back.
+    fn end_block_edit(&mut self, to_doc: bool) {
+        let Some(saved) = self.block_edit.take() else {
+            if to_doc {
+                self.set_view(true);
+            }
+            return;
+        };
+        let area = self.graph_area();
+        let view = serde_json::json!({
+            "x": self.viewport.center[0],
+            "y": self.viewport.center[1],
+            "w": self.viewport.units_per_px * area.width as f64,
+        });
+        self.doc_reply(
+            "graphEdited",
+            serde_json::json!({ "rows": self.rows, "view": view, "done": true }),
+        );
+        self.doc = saved.doc;
+        self.viewport = saved.viewport;
+        self.apply_space(saved.space);
+        let rows = saved.rows.clone();
+        self.rows = saved.rows;
+        self.run_script("window.engine.blockMode(null)");
+        self.run_script(&format!("window.engine.load({rows})"));
+        if to_doc {
+            self.set_view(true);
+        }
+        self.update_title();
+        self.window.request_redraw();
     }
 
     /// New, open, save or save as, from the panel's menu or a shortcut.
     fn file_command(&mut self, command: &str) {
+        if self.block_edit.is_some() {
+            // The document saves the block itself; anything else puts the
+            // graph back first.
+            if command == "save" || command == "saveAs" {
+                return;
+            }
+            self.end_block_edit(false);
+        }
         match command {
             "new" => {
                 if self.keep_changes() {
@@ -841,6 +959,7 @@ impl Running {
     /// A Desmos graph pasted into the panel: a desmos.com link, which is
     /// fetched, or the text `Calc.getState()` gives, which opens at once.
     fn paste(&mut self, text: &str) {
+        self.end_block_edit(false);
         if let Some(url) = files::desmos_link(text) {
             if self.keep_changes() {
                 return;
@@ -921,8 +1040,10 @@ impl Running {
         let Some(path) = files::autosave_path() else {
             return;
         };
-        let contents =
-            files::autosave_contents(&self.doc, &self.rows, &self.viewport, &self.space());
+        let contents = match &self.block_edit {
+            Some(b) => files::autosave_contents(&b.doc, &b.rows, &b.viewport, &b.space),
+            None => files::autosave_contents(&self.doc, &self.rows, &self.viewport, &self.space()),
+        };
         // Losing the autosave is not worth interrupting anyone over.
         let _ = files::write_autosave(&path, &contents);
     }

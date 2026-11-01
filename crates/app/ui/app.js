@@ -2576,6 +2576,13 @@
       forgetHistory();
       loadRows(saved);
     },
+    // A document's graph block is open (its document's title), or null
+    // once it is back in the document.
+    blockMode: function (title) {
+      var bar = document.getElementById('block-bar');
+      bar.hidden = title == null;
+      if (title != null) bar.querySelector('b').textContent = title;
+    },
     // The graph for Desmos, after Export to Desmos in the menu.
     exported: showExport,
     info: function (adapter) {
@@ -2644,6 +2651,9 @@
 
   // The document view (doc.js) types with the same editor settings.
   window.panel = { mathOptions: MATH_OPTIONS, send: send };
+  document.getElementById('block-done').addEventListener('click', function () {
+    if (window.doc) window.doc.show(true);
+  });
   document.getElementById('to-doc').addEventListener('click', function () {
     if (window.doc) window.doc.show(true);
   });

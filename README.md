@@ -258,6 +258,16 @@ The plan for this mode is in the
   definitions. It runs in the background, so the page keeps working and
   Esc stops waiting; **Insert steps** writes the working below the line as
   steps you can edit.
+- Graph blocks: a live line that draws a curve gets a **Graph** button
+  (or Ctrl+Shift+G), which puts it in a graph block under the line. More
+  lines can go in the same block. The block is drawn by the calculator's
+  own engine and follows the lines it came from, along with the live
+  definitions above it. Drag to pan, scroll to zoom. **Open in graph
+  view** (or Shift+Enter, or a double-click) opens the block in the
+  calculator, in place of your graph, which comes back when you press
+  **Done**. Changes made there are saved into the document, which keeps
+  every block's rows, so the file stands on its own. Blocks print in the
+  PDF.
 
 ### Special functions
 

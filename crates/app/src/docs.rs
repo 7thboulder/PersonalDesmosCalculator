@@ -40,6 +40,30 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
                 let level = line["level"].as_u64().unwrap_or(1).clamp(1, 3);
                 json!({ "type": "heading", "level": level, "text": text("text") })
             }
+            // A graph block keeps the calculator's rows as they were sent,
+            // its view (centre and width in graph units) and its height.
+            "graph" => {
+                let rows: Vec<Value> = line["rows"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|r| r.is_object())
+                    .cloned()
+                    .collect();
+                let num = |v: &Value| v.as_f64().filter(|n| n.is_finite());
+                let view = &line["view"];
+                let view = match (num(&view["x"]), num(&view["y"]), num(&view["w"])) {
+                    (Some(x), Some(y), Some(w)) if w > 0.0 => json!({ "x": x, "y": y, "w": w }),
+                    _ => json!({ "x": 0.0, "y": 0.0, "w": 20.0 }),
+                };
+                let height = num(&line["height"]).unwrap_or(320.0).clamp(120.0, 1200.0);
+                let mut graph =
+                    json!({ "type": "graph", "rows": rows, "view": view, "height": height });
+                if let Some(id) = line["id"].as_str().filter(|id| is_id(id)) {
+                    graph["id"] = Value::String(id.to_owned());
+                }
+                graph
+            }
             _ => {
                 let mut math = json!({ "type": "math", "latex": text("latex") });
                 // A step continues the group of steps above it; a group's
@@ -284,6 +308,7 @@ mod tests {
                 { "type": "text", "text": "Evaluate $\\int_0^1 x^2dx$." },
                 { "type": "math", "latex": "I=\\frac{1}{3}", "id": "g1", "live": true },
                 { "type": "math", "latex": "=1/3", "step": true, "id": "bad id!" },
+                { "type": "graph", "id": "g9", "rows": [{ "latex": "y=x^2", "src": "g1", "color": "#c74440" }, 7], "view": { "x": 1, "y": 2, "w": "wide" }, "height": 5000 },
                 { "type": "mystery", "latex": "x" }
             ]
         });
@@ -298,8 +323,16 @@ mod tests {
         assert!(back["lines"][2]["step"].is_null());
         assert_eq!(back["lines"][2]["live"], true);
         assert!(back["lines"][3]["live"].is_null());
+        // Graph blocks keep their rows; a bad view or height is put right.
+        let g = &back["lines"][4];
+        assert_eq!(g["type"], "graph");
+        assert_eq!(g["id"], "g9");
+        assert_eq!(g["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(g["rows"][0]["src"], "g1");
+        assert_eq!(g["view"]["w"], 20.0);
+        assert_eq!(g["height"], 1200.0);
         // Unknown kinds read as math lines.
-        assert_eq!(back["lines"][4]["type"], "math");
+        assert_eq!(back["lines"][5]["type"], "math");
     }
 
     #[test]
