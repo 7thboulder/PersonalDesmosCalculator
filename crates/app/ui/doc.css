@@ -275,6 +275,74 @@ body.doc-view #doc {
 }
 .dline.math.has-solve > .dlive { top: 23px; }
 
+/* The Graph button of a live line that draws a curve. */
+.dline .dgraphbtn {
+  display: none;
+  position: absolute;
+  right: 8px;
+  top: 4px;
+  padding: 1px 7px;
+  border: 1px solid #c8d3e6;
+  border-radius: 4px;
+  background: #fff;
+  color: #2f72dc;
+  font: 600 11px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+.dline.math.graphable:hover .dgraphbtn, .dline.math.graphable.focused .dgraphbtn { display: block; }
+
+/* A graph block: the calculator's picture of its rows. */
+.dline.graph { grid-template-columns: 40px minmax(0, 1fr); padding: 6px 0; outline: none; }
+.dgraph {
+  position: relative;
+  margin-right: 14px;
+  border: 1px solid #dfe3e8;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+  cursor: grab;
+}
+.dgraph:active { cursor: grabbing; }
+.dline.graph.focused .dgraph { border-color: #7aa3e8; box-shadow: 0 0 0 1px #7aa3e8; }
+.dgraph img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: center;
+  pointer-events: none;
+}
+.dgraph-bar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.dline.graph:hover .dgraph-bar, .dline.graph.focused .dgraph-bar { opacity: 1; }
+.dgraph-bar button {
+  padding: 3px 8px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #333;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+.dgraph-bar button:hover { background: #f2f2f2; }
+.dgraph-bar .dgraph-open { color: #2f72dc; font-weight: 600; }
+.dgraph-note {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  right: 10px;
+  color: #888;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  pointer-events: none;
+}
+.dgraph-note:empty { display: none; }
+
 /* Solve's working, under the line. */
 .dsolve {
   grid-column: 2 / -1;
@@ -516,6 +584,7 @@ body.doc-view #doc {
   .mq-slot { color: #999; }
   .dref, .dref.missing { color: #000; }
   .mq-editable-field .mq-cursor { display: none !important; }
-  .dline .dlive, .dline .dres .dwarn, .dsolve { display: none !important; }
+  .dline .dlive, .dline .dres .dwarn, .dsolve, .dgraphbtn, .dgraph-bar, .dgraph-note { display: none !important; }
+  .dgraph { border-color: #ccc; box-shadow: none !important; }
   .dline .dres { color: #333; overflow: visible; max-width: none; }
 }

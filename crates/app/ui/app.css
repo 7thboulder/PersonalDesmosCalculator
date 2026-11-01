@@ -27,6 +27,28 @@ html, body {
   border-bottom: 1px solid #ccc;
 }
 #topbar .spacer { flex: 1; }
+/* A document's graph block is open in the graph view. */
+#block-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #eef4fd;
+  border-bottom: 1px solid #c8d8f2;
+  font-size: 13px;
+  color: #33507a;
+}
+#block-bar[hidden] { display: none; }
+#block-bar .what { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#block-bar button {
+  padding: 3px 12px;
+  border: 1px solid #2f72dc;
+  border-radius: 4px;
+  background: #2f72dc;
+  color: #fff;
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
 #mode {
   display: flex;
   margin-left: 6px;

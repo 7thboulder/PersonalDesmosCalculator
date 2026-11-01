@@ -116,6 +116,20 @@ jobs:
           Get-Content render.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
+      - name: Graph block render
+        # A document's graph block, drawn the way the page asks for it.
+        shell: pwsh
+        run: |
+          '{"rows":[{"latex":"a=2"},{"latex":"y=a\\sin\\left(x\\right)"},{"latex":"y=x^2-3"}],"view":{"x":1,"y":0,"w":16},"width":1200,"height":640,"scale":2}' | Set-Content block.json
+          $p = Start-Process -FilePath ./target/release/graphcalc.exe `
+            -ArgumentList '--graph-block' -RedirectStandardInput block.json `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput block.txt
+          if ($p.ExitCode -ne 0) { Get-Content block.txt; exit 1 }
+          $url = (Get-Content block.txt -Raw).Trim()
+          if (-not $url.StartsWith('data:image/png;base64,')) { "unexpected: $($url.Substring(0, [Math]::Min(200, $url.Length)))"; exit 1 }
+          [IO.File]::WriteAllBytes("$PWD/block.png", [Convert]::FromBase64String($url.Substring(22)))
+          "block.png is {0:N0} bytes" -f (Get-Item block.png).Length
+
       - name: Slider benchmark
         # Simulates dragging a slider that nine curves depend on. On the
         # software adapter only the app's own per-frame work is judged.
@@ -174,6 +188,7 @@ jobs:
           name: test-images
           path: |
             render.png
+            block.png
             window.png
             smoke.txt
             bench.txt

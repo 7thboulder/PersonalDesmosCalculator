@@ -90,6 +90,15 @@
     dot.addEventListener('mousedown', function (e) { e.preventDefault(); });
     dot.addEventListener('click', function () { setLive([line], !line.live); });
     el.appendChild(dot);
+    // A live line that draws a curve can go in a graph block below it.
+    var gb = document.createElement('button');
+    gb.className = 'dgraphbtn';
+    gb.tabIndex = -1;
+    gb.title = 'Graph this line (Ctrl+Shift+G)';
+    gb.textContent = 'Graph';
+    gb.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    gb.addEventListener('click', function () { graphLine(line); });
+    el.appendChild(gb);
     el.classList.toggle('live', line.live);
     line.field = MQ.MathField(span, mathOptions({
       edit: function () { changed(); },
@@ -425,6 +434,7 @@
   function isEmpty(line) {
     if (!line) return false;
     if (line.kind === 'math') return line.field.latex() === '';
+    if (line.kind === 'graph') return false;
     return lineText(line) === '';
   }
 
@@ -434,7 +444,9 @@
     // Moving down lands at the end of a math line, as between Desmos rows,
     // and at the start of text.
     if (where === 'down') where = line.kind === 'math' ? 'end' : 'start';
-    if (line.kind === 'math') {
+    if (line.kind === 'graph') {
+      line.el.focus();
+    } else if (line.kind === 'math') {
       line.field.focus();
       if (where === 'start') line.field.moveToLeftEnd(); else line.field.moveToRightEnd();
     } else {
@@ -905,6 +917,7 @@
 
   function evaluate() {
     clearTimeout(evalTimer);
+    redrawGraphs();
     var live = liveLines();
     lines.forEach(function (l) { if (l.kind === 'math' && !l.live) showResult(l, null); });
     if (!live.length) { evalSent = null; return; }
@@ -933,6 +946,7 @@
       }
       else if (r.value != null && r.slider == null) value = '=' + r.value;
     }
+    line.el.classList.toggle('graphable', !!(r && line.live && r.graphed && !warn));
     var key = JSON.stringify([value, warn]);
     if (line.resKey === key) return;
     line.resKey = key;
@@ -1181,6 +1195,265 @@
 
   // ---- The whole document --------------------------------------------------
 
+  // ---- Graph blocks --------------------------------------------------------
+
+  // A graph block draws its rows with the calculator's engine, off screen,
+  // as an image. Rows that came from a line of the document follow that
+  // line (src is its id), and the live definitions above the block are
+  // there too, so a = 3 on a live line above sets a.
+  var GRAPH_HEIGHT = 320;
+  var graphSeq = 0;
+  var editingGraph = null;
+
+  function defaultView() { return { x: 0, y: 0, w: 20 }; }
+
+  function lineById(id) {
+    return lines.filter(function (l) { return l.kind === 'math' && l.id === id; })[0] || null;
+  }
+
+  // The block's rows with linked rows brought up to date, and the live
+  // definitions above it that its rows don't make themselves.
+  function graphRows(line, forEditing) {
+    var own = line.rows.map(function (r) {
+      var copy = Object.assign({}, r);
+      var from = r.src ? lineById(r.src) : null;
+      if (from) copy.latex = evalLatex(from.field.latex());
+      return copy;
+    });
+    var named = {};
+    own.forEach(function (r) {
+      var n = definedName(r.latex || '');
+      if (n) named[n] = true;
+    });
+    var latest = {};
+    var order = [];
+    lines.slice(0, indexOf(line)).forEach(function (l) {
+      if (l.kind !== 'math' || !l.live) return;
+      var latex = evalLatex(l.field.latex());
+      var n = definedName(latex);
+      if (!n || named[n]) return;
+      if (!(n in latest)) order.push(n);
+      latest[n] = { latex: latex, src: l.id };
+    });
+    var context = order.map(function (n, k) {
+      var r = { latex: latest[n].latex, src: latest[n].src };
+      if (!forEditing) { r.id = CONTEXT_ID + k; r.hidden = true; }
+      return r;
+    });
+    return context.concat(own);
+  }
+
+  function makeGraph(block, at) {
+    var el = lineShell('graph');
+    el.tabIndex = 0;
+    var line = {
+      kind: 'graph', el: el, id: block.id || newId(),
+      rows: (block.rows || []).filter(function (r) { return r && typeof r === 'object'; }),
+      view: block.view && block.view.w > 0 ? block.view : defaultView(),
+      height: block.height > 0 ? block.height : GRAPH_HEIGHT,
+      shown: null, inflight: false, again: false
+    };
+    var box = document.createElement('div');
+    box.className = 'dgraph';
+    box.style.height = line.height + 'px';
+    var img = document.createElement('img');
+    img.alt = 'Graph';
+    img.draggable = false;
+    box.appendChild(img);
+    var bar = document.createElement('div');
+    bar.className = 'dgraph-bar';
+    [['open', 'Open in graph view', function () { openGraph(line); }],
+      ['home', 'Reset the view', function () { line.view = defaultView(); changed(); drawGraph(line); }],
+      ['remove', 'Remove the graph', function () {
+        var i = indexOf(line);
+        removeLine(line);
+        focusLine(Math.min(i, lines.length - 1), 'end');
+        changed();
+      }]].forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.className = 'dgraph-' + b[0];
+      btn.textContent = b[1];
+      btn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      btn.addEventListener('click', b[2]);
+      bar.appendChild(btn);
+    });
+    box.appendChild(bar);
+    var note = document.createElement('div');
+    note.className = 'dgraph-note';
+    box.appendChild(note);
+    el.appendChild(box);
+    line.box = box;
+    line.img = img;
+    line.note = note;
+
+    // Drag to pan, scroll to zoom about the pointer, as on the graph.
+    var drag = null;
+    box.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      el.focus();
+      drag = { x: e.clientX, y: e.clientY, view: Object.assign({}, line.view) };
+    });
+    window.addEventListener('mousemove', function (e) {
+      if (!drag) return;
+      var per = drag.view.w / box.clientWidth;
+      line.view = { x: drag.view.x - (e.clientX - drag.x) * per, y: drag.view.y + (e.clientY - drag.y) * per, w: drag.view.w };
+      placeImage(line);
+      drawGraph(line);
+    });
+    window.addEventListener('mouseup', function () {
+      if (!drag) return;
+      drag = null;
+      changed();
+    });
+    box.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var r = box.getBoundingClientRect();
+      var per = line.view.w / r.width;
+      var px = e.clientX - r.left - r.width / 2;
+      var py = e.clientY - r.top - r.height / 2;
+      var wx = line.view.x + px * per;
+      var wy = line.view.y - py * per;
+      var f = Math.pow(1.0015, e.deltaY);
+      var w = Math.min(1e12, Math.max(1e-9, line.view.w * f));
+      per = w / r.width;
+      line.view = { x: wx - px * per, y: wy + py * per, w: w };
+      placeImage(line);
+      drawGraph(line);
+      clearTimeout(line.wheelTimer);
+      line.wheelTimer = setTimeout(changed, 300);
+    }, { passive: false });
+    box.addEventListener('dblclick', function (e) {
+      if (!e.target.closest('button')) openGraph(line);
+    });
+
+    el.addEventListener('keydown', function (e) {
+      if (e.target !== el) return;
+      var i = indexOf(line);
+      var handled = true;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') focusLine(i - 1, 'end');
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        if (i + 1 < lines.length) focusLine(i + 1, 'start');
+        else focusLine(i + 1, 'start', newMath('', i + 1));
+      } else if (e.key === 'Enter' && !e.ctrlKey && !e.altKey) {
+        if (e.shiftKey) openGraph(line);
+        else { focusLine(i + 1, 'start', newMath('', i + 1)); changed(); }
+      } else if (e.key === 'Backspace' || e.key === 'Delete') {
+        removeLine(line);
+        focusLine(e.key === 'Backspace' ? Math.max(0, i - 1) : Math.min(i, lines.length - 1), 'end');
+        changed();
+      } else handled = false;
+      if (handled) { e.preventDefault(); e.stopPropagation(); }
+    });
+    insertLine(line, at);
+    setTimeout(function () { drawGraph(line); }, 0);
+    return line;
+  }
+
+  // While a new image is drawn, the last one moves with the view.
+  function placeImage(line) {
+    var s = line.shown;
+    if (!s) return;
+    var w = line.box.clientWidth;
+    var k = s.w / line.view.w;
+    var dx = (s.x - line.view.x) / line.view.w * w;
+    var dy = -(s.y - line.view.y) / line.view.w * w;
+    line.img.style.transform = 'translate(' + dx + 'px,' + dy + 'px) scale(' + k + ')';
+  }
+
+  // Asks the engine for the block's picture; one request at a time.
+  function drawGraph(line) {
+    if (indexOf(line) < 0) return;
+    if (line.inflight) { line.again = true; return; }
+    var width = line.box.clientWidth;
+    if (!width) { setTimeout(function () { drawGraph(line); }, 100); return; }
+    var ask = {
+      type: 'docGraph', id: line.id, rows: graphRows(line, false), view: Object.assign({}, line.view),
+      width: Math.round(width * scale()), height: Math.round(line.height * scale()), scale: scale()
+    };
+    // Nothing changed since the picture showing was drawn.
+    var key = JSON.stringify(ask);
+    if (key === line.drawnKey) return;
+    line.inflight = true;
+    line.again = false;
+    line.seq = ++graphSeq;
+    line.asked = ask.view;
+    line.askedKey = key;
+    ask.seq = line.seq;
+    send(ask);
+  }
+
+  // Sharp on screen and in print.
+  function scale() { return Math.max(2, window.devicePixelRatio || 1); }
+
+  function graphRendered(reply) {
+    var line = lines.filter(function (l) { return l.kind === 'graph' && l.id === reply.id; })[0];
+    if (!line || reply.seq !== line.seq) return;
+    line.inflight = false;
+    if (reply.png) {
+      line.img.src = reply.png;
+      line.shown = line.asked;
+      line.drawnKey = line.askedKey;
+      placeImage(line);
+      line.note.textContent = '';
+    } else if (reply.error) {
+      line.note.textContent = reply.error;
+    }
+    var empty = !line.rows.length;
+    line.el.classList.toggle('empty', empty);
+    if (empty) line.note.textContent = 'Graph a live line with its Graph button, or open this in the graph view to add curves.';
+    if (line.again) drawGraph(line);
+  }
+
+  function redrawGraphs() {
+    lines.forEach(function (l) { if (l.kind === 'graph') drawGraph(l); });
+  }
+
+  // The Graph button: the line goes into the graph block under it (or under
+  // its group of steps), which is made if there is none.
+  function graphLine(line) {
+    if (!line || line.kind !== 'math') return;
+    if (!line.live) setLive([line], true);
+    var i = indexOf(line);
+    var end = i;
+    while (end + 1 < lines.length && lines[end + 1].kind === 'math' && lines[end + 1].step) end++;
+    var block = lines[end + 1] && lines[end + 1].kind === 'graph' ? lines[end + 1] : null;
+    if (!block) block = makeGraph({}, end + 1);
+    var have = block.rows.some(function (r) { return r.src === line.id; });
+    if (!have) block.rows.push({ latex: evalLatex(line.field.latex()), src: line.id });
+    changed();
+    drawGraph(block);
+    block.el.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Opens the block in the graph view; its rows come back as they change
+  // and its view when Done.
+  function openGraph(line) {
+    editingGraph = { line: line, sent: graphRows(line, true) };
+    send({ type: 'graphEdit', rows: editingGraph.sent, view: line.view, title: titleEl.value || 'Untitled' });
+    show(false);
+  }
+
+  function graphEdited(msg) {
+    var e = editingGraph;
+    if (!e || indexOf(e.line) < 0) { editingGraph = null; return; }
+    // A row keeps its link to a line while it reads the same.
+    var linked = {};
+    e.sent.forEach(function (r) { if (r.src) linked[r.latex] = r.src; });
+    e.line.rows = (msg.rows || []).filter(function (r) {
+      return r && (r.latex || r.note || r.table || r.matrix);
+    }).map(function (r) {
+      var copy = Object.assign({}, r);
+      delete copy.id;
+      if (!copy.src && linked[copy.latex]) copy.src = linked[copy.latex];
+      return copy;
+    });
+    if (msg.view && msg.view.w > 0) e.line.view = msg.view;
+    if (msg.done) editingGraph = null;
+    changed();
+    drawGraph(e.line);
+  }
+
   function serialize() {
     return {
       format: 'graphcalc-document',
@@ -1192,6 +1465,9 @@
           if (l.step) m.step = true; else m.id = l.id;
           if (l.live) m.live = true;
           return m;
+        }
+        if (l.kind === 'graph') {
+          return { type: 'graph', id: l.id, rows: l.rows, view: l.view, height: l.height };
         }
         var text = lineText(l);
         if (l.kind === 'heading') return { type: 'heading', level: l.level, text: text };
@@ -1207,6 +1483,7 @@
     (doc.lines || []).forEach(function (l, i) {
       if (l.type === 'text') newText(l.text, 'text', 1, i);
       else if (l.type === 'heading') newText(l.text, 'heading', l.level || 1, i);
+      else if (l.type === 'graph') makeGraph(l, i);
       else newMath(l.latex || '', i, { step: !!l.step, id: l.id, live: !!l.live });
     });
     if (!lines.length) newMath('', 0);
@@ -1493,6 +1770,8 @@
       }
     } else if (ctrl && e.altKey && !e.shiftKey && k === 's') {
       solveLine(currentLine(), null);
+    } else if (ctrl && e.shiftKey && !e.altKey && k === 'g') {
+      graphLine(currentLine());
     }
     else if (ctrl && !e.altKey && !e.shiftKey && k === 'p') openPdf();
     else if (scBox.classList.contains('open') && !(ctrl && e.altKey)) handled = false;
@@ -1786,6 +2065,8 @@
 
   window.doc = {
     show: show,
+    graphRendered: graphRendered,
+    graphEdited: graphEdited,
     init: function (info) {
       library.folder = info.library || '';
       root.querySelector('.side-foot .folder').textContent = library.folder;

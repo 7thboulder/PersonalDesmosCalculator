@@ -22,6 +22,10 @@
     <button id="help" class="icon" title="Functions and keyboard shortcuts (Ctrl+/)">?</button>
     <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
   </div>
+  <div id="block-bar" hidden>
+    <span class="what">Graph in <b></b></span>
+    <button id="block-done" title="Back to the document (Ctrl+Alt+D)">Done</button>
+  </div>
   <div id="list"></div>
   <div id="keypad"></div>
   <div id="status">
@@ -147,6 +151,8 @@
         <tr><td>Ctrl+L, or the dot by a line</td><td>Make the line live: it computes, and its value shows on the right</td></tr>
         <tr><td>Ctrl+Shift+L</td><td>Make the whole group of steps live (or typeset again)</td></tr>
         <tr><td>Ctrl+Alt+S</td><td>Solve the line, with steps; Insert steps writes them below</td></tr>
+        <tr><td>Ctrl+Shift+G, or a live line's <b>Graph</b> button</td><td>Graph the line in a graph block under it; drag to pan, scroll to zoom</td></tr>
+        <tr><td>Shift+Enter on a graph, or double-click it</td><td>Open the graph in the graph view; Done brings its changes back</td></tr>
         <tr><td>Esc while solving</td><td>Stop waiting for the answer</td></tr>
         <tr><td>Ctrl+Alt+P</td><td>Next "Problem N" heading</td></tr>
         <tr><td>Tab</td><td>Next &#9633; blank in a shortcut's math</td></tr>
