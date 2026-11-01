@@ -6,6 +6,7 @@ mod convert;
 pub mod diff;
 pub mod integrate;
 pub mod latex;
+mod nfold;
 pub mod ode;
 pub mod poly;
 pub mod solve;
@@ -538,6 +539,25 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
     let mut report = Report::default();
     if source.trim().is_empty() {
         report.error = Some("Type an expression or equation first".into());
+        return report;
+    }
+    if crate::dots::is_symbolic(source) {
+        report.op = "nfold".into();
+        report.choices = vec![Choice {
+            op: "nfold".into(),
+            label: "Work out the integral".into(),
+        }];
+        let mut st = Steps::new();
+        st.push("Start with", source.to_owned());
+        let outcome = nfold::solve(source, others, &defs, &mut st);
+        report.steps = st.list;
+        match outcome {
+            Ok((result, answer)) => {
+                report.result = Some(result);
+                report.answer = answer;
+            }
+            Err(e) => report.error = Some(e),
+        }
         return report;
     }
     let form = match read(source, &defs) {

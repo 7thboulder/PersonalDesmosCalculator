@@ -1538,6 +1538,11 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
             let mut out = match (parsed, def) {
                 _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),
                 (None, _) => RowAnalysis::new(row.id, RowKind::Empty),
+                (Some(Err(e)), _) if e == crate::dots::SYMBOLIC => {
+                    // Dots of unknown length, such as an n-fold integral: fine
+                    // as written, and Solve works with it.
+                    RowAnalysis::new(row.id, RowKind::NotYet)
+                }
                 (Some(Err(e)), _) => RowAnalysis::error(row.id, e),
                 (Some(Ok(_)), Some(Err(e))) => RowAnalysis::error(row.id, e),
                 (Some(Ok(_)), Some(Ok(Def::Var(name, _)))) if env.actions.contains(&name) => {
