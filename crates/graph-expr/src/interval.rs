@@ -282,7 +282,7 @@ impl Interval {
             }),
             // Monotone increasing, undefined outside their domain.
             Sqrt | Ln | Log | Exp | Sinh | Tanh | Arcsinh | Arctan | Arcsin | Arctanh | Floor
-            | Ceil | Round
+            | Ceil | Round | Erf | Erfi | LambertW
                 if args.len() == 1 =>
             {
                 let g = |v: f64| f.eval(&[v]);
@@ -295,7 +295,7 @@ impl Interval {
                     (true, true) => Interval::EMPTY,
                 }
             }
-            Arccos if args.len() == 1 => Interval::new(f.eval(&[a.hi]), f.eval(&[a.lo])),
+            Arccos | Erfc if args.len() == 1 => Interval::new(f.eval(&[a.hi]), f.eval(&[a.lo])),
             Cosh => {
                 if a.contains(0.0) {
                     Interval::new(1.0, a.lo.cosh().max(a.hi.cosh()))

@@ -6,3 +6,4 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+libm = "0.2"

@@ -858,6 +858,13 @@ impl Parser {
             base = Some(self.script()?);
             builtin = Builtin::LogBase;
         }
+        // Li_s(x): the order is the subscript.
+        if builtin == Builtin::Polylog {
+            if !self.eat(&Tok::Underscore) {
+                return Err("Li needs its order as a subscript, like Li_2(x)".into());
+            }
+            base = Some(self.script()?);
+        }
         let mut args = if self.peek() == Some(&Tok::LParen) {
             self.paren_args()?
         } else {
