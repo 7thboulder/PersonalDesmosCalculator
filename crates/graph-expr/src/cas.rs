@@ -54,7 +54,11 @@ enum Kind {
     Definite {
         question: String,
     },
-    Derivative,
+    /// `question` works the derivative out numerically.
+    Derivative {
+        var: String,
+        question: String,
+    },
     Sum {
         question: String,
     },
@@ -71,13 +75,24 @@ enum Kind {
     },
     Ode {
         dep: String,
+        var: String,
+        /// Both sides in Giac's syntax, for the check.
+        sides: (String, String),
+        dep_giac: String,
     },
     Rewrite {
         var: Option<String>,
         original: String,
     },
-    Series,
-    Laplace,
+    Series {
+        var: String,
+        original: String,
+    },
+    Laplace {
+        inverse: bool,
+        var: String,
+        original: String,
+    },
 }
 
 /// What to ask Giac for one problem.
@@ -456,8 +471,11 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                         command = g;
                         chosen = Some("integrate".into());
                     }
-                    (Expr::Derivative(..), None) => {
-                        kind = Kind::Derivative;
+                    (Expr::Derivative(dv, _), None) => {
+                        kind = Kind::Derivative {
+                            var: dv.clone(),
+                            question: latex.into(),
+                        };
                         command = format!("simplify({g})");
                         chosen = Some("diff".into());
                     }
@@ -482,13 +500,26 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             _ => format!("simplify({g})"),
                         };
                         kind = match what.as_str() {
-                            "series" => Kind::Series,
-                            "laplace" | "ilaplace" => Kind::Laplace,
+                            "series" => Kind::Series {
+                                var: var.clone(),
+                                original: latex.into(),
+                            },
+                            "laplace" | "ilaplace" => Kind::Laplace {
+                                inverse: what == "ilaplace",
+                                var: var.clone(),
+                                original: latex.into(),
+                            },
                             "integrate" => Kind::Antiderivative {
                                 var: var.clone(),
                                 body: latex.into(),
                             },
-                            "diff" => Kind::Derivative,
+                            "diff" => Kind::Derivative {
+                                var: var.clone(),
+                                question: format!(
+                                    "\\frac{{d}}{{d{}}}\\left({latex}\\right)",
+                                    name_latex(&var)
+                                ),
+                            },
                             _ => Kind::Rewrite {
                                 var: (!used.is_empty()).then(|| var.clone()),
                                 original: latex.into(),
@@ -549,7 +580,12 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                     let var = main_var(&others);
                     let (gv, gd) = (w.names.var(&var), w.names.var(&dep));
                     command = format!("desolve({ga}={gb},{gv},{gd})");
-                    kind = Kind::Ode { dep };
+                    kind = Kind::Ode {
+                        dep,
+                        var,
+                        sides: (ga.clone(), gb.clone()),
+                        dep_giac: gd,
+                    };
                     chosen = Some("desolve".into());
                 } else {
                     let var = main_var(&used);
@@ -718,7 +754,21 @@ impl Reader<'_> {
                 break;
             }
         }
-        Ok(acc)
+        // -2*x is -(2x), so it isn't written (-2)x.
+        Ok(match acc {
+            G::Mul(mut v) if matches!(v[0], G::Neg(_)) => {
+                let G::Neg(first) = v.remove(0) else {
+                    unreachable!()
+                };
+                v.insert(0, *first);
+                G::Neg(Box::new(G::Mul(v)))
+            }
+            G::Div(a, b) if matches!(*a, G::Neg(_)) => {
+                let G::Neg(a) = *a else { unreachable!() };
+                G::Neg(Box::new(G::Div(a, b)))
+            }
+            other => other,
+        })
     }
     fn unary(&mut self) -> Result<G, String> {
         if self.eat(b'-') {
@@ -741,6 +791,12 @@ impl Reader<'_> {
         Ok(base)
     }
     fn atom(&mut self) -> Result<G, String> {
+        // Giac writes square roots of constants as √2 or √pi.
+        if self.peek() == Some(0xE2) && self.s[self.at..].starts_with("√".as_bytes()) {
+            self.at += "√".len();
+            let arg = self.atom()?;
+            return Ok(G::Call("sqrt".into(), vec![arg]));
+        }
         match self.peek() {
             Some(b'(') => {
                 self.at += 1;
@@ -1406,7 +1462,12 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 check = all;
             }
         }
-        Kind::Ode { dep } => {
+        Kind::Ode {
+            dep,
+            var,
+            sides,
+            dep_giac,
+        } => {
             let d = name_latex(dep);
             let items: Vec<String> = match read_giac(&text) {
                 Ok(G::List(items)) => {
@@ -1426,13 +1487,20 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 latex: joined.clone(),
             });
             report.result = Some(joined);
+            if readable && items.len() == 1 && !items[0].contains('=') {
+                check = ode_check(&items[0], var, sides, dep_giac, &plan.names, others);
+            }
         }
-        Kind::Derivative => {
+        Kind::Derivative { var, question } => {
             report.steps.push(Step {
                 note: "Giac differentiates it".into(),
                 latex: format!("{q}={shown}"),
             });
             report.result = Some(shown.clone());
+            if readable {
+                report.answer = Some(shown.clone());
+                check = same_function(question, &shown, var, others);
+            }
         }
         Kind::Rewrite { var, original } => {
             report.steps.push(Step {
@@ -1446,19 +1514,36 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 check = value_check(original, &shown, others, 1e-9);
             }
         }
-        Kind::Series => {
+        Kind::Series { var, original } => {
             report.steps.push(Step {
                 note: "Giac's series, to order 6".into(),
                 latex: format!("{q}={shown}"),
             });
             report.result = Some(shown.clone());
+            if readable {
+                let poly = shown.split("+O\\left(").next().unwrap_or(&shown);
+                report.answer = Some(poly.to_owned());
+                check = series_check(original, poly, var, others);
+            }
         }
-        Kind::Laplace => {
+        Kind::Laplace {
+            inverse,
+            var,
+            original,
+        } => {
             report.steps.push(Step {
                 note: "Giac transforms it".into(),
                 latex: format!("{q}={shown}"),
             });
             report.result = Some(shown.clone());
+            if readable {
+                report.answer = Some(shown.clone());
+                check = if *inverse {
+                    laplace_check(&shown, "t", original, var, others)
+                } else {
+                    laplace_check(original, var, &shown, "s", others)
+                };
+            }
         }
     }
     let _ = note;
@@ -1474,6 +1559,136 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
         latex: String::new(),
     });
     report
+}
+
+/// A series agrees with its function close to 0: their difference shrinks
+/// like a high power of x.
+fn series_check(f: &str, poly: &str, var: &str, others: &[String]) -> Check {
+    let v = name_latex(var);
+    let mut rows = others.to_vec();
+    rows.push(format!("F_{{chk}}\\left({v}\\right)={f}"));
+    rows.push(format!("G_{{chk}}\\left({v}\\right)={poly}"));
+    let at = [0.01, -0.013, 0.007];
+    let base = rows.len();
+    for p in at {
+        rows.push(format!("F_{{chk}}\\left({p}\\right)"));
+        rows.push(format!("G_{{chk}}\\left({p}\\right)"));
+    }
+    let vals = values(&rows);
+    let mut passed = 0;
+    for k in 0..at.len() {
+        if let (Some(a), Some(b)) = (vals[base + 2 * k], vals[base + 2 * k + 1]) {
+            // Terms from x^6 on are left out: under 1e-12 here, times the
+            // size of the coefficients.
+            if !close(a, b, 1e-8) {
+                return Check::Failed;
+            }
+            passed += 1;
+        }
+    }
+    if passed >= 2 {
+        Check::Passed(passed)
+    } else {
+        Check::NotDone
+    }
+}
+
+/// Compares the transform of `f` (in `t`) worked out numerically with `big`
+/// (in `s`) at a few values of s. Values where the integral doesn't settle
+/// (s too small for f's growth) are skipped.
+fn laplace_check(f: &str, t: &str, big: &str, s: &str, others: &[String]) -> Check {
+    let mut rows = others.to_vec();
+    rows.push(format!("F_{{chk}}\\left({}\\right)={f}", name_latex(t)));
+    rows.push(format!("G_{{chk}}\\left({}\\right)={big}", name_latex(s)));
+    let at = [4.3, 6.1, 8.7];
+    let base = rows.len();
+    for p in at {
+        // e^{-pu} is below 1e-30 long before u = 80/p.
+        let end = crate::format::value_latex(80.0 / p);
+        rows.push(format!(
+            "\\int_{{0}}^{{{end}}}e^{{-{p}u_{{chk}}}}F_{{chk}}\\left(u_{{chk}}\\right)du_{{chk}}"
+        ));
+        rows.push(format!("G_{{chk}}\\left({p}\\right)"));
+    }
+    let vals = values(&rows);
+    let mut passed = 0;
+    for k in 0..at.len() {
+        if let (Some(a), Some(b)) = (vals[base + 2 * k], vals[base + 2 * k + 1]) {
+            if !close(a, b, 1e-6) {
+                return Check::Failed;
+            }
+            passed += 1;
+        }
+    }
+    if passed >= 2 {
+        Check::Passed(passed)
+    } else {
+        Check::NotDone
+    }
+}
+
+/// Puts `solution` (LaTeX in `var`, with constants c₀, c₁, …) into both
+/// sides of the equation (Giac text, `dep` written `dep_giac`) and compares
+/// them at a few points, with the constants given values.
+fn ode_check(
+    solution: &str,
+    var: &str,
+    sides: &(String, String),
+    dep_giac: &str,
+    names: &Names,
+    others: &[String],
+) -> Check {
+    let v = name_latex(var);
+    let mut rows = others.to_vec();
+    for (k, c) in [0.7, -0.4, 0.3, 0.55, -0.25].iter().enumerate() {
+        rows.push(format!("c_{{{k}}}={c}"));
+    }
+    rows.push(format!("Y_{{chk}}\\left({v}\\right)={solution}"));
+    let side = |giac: &str| -> Option<String> {
+        let (text, most) = mark_dep(giac, dep_giac);
+        let mut latex = latex_of(&text, names).ok()?;
+        for k in 0..=most {
+            latex = latex.replace(
+                &format!("\\Q{k}chk"),
+                &format!("Y_{{chk}}{}\\left({v}\\right)", "'".repeat(k)),
+            );
+        }
+        Some(latex)
+    };
+    let (Some(lhs), Some(rhs)) = (side(&sides.0), side(&sides.1)) else {
+        return Check::NotDone;
+    };
+    same_function(&lhs, &rhs, var, &rows)
+}
+
+/// `giac` with each `dep`, `dep'`, `dep''`, … written `g_Q0chk`,
+/// `g_Q1chk`, …, and the most primes seen.
+fn mark_dep(giac: &str, dep: &str) -> (String, usize) {
+    let b = giac.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::new();
+    let mut most = 0;
+    let mut i = 0;
+    while i < b.len() {
+        let starts = giac[i..].starts_with(dep)
+            && (i == 0 || !ident(b[i - 1]))
+            && !b.get(i + dep.len()).is_some_and(|&c| ident(c));
+        if starts {
+            let mut j = i + dep.len();
+            while b.get(j) == Some(&b'\'') {
+                j += 1;
+            }
+            let k = j - i - dep.len();
+            most = most.max(k);
+            out.push_str(&format!("g_Q{k}chk"));
+            i = j;
+        } else {
+            let c = giac[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    (out, most)
 }
 
 fn limit_check(
@@ -1606,6 +1821,13 @@ mod tests {
         assert_eq!(l("BesselJ(0,g_x)"), "J_{0}\\left(x\\right)");
         assert_eq!(l("c_0*cos(g_x)"), "c_{0}\\cos\\left(x\\right)");
         assert_eq!(l("pi^2/6"), "\\frac{\\pi^{2}}{6}");
+        // As the Windows worker prints them.
+        assert_eq!(l("√pi/4"), "\\frac{\\sqrt{\\pi}}{4}");
+        assert_eq!(
+            l("-√2/8*ln(g_x^2-√2*g_x+1)"),
+            l("-sqrt(2)/8*ln(g_x^2-sqrt(2)*g_x+1)")
+        );
+        assert_eq!(l("(g_x-(-√2)/2)"), l("(g_x-(-sqrt(2))/2)"));
         assert_eq!(l("+infinity"), "\\infty");
         assert_eq!(
             l("g_x+g_x^2+g_x^3/3+g_x^6*order_size(g_x)"),
@@ -1667,6 +1889,79 @@ mod tests {
         let p = plan("x^4-1", &[], Some("giac:factor")).unwrap();
         let r = finish(&p, Ok(("(g_x-1)*(g_x+1)*(g_x^2+1)".into(), String::new())));
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
+        // Answers as the Windows worker prints them.
+        let p = plan("\\int_{ }^{ }\\frac{1}{x^4+1}dx", &[], None).unwrap();
+        let text = "-√2/8*ln(g_x^2-√2*g_x+1)+√2/4*atan((g_x-√2/2)/(√2/2))+√2/8*ln(g_x^2+√2*g_x+1)+√2/4*atan((g_x-(-√2)/2)/(√2/2))";
+        let r = finish(&p, Ok((text.into(), String::new())));
+        assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
+        let p = plan("y''+y=\\sin\\left(x\\right)", &[], None).unwrap();
+        let text = "c_0*cos(g_x)+c_1*sin(g_x)+(-2*g_x*cos(g_x)+sin(g_x))/4";
+        let r = finish(&p, Ok((text.into(), String::new())));
+        assert_eq!(
+            r.steps.last().unwrap().note,
+            "Checked numerically at 6 points",
+            "{r:?}"
+        );
+        let text = "c_0*cos(g_x)+c_1*sin(g_x)+(-2*g_x*cos(g_x)+g_x)/4";
+        let r = finish(&p, Ok((text.into(), String::new())));
+        assert!(
+            r.steps.last().unwrap().note.contains("doesn't agree"),
+            "{r:?}"
+        );
+        let p = plan("\\sin\\left(2t\\right)", &[], Some("giac:laplace")).unwrap();
+        let r = finish(&p, Ok(("2/(g_s^2+4)".into(), String::new())));
+        assert_eq!(
+            r.steps.last().unwrap().note,
+            "Checked numerically at 3 points",
+            "{r:?}"
+        );
+        let r = finish(&p, Ok(("2/(g_s^2+2)".into(), String::new())));
+        assert!(
+            r.steps.last().unwrap().note.contains("doesn't agree"),
+            "{r:?}"
+        );
+        let p = plan("\\frac{1}{s^{2}+1}", &[], Some("giac:ilaplace")).unwrap();
+        let r = finish(&p, Ok(("sin(g_t)".into(), String::new())));
+        assert_eq!(
+            r.steps.last().unwrap().note,
+            "Checked numerically at 3 points",
+            "{r:?}"
+        );
+        assert!(r.error.is_none(), "{r:?}");
+        // Series and derivatives.
+        let p = plan("e^{x}\\sin\\left(x\\right)", &[], Some("giac:series")).unwrap();
+        let text = "g_x+g_x^2+1/3*g_x^3-1/30*g_x^5-1/90*g_x^6+g_x^7*order_size(g_x)";
+        let r = finish(&p, Ok((text.into(), String::new())));
+        assert_eq!(
+            r.steps.last().unwrap().note,
+            "Checked numerically at 3 points",
+            "{r:?}"
+        );
+        let r = finish(
+            &p,
+            Ok(("g_x+g_x^2+g_x^7*order_size(g_x)".into(), String::new())),
+        );
+        assert!(
+            r.steps.last().unwrap().note.contains("doesn't agree"),
+            "{r:?}"
+        );
+        let p = plan(
+            "\\frac{d}{dx}\\left(x^{2}\\sin\\left(x\\right)\\right)",
+            &[],
+            None,
+        )
+        .unwrap();
+        let r = finish(
+            &p,
+            Ok(("2*g_x*sin(g_x)+g_x^2*cos(g_x)".into(), String::new())),
+        );
+        assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
+        let p = plan("x^{2}\\sin\\left(x\\right)", &[], Some("giac:diff")).unwrap();
+        let r = finish(&p, Ok(("2*g_x*sin(g_x)".into(), String::new())));
+        assert!(
+            r.steps.last().unwrap().note.contains("doesn't agree"),
+            "{r:?}"
+        );
         // Errors.
         let r = finish(&p, Err("Bad argument".into()));
         assert!(r.error.is_some());
