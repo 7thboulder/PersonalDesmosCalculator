@@ -205,8 +205,7 @@ The **Doc** button at the top of the expression list (or Ctrl+Alt+D) switches
 the window to a document for typing math, such as homework or working through
 a hard integral. **Graph** at the top of the document, or Ctrl+Alt+G, goes back.
 The plan for this mode is in the
-[document plan](https://claude.ai/artifact/4fZeSHt4D1JboMgPmCWN1A); this is
-its first phase.
+[document plan](https://claude.ai/artifact/4fZeSHt4D1JboMgPmCWN1A).
 
 - Every line is math, typed exactly as in a Desmos row.
 - `"` on an empty line makes a text line. In text, `$` starts math and `$`
@@ -239,6 +238,37 @@ its first phase.
   own printer: Letter or A4, a header with your name, the title and the
   date, page numbers, and optionally a new page for each "Problem" heading.
   Empty lines are left out and the app around the page isn't printed.
+- Live math: lines are only typeset until Ctrl+L (or the dot beside a line)
+  makes one live. A live line works like a Desmos row and shows its value
+  on the right, with units, matrices, lists and complex numbers.
+  `a = 3` on a live line defines `a` for the live lines below it, and
+  defining it again starts over from there, so each problem can have its
+  own `x` and `f`. A step that starts with `=` is worked out from its right
+  side. Ctrl+Shift+L makes a whole group of steps live.
+- Ctrl+Alt+S solves the line with steps, using the live lines'
+  definitions. It runs in the background, so the page keeps working and
+  Esc stops waiting; **Insert steps** writes the working below the line as
+  steps you can edit.
+
+### Special functions
+
+These work in the graphing calculator and in live lines, and graph like any
+other function:
+
+| Type | Function |
+| --- | --- |
+| `Gamma(` | Γ(x), also for complex x; `psi(` gives the digamma ψ(x) and `B(a,b)` the beta function |
+| `erf(`, `erfc(`, `erfi(` | error functions |
+| `zeta(` | the Riemann zeta function ζ(s), also for complex s |
+| `J_n(`, `Y_n(`, `I_n(`, `K_n(` | Bessel functions of any real order n (a number or a variable) |
+| `Ai(`, `Bi(` | Airy functions |
+| `Si(`, `Ci(`, `Ei(`, `li(` | sine, cosine, exponential and logarithmic integrals |
+| `W(` | Lambert W (the principal branch) |
+| `Li_s(` | the polylogarithm, such as `Li_2(x)` |
+| `K(k)`, `E(k)` | complete elliptic integrals, with modulus k |
+
+A letter such as Γ, W or K is only the special function while the graph
+doesn't define that name itself.
 
 ## Trying it on Windows 10 or 11
 

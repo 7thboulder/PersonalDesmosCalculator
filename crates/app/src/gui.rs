@@ -54,6 +54,8 @@ pub enum UserEvent {
         result: Result<(), String>,
         open: bool,
     },
+    /// Work done off the UI thread (a solve), as script for the panel.
+    Script(String),
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -98,6 +100,8 @@ struct Running {
     dragging: bool,
     panel_ready: bool,
     engine: Engine,
+    /// Works out the document's live lines, apart from the graph.
+    doc_engine: Engine,
     interact: Interaction,
     text: TextAtlas,
     /// Curve lines kept from earlier frames, so panning is cheap.
@@ -144,6 +148,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Ipc(message) => state.on_panel_message(&message),
             UserEvent::Fetched { url, reply } => state.fetched(&url, reply),
             UserEvent::PdfSaved { path, result, open } => state.pdf_saved(path, result, open),
+            UserEvent::Script(script) => state.run_script(&script),
         }
     }
 
@@ -304,6 +309,7 @@ impl Running {
             dragging: false,
             panel_ready: false,
             engine: Engine::default(),
+            doc_engine: Engine::default(),
             interact: Interaction::default(),
             text: TextAtlas::system(),
             lines: LineCache::default(),
@@ -692,11 +698,38 @@ impl Running {
                 self.docs.path = None;
                 self.remember_docs();
             }
+            // Solving runs off the UI thread, so the window never freezes.
             Some("solve") => {
                 let id = value["id"].as_u64().unwrap_or(0);
-                let latex = value["latex"].as_str().unwrap_or_default();
-                let reply = crate::solve::reply(&self.rows, id, latex, value["op"].as_str());
-                self.run_script(&format!("window.engine.solved({reply})"));
+                let latex = value["latex"].as_str().unwrap_or_default().to_owned();
+                let op = value["op"].as_str().map(str::to_owned);
+                let rows = self.rows.clone();
+                self.in_background(move || {
+                    let reply = crate::solve::reply(&rows, id, &latex, op.as_deref());
+                    format!("window.engine.solved({reply})")
+                });
+            }
+            Some("docSolve") => {
+                let token = value["token"].clone();
+                let latex = value["latex"].as_str().unwrap_or_default().to_owned();
+                let op = value["op"].as_str().map(str::to_owned);
+                let rows = crate::solve::doc_rows(&value["lines"]);
+                self.in_background(move || {
+                    let reply = crate::solve::reply(&rows, 0, &latex, op.as_deref());
+                    let reply = serde_json::json!({ "token": token, "reply": reply });
+                    format!("window.doc.solved({reply})")
+                });
+            }
+            // The live lines, in chunks: a name defined again starts a new
+            // chunk, so each definition holds for the lines below it.
+            Some("docEval") => {
+                let chunks = value["chunks"].as_array().map_or(&[][..], Vec::as_slice);
+                let results: Vec<serde_json::Value> = chunks
+                    .iter()
+                    .map(|rows| self.doc_engine.update(rows))
+                    .collect();
+                let reply = serde_json::json!({ "seq": value["seq"], "results": results });
+                self.doc_reply("evaluated", reply);
             }
             Some("rows") => {
                 self.rows = value["rows"].clone();
@@ -920,6 +953,15 @@ impl Running {
         if !self.smoke_test {
             docs::write_state(&self.docs);
         }
+    }
+
+    /// Runs `work` on its own thread; the script it returns runs in the
+    /// panel when it is done.
+    fn in_background(&self, work: impl FnOnce() -> String + Send + 'static) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let _ = proxy.send_event(UserEvent::Script(work()));
+        });
     }
 
     fn doc_reply(&self, function: &str, value: serde_json::Value) {

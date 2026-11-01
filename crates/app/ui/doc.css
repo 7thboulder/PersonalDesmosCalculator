@@ -226,6 +226,109 @@ body.doc-view #doc {
 .dline .dtext:empty::before { content: attr(data-hint); color: #c2c2c2; }
 .dline .gut .kind { font: 600 11px "Segoe UI", Arial, sans-serif; color: #c4c4c4; }
 
+/* Live lines: a dot in the gutter marks them, and the value sits on the
+   right, as in a Desmos row. */
+.dline.math { grid-template-columns: 40px minmax(0, 1fr) auto; }
+.dline .dres {
+  justify-self: end;
+  max-width: 45vw;
+  overflow-x: auto;
+  padding: 0 14px 0 6px;
+  font-size: 17px;
+  color: #555;
+  white-space: nowrap;
+}
+.dline:not(.has-res) .dres { padding: 0; }
+.dline .dres .dwarn {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f1a33a;
+  color: #fff;
+  font: 700 12px/18px "Segoe UI", Arial, sans-serif;
+  text-align: center;
+  cursor: help;
+}
+.dline .dlive {
+  position: absolute;
+  left: 31px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-top: -5px;
+  padding: 0;
+  border: 1.5px solid #c8d3e6;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+.dline.math:hover .dlive, .dline.math.focused .dlive { opacity: 1; }
+.dline.math.live .dlive { opacity: 1; background: #2f72dc; border-color: #2f72dc; }
+.dline.math.has-solve { align-items: start; }
+.dline.math.has-solve > .gut, .dline.math.has-solve > .dmath, .dline.math.has-solve > .dres {
+  align-self: center;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+}
+.dline.math.has-solve > .dlive { top: 23px; }
+
+/* Solve's working, under the line. */
+.dsolve {
+  grid-column: 2 / -1;
+  margin: 0 14px 10px 0;
+  padding: 8px 10px;
+  border: 1px solid #dde5f3;
+  border-radius: 6px;
+  background: #f8faff;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  color: #333;
+}
+.dsolve-wait { color: #777; }
+.dsolve-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.dsolve-head .grow { flex: 1; }
+.dsolve-head .chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+  border: 1px solid #ccd;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+.dsolve-head .chip.on { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+.dsolve-head .chip.on .mq-math-mode { color: #fff; }
+.dsolve-insert {
+  font: 12px "Segoe UI", Arial, sans-serif;
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.dsolve-insert:hover { background: #eef3fb; border-color: #9bb7e0; }
+.dsolve-close { border: 0; background: transparent; color: #999; font-size: 14px; cursor: pointer; }
+.dsolve-close:hover { color: #333; }
+.dsolve-steps { margin: 0; padding-left: 22px; }
+.dsolve-steps li { margin: 0 0 6px; }
+.dsolve-steps .note { color: #555; }
+.dsolve-steps .math { font-size: 15px; overflow-x: auto; padding: 2px 0; }
+.dsolve .inline-math { font-size: 13px; }
+.dsolve-result {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #dde5f3;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-x: auto;
+}
+.dsolve-error { color: #b3261e; margin-top: 4px; }
+/* An integral without bounds shows no empty boxes, except while it is being edited. */
+.dline:not(.focused) .mq-int > .mq-supsub .mq-empty { background: transparent !important; }
+.dsolve .mq-empty, .dres .mq-empty { background: transparent !important; }
+
 /* Math inside a text line. */
 .dinl {
   display: inline-block;
@@ -413,4 +516,6 @@ body.doc-view #doc {
   .mq-slot { color: #999; }
   .dref, .dref.missing { color: #000; }
   .mq-editable-field .mq-cursor { display: none !important; }
+  .dline .dlive, .dline .dres .dwarn, .dsolve { display: none !important; }
+  .dline .dres { color: #333; overflow: visible; max-width: none; }
 }

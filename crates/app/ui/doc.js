@@ -77,7 +77,20 @@
     var span = document.createElement('span');
     box.appendChild(span);
     el.appendChild(box);
-    var line = { kind: 'math', el: el, step: !!opts.step, id: opts.id || newId() };
+    var line = { kind: 'math', el: el, step: !!opts.step, id: opts.id || newId(), live: !!opts.live };
+    // A live line computes: its value shows on the right, as in Desmos.
+    var res = document.createElement('div');
+    res.className = 'dres';
+    el.appendChild(res);
+    line.resEl = res;
+    var dot = document.createElement('button');
+    dot.className = 'dlive';
+    dot.tabIndex = -1;
+    dot.title = 'Live: compute this line (Ctrl+L)';
+    dot.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    dot.addEventListener('click', function () { setLive([line], !line.live); });
+    el.appendChild(dot);
+    el.classList.toggle('live', line.live);
     line.field = MQ.MathField(span, mathOptions({
       edit: function () { changed(); },
       enter: function () {
@@ -819,6 +832,352 @@
     changed();
   }
 
+  // ---- Live math -----------------------------------------------------------
+
+  // Lines are typeset unless marked live. Live lines work like Desmos rows:
+  // a = 3 defines a for the live lines below it, and an expression shows its
+  // value on the right. A name defined again starts over from there, so
+  // each problem can use x and f of its own.
+
+  var evalTimer = 0;
+  var evalSeq = 0;
+  var evalSent = null;
+  var EVAL_MS = 120;
+  var CONTEXT_ID = 1000000;
+
+  function scheduleEval() {
+    clearTimeout(evalTimer);
+    evalTimer = setTimeout(evaluate, EVAL_MS);
+  }
+
+  function liveLines() {
+    return lines.filter(function (l) { return l.kind === 'math' && l.live; });
+  }
+
+  // What the engine reads: references and blanks taken out, and a step that
+  // starts with = worked out from its right side.
+  function evalLatex(latex) {
+    latex = latex.replace(/\\embed\{ref\}\[[^\]]*\]/g, '').replace(/\\embed\{slot\}/g, '');
+    if (relationAt(latex) === 0) {
+      var m = /^(=|<|>|\\[A-Za-z]+)\s*/.exec(latex);
+      latex = latex.slice(m ? m[0].length : 1);
+    }
+    return latex.trim();
+  }
+
+  // The name a line defines (a, a_1, \alpha, f), or null. x = … and
+  // y = … are curves, not definitions.
+  function definedName(latex) {
+    var m = /^\s*((?:[A-Za-z]|\\[A-Za-z]+)(?:_(?:\{[^{}]*\}|[A-Za-z0-9]))?)\s*(?:\\left\((?:(?!\\right\)).)*\\right\))?\s*=/.exec(latex);
+    if (!m) return null;
+    var name = m[1].replace(/[{}]/g, '');
+    if (name === 'x' || name === 'y' || name === 'z' || /^\\(sin|cos|tan|ln|log|exp|operatorname)/.test(name)) return null;
+    return name;
+  }
+
+  // Chunks of live lines for the engine: each holds the latest definition
+  // of every name above it, then lines until a name is defined again.
+  function liveChunks(live) {
+    var chunks = [];
+    var latest = {};
+    var cur = null;
+    var contextId = CONTEXT_ID;
+    live.forEach(function (l, k) {
+      var latex = evalLatex(l.field.latex());
+      var name = definedName(latex);
+      if (!cur || (name && cur.names[name])) {
+        cur = { rows: [], names: {} };
+        Object.keys(latest).forEach(function (n) {
+          if (n === name) return;
+          cur.rows.push({ id: contextId++, latex: latest[n] });
+          cur.names[n] = true;
+        });
+        chunks.push(cur);
+      }
+      cur.rows.push({ id: k, latex: latex });
+      if (name) {
+        cur.names[name] = true;
+        latest[name] = latex;
+      }
+    });
+    return chunks.map(function (c) { return c.rows; });
+  }
+
+  function evaluate() {
+    clearTimeout(evalTimer);
+    var live = liveLines();
+    lines.forEach(function (l) { if (l.kind === 'math' && !l.live) showResult(l, null); });
+    if (!live.length) { evalSent = null; return; }
+    evalSent = { seq: ++evalSeq, lines: live };
+    send({ type: 'docEval', seq: evalSeq, chunks: liveChunks(live) });
+  }
+
+  function matrixLatex(cells) {
+    return '\\begin{bmatrix}' + cells.map(function (r) { return r.join('&'); }).join('\\\\') +
+      '\\end{bmatrix}';
+  }
+
+  function showResult(line, r) {
+    var value = null;
+    var warn = null;
+    if (r && line.live) {
+      if (r.error && r.kind !== 'empty') warn = r.error;
+      else if (r.missing && r.missing.length) {
+        warn = 'Define ' + r.missing.map(function (m) { return m.name; }).join(', ') +
+          ' on a live line above';
+      } else if (r.matrix) {
+        // A matrix written out in full needs no value beside it.
+        if (!(r.kind === 'variable' && /=\s*\\begin\{bmatrix\}(?:(?!\\end\{bmatrix\}).)*\\end\{bmatrix\}\s*$/.test(line.field.latex()))) {
+          value = '=' + matrixLatex(r.matrix.cells);
+        }
+      }
+      else if (r.value != null && r.slider == null) value = '=' + r.value;
+    }
+    var key = JSON.stringify([value, warn]);
+    if (line.resKey === key) return;
+    line.resKey = key;
+    var el = line.resEl;
+    el.innerHTML = '';
+    el.title = '';
+    line.el.classList.toggle('has-res', !!(value || warn));
+    if (value) {
+      var span = document.createElement('span');
+      el.appendChild(span);
+      MQ.StaticMath(span).latex(value);
+    } else if (warn) {
+      var w = document.createElement('span');
+      w.className = 'dwarn';
+      w.textContent = '!';
+      el.appendChild(w);
+      el.title = warn;
+    }
+  }
+
+  function evaluated(reply) {
+    if (!evalSent || reply.seq !== evalSent.seq) return;
+    var live = evalSent.lines;
+    var got = {};
+    (reply.results || []).forEach(function (chunk) {
+      (chunk || []).forEach(function (r) { if (r.id < CONTEXT_ID) got[r.id] = r; });
+    });
+    live.forEach(function (l, k) { showResult(l, got[k] || null); });
+  }
+
+  // Marks lines live or typeset.
+  function setLive(list, on) {
+    list.forEach(function (l) {
+      if (l.kind !== 'math') return;
+      l.live = on;
+      l.el.classList.toggle('live', on);
+      if (!on) showResult(l, null);
+    });
+    changed();
+  }
+
+  // The group of steps a line belongs to.
+  function groupOf(line) {
+    var i = indexOf(line);
+    var start = i;
+    while (start > 0 && lines[start].kind === 'math' && lines[start].step &&
+      lines[start - 1].kind === 'math') start--;
+    var end = i;
+    while (end + 1 < lines.length && lines[end + 1].kind === 'math' && lines[end + 1].step) end++;
+    return lines.slice(start, end + 1);
+  }
+
+  function currentLine() {
+    var a = document.activeElement;
+    for (var i = 0; i < lines.length; i++) {
+      if (a && lines[i].el.contains(a)) return lines[i];
+    }
+    return lines[lastFocus] || null;
+  }
+
+  // ---- Solve ---------------------------------------------------------------
+
+  // Ctrl+Alt+S works out a line with the same algebra as the calculator's
+  // Solve, using the live lines' definitions. It runs in the background:
+  // the page keeps working, and Esc stops waiting.
+
+  var solveToken = 0;
+
+  function solveLine(line, op) {
+    if (!line || line.kind !== 'math') return;
+    var latex = evalLatex(line.field.latex());
+    if (!latex) return;
+    if (line.solve && line.solve.timer) clearInterval(line.solve.timer);
+    var others = liveLines().filter(function (l) { return l !== line; })
+      .map(function (l) { return evalLatex(l.field.latex()); })
+      .filter(function (t) { return t; });
+    var job = { token: ++solveToken, latex: latex, op: op || null, started: Date.now() };
+    line.solve = job;
+    var box = solveBox(line);
+    box.innerHTML = '';
+    box.classList.add('waiting');
+    var wait = document.createElement('div');
+    wait.className = 'dsolve-wait';
+    box.appendChild(wait);
+    var tick = function () {
+      var secs = Math.floor((Date.now() - job.started) / 1000);
+      wait.textContent = 'Solving' + (secs >= 1 ? ' (' + secs + ' s)' : '') + '… Esc stops it';
+    };
+    tick();
+    job.timer = setInterval(tick, 500);
+    send({ type: 'docSolve', token: job.token, latex: latex, op: job.op, lines: others });
+  }
+
+  function solveBox(line) {
+    if (!line.solveEl) {
+      line.solveEl = document.createElement('div');
+      line.solveEl.className = 'dsolve';
+      line.el.appendChild(line.solveEl);
+    }
+    line.el.classList.add('has-solve');
+    return line.solveEl;
+  }
+
+  function closeSolve(line) {
+    if (line.solve && line.solve.timer) clearInterval(line.solve.timer);
+    line.solve = null;
+    if (line.solveEl) line.solveEl.remove();
+    line.solveEl = null;
+    line.el.classList.remove('has-solve');
+  }
+
+  // Stops waiting for every solve in progress. The engine's answer, if it
+  // comes, is dropped.
+  function cancelSolves() {
+    var any = false;
+    lines.forEach(function (l) {
+      if (l.solve && l.solve.timer) {
+        any = true;
+        closeSolve(l);
+      }
+    });
+    return any;
+  }
+
+  function richText(el, text) {
+    String(text).split('$').forEach(function (part, i) {
+      var span = document.createElement('span');
+      if (i % 2) {
+        span.className = 'inline-math';
+        el.appendChild(span);
+        MQ.StaticMath(span).latex(part);
+      } else {
+        span.textContent = part;
+        el.appendChild(span);
+      }
+    });
+  }
+
+  function staticBlock(className, latex) {
+    var div = document.createElement('div');
+    div.className = className;
+    var span = document.createElement('span');
+    div.appendChild(span);
+    MQ.StaticMath(span).latex(latex);
+    return div;
+  }
+
+  function solved(msg) {
+    var line = lines.filter(function (l) { return l.solve && l.solve.token === msg.token; })[0];
+    if (!line) return;
+    clearInterval(line.solve.timer);
+    line.solve.timer = null;
+    var r = msg.reply || {};
+    line.solve.reply = r;
+    var box = solveBox(line);
+    box.classList.remove('waiting');
+    box.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'dsolve-head';
+    (r.choices || []).forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'chip' + (c.op === r.op ? ' on' : '');
+      richText(b, c.label);
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.addEventListener('click', function () { solveLine(line, c.op); });
+      head.appendChild(b);
+    });
+    var spacer = document.createElement('span');
+    spacer.className = 'grow';
+    head.appendChild(spacer);
+    if ((r.steps || []).length || r.result) {
+      var ins = document.createElement('button');
+      ins.className = 'dsolve-insert';
+      ins.textContent = 'Insert steps';
+      ins.title = 'Write the working into the document as steps below this line';
+      ins.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      ins.addEventListener('click', function () { insertSteps(line, r); });
+      head.appendChild(ins);
+    }
+    var close = document.createElement('button');
+    close.className = 'dsolve-close';
+    close.title = 'Close the working';
+    close.innerHTML = '&#x2715;';
+    close.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    close.addEventListener('click', function () { closeSolve(line); });
+    head.appendChild(close);
+    box.appendChild(head);
+    var list = document.createElement('ol');
+    list.className = 'dsolve-steps';
+    (r.steps || []).forEach(function (st) {
+      var li = document.createElement('li');
+      if (st.note) {
+        var note = document.createElement('div');
+        note.className = 'note';
+        richText(note, st.note);
+        li.appendChild(note);
+      }
+      if (st.latex) li.appendChild(staticBlock('math', st.latex));
+      list.appendChild(li);
+    });
+    if (list.firstChild) box.appendChild(list);
+    if (r.result) box.appendChild(staticBlock('dsolve-result', r.result));
+    if (r.error) {
+      var err = document.createElement('div');
+      err.className = 'dsolve-error';
+      richText(err, r.error);
+      box.appendChild(err);
+    }
+  }
+
+  // The working as lines of the document: steps lined up under the line.
+  // A step that continues the same left side is written from its = on.
+  function stepLines(line, r) {
+    var out = [];
+    var prev = evalLatex(line.field.latex());
+    var prevLeft = null;
+    var at0 = relationAt(prev);
+    if (at0 > 0) prevLeft = prev.slice(0, at0);
+    var steps = (r.steps || []).map(function (s) { return s.latex; });
+    // The answer, unless the last step already ends with it.
+    var last = steps[steps.length - 1] || '';
+    if (r.result && last.slice(relationAt(last) + 1) !== r.result && last !== r.result) {
+      steps.push(r.result);
+    }
+    steps.forEach(function (latex) {
+      if (!latex || latex === prev) return;
+      var at = relationAt(latex);
+      var left = at > 0 ? latex.slice(0, at) : null;
+      out.push(left !== null && left === prevLeft ? latex.slice(at) : latex);
+      prev = latex;
+      if (left !== null) prevLeft = left;
+    });
+    return out;
+  }
+
+  function insertSteps(line, r) {
+    var i = indexOf(line);
+    stepLines(line, r).forEach(function (latex, k) {
+      newMath(latex, i + 1 + k, { step: true });
+    });
+    closeSolve(line);
+    changed();
+    focusLine(i, 'end');
+  }
+
   // ---- The whole document --------------------------------------------------
 
   function serialize() {
@@ -830,6 +1189,7 @@
         if (l.kind === 'math') {
           var m = { type: 'math', latex: l.field.latex() };
           if (l.step) m.step = true; else m.id = l.id;
+          if (l.live) m.live = true;
           return m;
         }
         var text = lineText(l);
@@ -846,11 +1206,12 @@
     (doc.lines || []).forEach(function (l, i) {
       if (l.type === 'text') newText(l.text, 'text', 1, i);
       else if (l.type === 'heading') newText(l.text, 'heading', l.level || 1, i);
-      else newMath(l.latex || '', i, { step: !!l.step, id: l.id });
+      else newMath(l.latex || '', i, { step: !!l.step, id: l.id, live: !!l.live });
     });
     if (!lines.length) newMath('', 0);
     loading--;
     scheduleLayout();
+    scheduleEval();
   }
 
   function isBlank(doc) {
@@ -860,6 +1221,7 @@
   function changed() {
     if (loading) return;
     scheduleLayout();
+    scheduleEval();
     dirty = true;
     snapshot();
     showStatus('Edited');
@@ -1121,6 +1483,16 @@
     if (helpBox.classList.contains('open') && e.key === 'Escape') openHelp(false);
     else if (scBox.classList.contains('open') && e.key === 'Escape') closeShortcuts();
     else if (pdfBox.classList.contains('open') && e.key === 'Escape') closePdf();
+    else if (e.key === 'Escape' && !ctrl && cancelSolves()) handled = true;
+    else if (ctrl && !e.altKey && k === 'l' && !scBox.classList.contains('open')) {
+      var cur = currentLine();
+      if (cur && cur.kind === 'math') {
+        var list = e.shiftKey ? groupOf(cur) : [cur];
+        setLive(list, !cur.live);
+      }
+    } else if (ctrl && e.altKey && !e.shiftKey && k === 's') {
+      solveLine(currentLine(), null);
+    }
     else if (ctrl && !e.altKey && !e.shiftKey && k === 'p') openPdf();
     else if (scBox.classList.contains('open') && !(ctrl && e.altKey)) handled = false;
     else if (ctrl && !e.altKey && (k === 'z' || k === 'y') && e.target !== searchEl) {
@@ -1458,8 +1830,11 @@
       saving = false;
       showStatus(message, true);
     },
+    evaluated: evaluated,
+    solved: solved,
     // For tests: the document as it would be saved.
     serialize: serialize,
+    stepLines: stepLines,
     pdfDone: pdfDone,
     // For tests: lay the page out as the PDF export does.
     preparePrint: preparePrint,
