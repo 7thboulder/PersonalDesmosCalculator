@@ -6,6 +6,7 @@ pub mod ast;
 pub mod builtins;
 pub mod calculus;
 pub mod cas;
+pub mod check;
 pub mod compile;
 pub mod dots;
 mod fastsum;

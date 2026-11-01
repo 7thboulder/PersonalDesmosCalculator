@@ -270,6 +270,18 @@ The plan for this mode is in the
   definitions. It runs in the background, so the page keeps working and
   Esc stops waiting; **Insert steps** writes the working below the line as
   steps you can edit.
+- Checking steps: F9 (or **Check steps**) checks every group of steps. A
+  line that doesn't follow from the one above gets a red wavy underline and
+  the reason on the right. Expressions are compared at many values of their
+  letters, negative ones included. Antiderivatives only need to agree up to
+  a constant, and `+ C` is fine. An equation must keep the solutions of the
+  one above, so the reason names one that was lost (dividing by x loses
+  x = 0) or gained (squaring both sides). `<` and `≥` chains are checked
+  too, and a line that fixes an earlier slip counts as right again.
+  Definitions on live lines are used, but the steps themselves don't need to
+  be live. Lines the check can't work out, such as `f(x)` with no `f` or a
+  line with words, are left unmarked. **Check as I type** rechecks a group
+  each time you leave one of its lines. Editing a line clears its mark.
 - Graph blocks: a live line that draws a curve gets a **Graph** button
   (or Ctrl+Shift+G), which puts it in a graph block under the line. More
   lines can go in the same block. The block is drawn by the calculator's
