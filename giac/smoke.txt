@@ -16,4 +16,8 @@ simplify(sin(x)^2+cos(x)^2)
 Gamma(1/2)
 integrate(exp(-x)*x^(1/2),x,0,inf)
 integrate(ln(x)/(1+x^2),x,0,inf)
+laplace(g_t^2,g_t,g_s)
+laplace(subst(g_t^2,g_t=t),t,s)
+ilaplace(subst(1/(g_s^2+1),g_s=s),s,t)
+desolve((g_y''+g_y)=sin(g_x),g_x,g_y)
 (

@@ -503,8 +503,11 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             "expand" => format!("expand({g})"),
                             "partfrac" => format!("partfrac({g},{v})"),
                             "series" => format!("series({g},{v},0,6)"),
-                            "laplace" => format!("laplace({g},{v},{})", w.names.var("s")),
-                            "ilaplace" => format!("ilaplace({g},{v},{})", w.names.var("t")),
+                            // Giac's transforms refuse g_ names ("Bad Argument
+                            // Value"), so they work in plain t and s, which no
+                            // name of the person's can be.
+                            "laplace" => format!("laplace(subst({g},{v}=t),t,s)"),
+                            "ilaplace" => format!("ilaplace(subst({g},{v}=s),s,t)"),
                             "integrate" => format!("integrate({g},{v})"),
                             "diff" => format!("diff({g},{v})"),
                             _ => format!("simplify({g})"),
@@ -1313,6 +1316,34 @@ fn value_check(question: &str, result: &str, others: &[String], tol: f64) -> Che
     }
 }
 
+/// An infinite sum's partial sums to N and 2N: the answer must lie about
+/// as close to the second as the two are to each other, so slowly
+/// converging sums such as 1/n² still check.
+fn infinite_sum_check(question: &str, result: &str, others: &[String]) -> Check {
+    let upto = |n: u32| question.replacen("^{\\infty}", &format!("^{{{n}}}"), 1);
+    if upto(1) == question {
+        return Check::NotDone;
+    }
+    // Fewer terms when many overflow, as n! does.
+    for n in [5000, 150, 30] {
+        let mut rows = others.to_vec();
+        rows.extend([upto(n), upto(2 * n), result.to_owned()]);
+        let vals = values(&rows);
+        let k = vals.len();
+        let (Some(s1), Some(s2), Some(r)) = (vals[k - 3], vals[k - 2], vals[k - 1]) else {
+            continue;
+        };
+        let step = ((s2.0 - s1.0).powi(2) + (s2.1 - s1.1).powi(2)).sqrt();
+        let off = ((r.0 - s2.0).powi(2) + (r.1 - s2.1).powi(2)).sqrt();
+        return if off <= 2.0 * step + 1e-9 * (1.0 + r.0.abs()) {
+            Check::Passed(1)
+        } else {
+            Check::Failed
+        };
+    }
+    Check::NotDone
+}
+
 // ---------------------------------------------------------------------------
 // The report
 
@@ -1393,9 +1424,11 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 if let Some(d) = decimal(&shown, others) {
                     result = format!("{shown}\\approx {d}");
                 }
-                if !question.contains("\\infty") {
-                    check = value_check(question, &shown, others, 1e-9);
-                }
+                check = if question.contains("\\infty") {
+                    infinite_sum_check(question, &shown, others)
+                } else {
+                    value_check(question, &shown, others, 1e-9)
+                };
             }
             report.steps.push(Step {
                 note: "Giac finds the sum".into(),
@@ -1961,6 +1994,18 @@ mod tests {
             "{r:?}"
         );
         assert!(r.error.is_none(), "{r:?}");
+        // Infinite sums, by their partial sums.
+        let p = plan("\\sum_{n=1}^{\\infty}\\frac{1}{n^{2}}", &[], None).unwrap();
+        let r = finish(&p, Ok(("pi^2/6".into(), String::new())));
+        assert_eq!(r.steps.last().unwrap().note, "Checked numerically", "{r:?}");
+        let r = finish(&p, Ok(("pi^2/7".into(), String::new())));
+        assert!(
+            r.steps.last().unwrap().note.contains("doesn't agree"),
+            "{r:?}"
+        );
+        let p = plan("\\sum_{n=0}^{\\infty}\\frac{1}{n!}", &[], None).unwrap();
+        let r = finish(&p, Ok(("e".into(), String::new())));
+        assert_eq!(r.steps.last().unwrap().note, "Checked numerically", "{r:?}");
         // Series and derivatives.
         let p = plan("e^{x}\\sin\\left(x\\right)", &[], Some("giac:series")).unwrap();
         let text = "g_x+g_x^2+1/3*g_x^3-1/30*g_x^5-1/90*g_x^6+g_x^7*order_size(g_x)";

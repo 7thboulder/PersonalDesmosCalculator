@@ -184,6 +184,13 @@ mod tests {
             ),
             ("x^{4}-1", &[], Some("giac:factor"), "x^{2}+1"),
             ("t^{2}", &[], Some("giac:laplace"), "s"),
+            ("\\frac{1}{s^{2}+1}", &[], Some("giac:ilaplace"), "\\sin"),
+            (
+                "y''+y=\\sin\\left(x\\right)",
+                &[],
+                Some("giac:desolve"),
+                "c_{0}",
+            ),
             (
                 "\\int_{0}^{a}f\\left(x\\right)dx",
                 &["a=2", "f\\left(t\\right)=t^{2}"],
