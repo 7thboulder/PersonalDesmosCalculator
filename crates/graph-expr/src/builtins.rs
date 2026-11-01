@@ -216,8 +216,8 @@ impl Builtin {
 
     pub fn arity(self) -> Arity {
         let (min, max) = match self {
-            LogBase | Root | Mod | NCr | NPr | Beta | BesselJ | BesselY | BesselI | BesselK | Polylog
-            | GammaRe | GammaIm | ZetaRe | ZetaIm => (2, 2),
+            LogBase | Root | Mod | NCr | NPr | Beta | BesselJ | BesselY | BesselI | BesselK
+            | Polylog | GammaRe | GammaIm | ZetaRe | ZetaIm => (2, 2),
             Arctan | Round => (1, 2),
             Min | Max | Gcd | Lcm | Mean | Median | Total | Length => (1, usize::MAX),
             _ => (1, 1),

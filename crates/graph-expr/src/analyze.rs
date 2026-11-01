@@ -937,8 +937,21 @@ fn has_complex_form(f: Builtin) -> bool {
     use Builtin::*;
     matches!(
         f,
-        Abs | Exp | Sqrt | Sin | Cos | Tan | Csc | Sec | Cot | Sinh | Cosh | Tanh | Ln | Log
-            | Gamma | Zeta
+        Abs | Exp
+            | Sqrt
+            | Sin
+            | Cos
+            | Tan
+            | Csc
+            | Sec
+            | Cot
+            | Sinh
+            | Cosh
+            | Tanh
+            | Ln
+            | Log
+            | Gamma
+            | Zeta
     )
 }
 
@@ -998,7 +1011,11 @@ fn complex_call(f: Builtin, a: Low, b: Low) -> Option<Result<Item, String>> {
         )),
         Exp => complex_exp(a, b),
         Gamma | Zeta => {
-            let (re, im) = if f == Gamma { (GammaRe, GammaIm) } else { (ZetaRe, ZetaIm) };
+            let (re, im) = if f == Gamma {
+                (GammaRe, GammaIm)
+            } else {
+                (ZetaRe, ZetaIm)
+            };
             Item::complex(
                 shallow(Low::Call(re, vec![a.clone(), b.clone()])),
                 shallow(Low::Call(im, vec![a, b])),

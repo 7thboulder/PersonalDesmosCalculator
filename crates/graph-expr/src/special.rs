@@ -311,7 +311,7 @@ const GL_X: [f64; 5] = [
 const GL_W: [f64; 5] = [
     0.295_524_224_714_752_9,
     0.269_266_719_309_996_4,
-    0.219_086_362_515_982_0,
+    0.219_086_362_515_982,
     0.149_451_349_150_580_6,
     0.066_671_344_308_688_1,
 ];
@@ -345,13 +345,23 @@ fn panels_for(width: f64) -> usize {
 
 /// J_ν(x) for x > 0 and any real order, from Bessel's integral.
 fn bessel_j_integral(nu: f64, x: f64) -> f64 {
-    let first = integrate(|t| (nu * t - x * t.sin()).cos(), 0.0, PI, panels_for(x + nu) + 4) / PI;
+    let first = integrate(
+        |t| (nu * t - x * t.sin()).cos(),
+        0.0,
+        PI,
+        panels_for(x + nu) + 4,
+    ) / PI;
     let s = (nu * PI).sin();
     if s == 0.0 {
         return first;
     }
     let end = tail_end(|t| x * t.sinh() + nu * t);
-    let tail = integrate(|t| (-x * t.sinh() - nu * t).exp(), 0.0, end, 8 * end.ceil() as usize);
+    let tail = integrate(
+        |t| (-x * t.sinh() - nu * t).exp(),
+        0.0,
+        end,
+        8 * end.ceil() as usize,
+    );
     first - s / PI * tail
 }
 
@@ -425,7 +435,12 @@ pub fn bessel_i(nu: f64, x: f64) -> f64 {
         return first;
     }
     let end = tail_end(|t| x * t.cosh() + nu * t);
-    let tail = integrate(|t| (-x * t.cosh() - nu * t).exp(), 0.0, end, 8 * end.ceil() as usize);
+    let tail = integrate(
+        |t| (-x * t.cosh() - nu * t).exp(),
+        0.0,
+        end,
+        8 * end.ceil() as usize,
+    );
     first - s / PI * tail
 }
 
@@ -506,7 +521,8 @@ pub fn airy_bi(x: f64) -> f64 {
         (x / 3.0).sqrt() * (bessel_i(1.0 / 3.0, zeta) + bessel_i(-1.0 / 3.0, zeta))
     } else {
         let y = -x;
-        (y / 3.0).sqrt() * (bessel_j_integral(-1.0 / 3.0, zeta) - bessel_j_integral(1.0 / 3.0, zeta))
+        (y / 3.0).sqrt()
+            * (bessel_j_integral(-1.0 / 3.0, zeta) - bessel_j_integral(1.0 / 3.0, zeta))
     }
 }
 
@@ -926,14 +942,30 @@ mod tests {
     fn bessel_functions() {
         check!(bessel_j(0.0, 1.0), 0.765_197_686_557_966_6);
         check!(bessel_j(2.0, 10.0), 0.254_630_313_685_120_9);
-        check!(bessel_j(0.5, 2.0), (2.0 / (PI * 2.0)).sqrt() * 2f64.sin(), 1e-10);
+        check!(
+            bessel_j(0.5, 2.0),
+            (2.0 / (PI * 2.0)).sqrt() * 2f64.sin(),
+            1e-10
+        );
         check!(bessel_j(1.5, 30.0), -0.027_267_945_711_177_69, 1e-9);
-        check!(bessel_j(-0.5, 2.0), (2.0 / (PI * 2.0)).sqrt() * 2f64.cos(), 1e-10);
+        check!(
+            bessel_j(-0.5, 2.0),
+            (2.0 / (PI * 2.0)).sqrt() * 2f64.cos(),
+            1e-10
+        );
         check!(bessel_y(0.0, 1.0), 0.088_256_964_215_676_96);
-        check!(bessel_y(0.5, 2.0), -(2.0 / (PI * 2.0)).sqrt() * 2f64.cos(), 1e-10);
+        check!(
+            bessel_y(0.5, 2.0),
+            -(2.0 / (PI * 2.0)).sqrt() * 2f64.cos(),
+            1e-10
+        );
         check!(bessel_i(0.0, 1.0), 1.266_065_877_752_008_4);
         check!(bessel_i(1.0, 20.0), 4.245_497_338_512_777e7, 1e-10);
-        check!(bessel_i(0.5, 2.0), (2.0 / (PI * 2.0)).sqrt() * 2f64.sinh(), 1e-10);
+        check!(
+            bessel_i(0.5, 2.0),
+            (2.0 / (PI * 2.0)).sqrt() * 2f64.sinh(),
+            1e-10
+        );
         check!(bessel_k(0.0, 1.0), 0.421_024_438_240_708_3);
         check!(bessel_k(0.5, 2.0), (PI / 4.0).sqrt() * (-2f64).exp(), 1e-10);
         check!(bessel_k(1.0, 0.01), 99.973_894_118_296_25, 1e-10);

@@ -40,11 +40,20 @@ macro_rules! check {
 #[test]
 fn gamma_and_friends() {
     check!(["\\Gamma\\left(5\\right)"], 24.0);
-    check!(["\\Gamma\\left(\\frac{1}{2}\\right)"], std::f64::consts::PI.sqrt());
+    check!(
+        ["\\Gamma\\left(\\frac{1}{2}\\right)"],
+        std::f64::consts::PI.sqrt()
+    );
     check!(["\\psi\\left(1\\right)"], -0.577_215_664_901_532_9);
     check!(["B\\left(2,3\\right)"], 1.0 / 12.0);
     // In terms of other functions and inside user functions.
-    check!(["f\\left(x\\right)=\\Gamma\\left(x+1\\right)", "f\\left(4\\right)"], 24.0);
+    check!(
+        [
+            "f\\left(x\\right)=\\Gamma\\left(x+1\\right)",
+            "f\\left(4\\right)"
+        ],
+        24.0
+    );
 }
 
 #[test]
@@ -53,26 +62,62 @@ fn a_defined_name_is_not_a_special_function() {
     check!(["\\Gamma=3", "\\Gamma\\left(2\\right)"], 6.0);
     check!(["W\\left(x\\right)=x^{2}", "W\\left(3\\right)"], 9.0);
     // A parameter named K is a number inside the function.
-    check!(["g\\left(K\\right)=K\\left(2\\right)", "g\\left(5\\right)"], 10.0);
+    check!(
+        ["g\\left(K\\right)=K\\left(2\\right)", "g\\left(5\\right)"],
+        10.0
+    );
 }
 
 #[test]
 fn named_functions() {
-    check!(["\\operatorname{erf}\\left(1\\right)"], 0.842_700_792_949_714_9);
-    check!(["\\operatorname{erfc}\\left(2\\right)"], 0.004_677_734_981_047_266);
-    check!(["\\operatorname{erfi}\\left(1\\right)"], 1.650_425_758_797_543);
-    check!(["\\operatorname{Si}\\left(1\\right)"], 0.946_083_070_367_183);
-    check!(["\\operatorname{Ci}\\left(1\\right)"], 0.337_403_922_900_968_1);
-    check!(["\\operatorname{Ei}\\left(1\\right)"], 1.895_117_816_355_937);
-    check!(["\\operatorname{li}\\left(10\\right)"], 6.165_599_504_787_298);
-    check!(["\\operatorname{Ai}\\left(1\\right)"], 0.135_292_416_312_881_4);
-    check!(["\\operatorname{Bi}\\left(1\\right)"], 1.207_423_594_952_871);
-    check!(["\\operatorname{Li}_{2}\\left(0.5\\right)"], 0.582_240_526_465_012_5);
+    check!(
+        ["\\operatorname{erf}\\left(1\\right)"],
+        0.842_700_792_949_714_9
+    );
+    check!(
+        ["\\operatorname{erfc}\\left(2\\right)"],
+        0.004_677_734_981_047_266
+    );
+    check!(
+        ["\\operatorname{erfi}\\left(1\\right)"],
+        1.650_425_758_797_543
+    );
+    check!(
+        ["\\operatorname{Si}\\left(1\\right)"],
+        0.946_083_070_367_183
+    );
+    check!(
+        ["\\operatorname{Ci}\\left(1\\right)"],
+        0.337_403_922_900_968_1
+    );
+    check!(
+        ["\\operatorname{Ei}\\left(1\\right)"],
+        1.895_117_816_355_937
+    );
+    check!(
+        ["\\operatorname{li}\\left(10\\right)"],
+        6.165_599_504_787_298
+    );
+    check!(
+        ["\\operatorname{Ai}\\left(1\\right)"],
+        0.135_292_416_312_881_4
+    );
+    check!(
+        ["\\operatorname{Bi}\\left(1\\right)"],
+        1.207_423_594_952_871
+    );
+    check!(
+        ["\\operatorname{Li}_{2}\\left(0.5\\right)"],
+        0.582_240_526_465_012_5
+    );
 }
 
 #[test]
 fn letters_with_orders() {
-    check!(["\\zeta\\left(2\\right)"], std::f64::consts::PI.powi(2) / 6.0);
+    check!(
+        ["\\zeta\\left(2\\right)"],
+        std::f64::consts::PI.powi(2) / 6.0
+    );
     check!(["J_{0}\\left(1\\right)"], 0.765_197_686_557_966_6);
     check!(["n=2", "J_{n}\\left(10\\right)"], 0.254_630_313_685_120_6);
     check!(["Y_{0}\\left(1\\right)"], 0.088_256_964_215_676_96);
