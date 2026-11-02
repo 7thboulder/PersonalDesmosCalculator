@@ -234,3 +234,35 @@ fn integrals_without_bounds_graph() {
     };
     assert!(!format!("{rhs:?}").contains("Integral"));
 }
+
+#[test]
+fn letter_special_functions_are_functions() {
+    // ψ(2) is digamma, not ψ times 2, as the calculator reads it.
+    for (latex, want) in [
+        ("\\psi\\left(2\\right)", 0.422_784_335_098_467_1),
+        ("\\Gamma\\left(5\\right)", 24.0),
+        ("\\zeta\\left(2\\right)", 1.644_934_066_848_226_4),
+        ("B\\left(2,3\\right)", 1.0 / 12.0),
+        ("W\\left(1\\right)", 0.567_143_290_409_783_8),
+        ("K\\left(0.5\\right)", 1.685_750_354_812_596),
+        ("E\\left(0.5\\right)", 1.467_462_209_339_427),
+        ("J_0\\left(1\\right)", 0.765_197_686_557_966_6),
+        ("J_{0}\\left(1\\right)", 0.765_197_686_557_966_6),
+    ] {
+        let r = solved(latex, None).result.unwrap();
+        let got: f64 = r
+            .split('\\')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("{latex} gave {r}, want {want}"));
+        assert!(
+            (got - want).abs() < 1e-6 * (1.0 + want.abs()),
+            "{latex} gave {r}"
+        );
+    }
+    // A row that sets the letter makes it a product again.
+    let r = run("K\\left(2\\right)", &["K=3".to_string()], None);
+    assert_eq!(r.result.as_deref(), Some("2K"), "{:?}", r.error);
+}
