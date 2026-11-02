@@ -62,6 +62,23 @@
     'mu nu xi rho sigma upsilon phi chi psi omega ' +
     'Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega';
 
+  // Older files may hold abs(x); Desmos shows absolute value only as bars,
+  // so it opens as |x|.
+  function absBars(latex) {
+    var open = '\\operatorname{abs}\\left(';
+    var at = latex.indexOf(open);
+    while (at >= 0) {
+      var i = at + open.length, depth = 1;
+      while (i < latex.length && depth > 0) {
+        if (latex.startsWith('\\left', i)) { depth++; i += 5; } else if (latex.startsWith('\\right', i)) { depth--; i += 6; } else i++;
+      }
+      if (depth > 0 || latex[i] !== ')') break;
+      latex = latex.slice(0, at) + '\\left|' + latex.slice(at + open.length, i - 6) + '\\right|' + latex.slice(i + 1);
+      at = latex.indexOf(open);
+    }
+    return latex;
+  }
+
   // Options matching how Desmos's editor behaves when typing.
   var MATH_OPTIONS = {
     spaceBehavesLikeTab: false,
@@ -73,10 +90,11 @@
     autoSubscriptNumerals: true,
     // Every Greek letter Desmos spells out, so typing omega gives ω, and
     // matrix for a matrix in place.
-    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix ' + GREEK_LETTERS,
+    // Typing abs makes |x| bars, as in Desmos.
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
-      'ln log exp abs min max floor ceil round sign mod mean median total length ' +
+      'ln log exp min max floor ceil round sign mod mean median total length ' +
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
       'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
       'mandelbrot julia cobweb bifurcation ' +
@@ -1067,7 +1085,7 @@
         enter: function () { row.field.focus(); }
       }
     }));
-    if (latex) row.field.latex(latex);
+    if (latex) row.field.latex(absBars(latex));
     el.querySelector('.math').addEventListener('keydown', function (e) {
       if (e.key === '"' && row.field.latex() === '') {
         e.preventDefault();
@@ -2052,7 +2070,7 @@
     ['LIST OPERATIONS', named('join sort unique').concat([['for', 't: for ']])],
     ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
       ['\u222b', 'c:\\int'], ['\u221e', 'c:\\infty'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
-    ['NUMBER THEORY', named('gcd lcm mod floor ceil round abs sign nCr nPr').concat([['n!', 't:!']])],
+    ['NUMBER THEORY', named('gcd lcm mod floor ceil round').concat([['abs', 'c:|']], named('sign nCr nPr'), [['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
     ['COMPLEX', named('real imag conj arg')],
     ['MATRICES', named('det inv transpose rref trace rank eigenvalues eigenvectors identity')],
@@ -2273,7 +2291,7 @@
       ['\\log x', 'Log base 10'], ['\\log_2x', 'Log base 2'],
       ['\\sqrt{x},\\ \\sqrt[3]{x}', 'Square and nth roots (type sqrt, nthroot)'], ['n!', 'Factorial']]],
     ['NUMBERS', [
-      ['\\left|x\\right|,\\ \\operatorname{abs}\\left(x\\right)', 'Absolute value'],
+      ['\\left|x\\right|', 'Absolute value (type | or abs)'],
       ['\\operatorname{floor}\\left(x\\right)', 'Also ceil'],
       ['\\operatorname{round}\\left(x,2\\right)', 'Round, optionally to places'],
       ['\\operatorname{sign}\\left(x\\right)', 'Sign: -1, 0 or 1'],
@@ -2690,7 +2708,7 @@
   };
 
   // The document view (doc.js) types with the same editor settings.
-  window.panel = { mathOptions: MATH_OPTIONS, send: send };
+  window.panel = { mathOptions: MATH_OPTIONS, absBars: absBars, send: send };
   document.getElementById('block-done').addEventListener('click', function () {
     if (window.doc) window.doc.show(true);
   });
