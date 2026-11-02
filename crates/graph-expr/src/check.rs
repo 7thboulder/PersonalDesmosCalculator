@@ -306,6 +306,15 @@ impl Context {
                 {
                     return;
                 }
+                // Γ(x), ψ(x), J_n(x) and the other letter functions, when
+                // no row sets the letter.
+                let letter = n.split_once('_').map_or(n, |(l, _)| l);
+                if !self.defined.iter().any(|d| d == letter)
+                    && ((1..=2).any(|k| crate::builtins::from_letter(n, k).is_some())
+                        || (n.contains('_') && crate::builtins::bessel(letter).is_some()))
+                {
+                    return;
+                }
                 // f(x) with no f defined can't be worked out; x(x+2) is a
                 // product, as the calculator reads it.
                 if FUNCTION_LETTERS.contains(&n) {

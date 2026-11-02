@@ -11,12 +11,18 @@ use crate::builtins::Builtin;
 #[derive(Default)]
 pub struct Defs {
     funcs: HashMap<String, (Vec<String>, Expr)>,
+    /// Names other rows set, as `K = 3` does, so K(2) stays a product.
+    vars: Vec<String>,
 }
 
 impl Defs {
     pub fn from_rows(rows: &[String]) -> Defs {
         let mut defs = Defs::default();
         for latex in rows {
+            if let Ok(Statement::Relation(Expr::Var(name), Relation::Eq, _)) = crate::parse(latex) {
+                defs.vars.push(name);
+                continue;
+            }
             if let Ok(Statement::Relation(Expr::Apply(name, params), Relation::Eq, body)) =
                 crate::parse(latex)
             {
@@ -38,6 +44,32 @@ impl Defs {
     pub fn function(&self, name: &str) -> Option<&(Vec<String>, Expr)> {
         self.funcs.get(name)
     }
+
+    fn is_var(&self, name: &str) -> bool {
+        self.vars.iter().any(|v| v == name)
+    }
+}
+
+/// Γ(x), ψ(x), ζ(s), B(a,b), W(x), K(k), E(k) and J_n(x) are special
+/// functions written with letters, as the calculator reads them, unless
+/// another row sets that letter.
+fn letter_call(name: &str, args: &[Sym], defs: &Defs) -> Option<Result<Sym, String>> {
+    if defs.is_var(name) {
+        return None;
+    }
+    if let Some(b) = crate::builtins::from_letter(name, args.len()) {
+        return Some(call(b, args.to_vec()));
+    }
+    let (letter, sub) = name.split_once('_')?;
+    if defs.is_var(letter) || args.len() != 1 {
+        return None;
+    }
+    let b = crate::builtins::bessel(letter)?;
+    let order = match sub.parse::<f64>() {
+        Ok(v) => num_f64(v),
+        Err(_) => var(sub),
+    };
+    Some(call(b, vec![order, args[0].clone()]))
 }
 
 const UNSUPPORTED: &str =
@@ -98,9 +130,12 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
                     let body = convert(body, defs, depth + 1)?;
                     substitute(&body, params, &args)
                 }
-                // a(x+1) is a times x+1 when a is not a function.
-                None if args.len() == 1 => mul2(var(name), args.into_iter().next().unwrap()),
-                None => return Err(format!("{name} isn't defined as a function")),
+                None => match letter_call(name, &args, defs) {
+                    Some(special) => special?,
+                    // a(x+1) is a times x+1 when a is not a function.
+                    None if args.len() == 1 => mul2(var(name), args.into_iter().next().unwrap()),
+                    None => return Err(format!("{name} isn't defined as a function")),
+                },
             }
         }
         Expr::Factorial(a) => {
@@ -245,6 +280,11 @@ fn call(f: Builtin, mut args: Vec<Sym>) -> Result<Sym, String> {
             if args.iter().all(Sym::is_constant) {
                 let values: Vec<f64> = args.iter().map(Sym::value).collect();
                 let v = other.eval(&values);
+                // Special functions' values are almost never fractions, so
+                // K(0.5) shows as a decimal, not 421437588703149/2.5·10¹⁴.
+                if v.is_finite() && is_special(other) && v.fract() != 0.0 {
+                    return Ok(Sym::Real(v));
+                }
                 if v.is_finite() {
                     return Ok(num_f64(v));
                 }
@@ -252,4 +292,32 @@ fn call(f: Builtin, mut args: Vec<Sym>) -> Result<Sym, String> {
             Err(format!("Solve can't do algebra with {} yet", other.name()))
         }
     }
+}
+
+fn is_special(f: Builtin) -> bool {
+    use Builtin as B;
+    matches!(
+        f,
+        B::Gamma
+            | B::Digamma
+            | B::Beta
+            | B::Erf
+            | B::Erfc
+            | B::Erfi
+            | B::Zeta
+            | B::BesselJ
+            | B::BesselY
+            | B::BesselI
+            | B::BesselK
+            | B::AiryAi
+            | B::AiryBi
+            | B::Si
+            | B::Ci
+            | B::Ei
+            | B::Li
+            | B::LambertW
+            | B::Polylog
+            | B::EllipticK
+            | B::EllipticE
+    )
 }
