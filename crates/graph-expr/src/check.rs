@@ -322,6 +322,16 @@ impl Context {
                     return;
                 }
             }
+            // H_{2n-1} and H_5, when a line says what H_n is.
+            let is_function = |k: &str| {
+                self.defined
+                    .iter()
+                    .any(|d| crate::subscripts::indexed(d).is_some_and(|(key, _)| key == k))
+            };
+            if (applied && is_function(n)) || crate::subscripts::as_call(n, &is_function).is_some()
+            {
+                return;
+            }
             let n = n.trim_end_matches('\'');
             if matches!(n, "pi" | "e" | "i" | "infty" | "tau")
                 || self.defined.iter().any(|d| d == n)

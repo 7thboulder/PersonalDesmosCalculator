@@ -106,6 +106,8 @@
   // Desmos subscripts hold only letters and digits, so typing anything else
   // at the end of one, like = or a comma, steps out of it first: t_rack=2
   // types as t_{rack}=2. MathQuill only does this for superscripts.
+  // A bracket typed straight after _ stays in, so H_(2n-1) puts the whole
+  // expression in the subscript.
   document.addEventListener('keydown', function (e) {
     if (e.key.length !== 1 || /[A-Za-z0-9_]/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
     var root = e.target.closest && e.target.closest('.mq-editable-field');
@@ -141,6 +143,7 @@
     }
     if (inBound) return;
     if (cursor.nextElementSibling || !block.classList.contains('mq-sub')) return;
+    if (e.key === '(' && !cursor.previousElementSibling) return;
     var field = MQ(root);
     if (field) field.keystroke('Right');
   }, true);
