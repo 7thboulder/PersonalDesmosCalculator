@@ -16,6 +16,46 @@
   var rows = [];
   var list = document.getElementById('list');
 
+  // MathQuill sizes brackets, roots and |..| from the height of what they
+  // hold, measured when the math is typeset. Math typeset before it is on
+  // the page, or while its view is hidden, measures nothing and keeps
+  // small brackets sitting high. So math is sized again the first time it
+  // shows, and all of it when the view changes.
+  var sizedMath = new WeakSet();
+  var sizeFrame = 0;
+  function sizeMath(all) {
+    document.querySelectorAll('.mq-math-mode').forEach(function (el) {
+      if (!all && sizedMath.has(el)) return;
+      if (!el.getClientRects().length) return; // hidden: try when it shows
+      var api = MQ(el);
+      if (!api) return;
+      // Not api.reflow(): on a field that also runs its edit handler,
+      // which would mark a document edited.
+      api.__controller.root.eachChild(function (c) { c.postOrder('reflow'); });
+      sizedMath.add(el);
+    });
+  }
+  function scheduleSizeMath(all) {
+    if (all) sizeMath.all = true;
+    if (sizeFrame) return;
+    sizeFrame = requestAnimationFrame(function () {
+      sizeFrame = 0;
+      var every = !!sizeMath.all;
+      sizeMath.all = false;
+      sizeMath(every);
+    });
+  }
+  new MutationObserver(function (records) {
+    // New math, or a dialog shown. MathQuill's blinking cursor only
+    // toggles a class, which is not watched here.
+    var grew = records.some(function (r) {
+      return r.type === 'attributes' || Array.prototype.some.call(r.addedNodes, function (n) { return n.nodeType === 1; });
+    });
+    if (grew) scheduleSizeMath(false);
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  new MutationObserver(function () { scheduleSizeMath(true); })
+    .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
   // The Greek letters typing turns into symbols, as in Desmos. Desmos has
   // no capitals that look like Latin ones (A, B, E, ...).
   var GREEK_LETTERS = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ' +
