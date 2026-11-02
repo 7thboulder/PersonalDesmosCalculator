@@ -7,6 +7,7 @@
 
   var MQ = MathQuill.getInterface(2);
   var panel = window.panel || { mathOptions: {}, send: function () {} };
+  var absBars = panel.absBars || function (latex) { return latex; };
   var send = panel.send;
 
   var root = document.getElementById('doc');
@@ -139,7 +140,7 @@
     }));
     if (latex) {
       loading++;
-      line.field.latex(latex);
+      line.field.latex(absBars(latex));
       loading--;
     }
     // Check as I type: leaving a changed line checks its group again.
@@ -578,7 +579,7 @@
     }));
     if (latex) {
       loading++;
-      mf.latex(latex);
+      mf.latex(absBars(latex));
       loading--;
     }
     span.mq = mf;

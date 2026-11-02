@@ -4758,6 +4758,9 @@ bindCharBracketPair('{', '\\{');
 LatexCmds.langle = bind(Bracket, L, '&lang;', '&rang;', '\\langle ', '\\rangle ');
 LatexCmds.rangle = bind(Bracket, R, '&lang;', '&rang;', '\\langle ', '\\rangle ');
 CharCmds['|'] = bind(Bracket, L, '|', '|', '|', '|');
+// Typing abs makes absolute value bars, as in Desmos (an autocommand in
+// the app's options; there is no \abs in LaTeX).
+LatexCmds.abs = CharCmds['|'];
 
 LatexCmds.left = P(MathCommand, function(_) {
   _.parser = function() {
