@@ -124,6 +124,44 @@ fn merge_choices(mut report: symbolic::Report, more: &[symbolic::Choice]) -> sym
     report
 }
 
+/// The document's step check: for each group of lines, whether each line
+/// follows from the one above, with the reason when it doesn't.
+pub fn check_reply(request: &Value) -> Value {
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let context = strings(&request["context"]);
+    let groups: Vec<Value> = request["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|g| {
+            let lines = strings(g);
+            let verdicts =
+                std::panic::catch_unwind(|| graph_expr::check::check_group(&lines, &context))
+                    .unwrap_or_else(|_| vec![graph_expr::check::Verdict::Unknown; lines.len()]);
+            Value::Array(
+                verdicts
+                    .into_iter()
+                    .map(|v| match v {
+                        graph_expr::check::Verdict::Unknown => json!({ "status": "unknown" }),
+                        graph_expr::check::Verdict::Follows => json!({ "status": "ok" }),
+                        graph_expr::check::Verdict::Wrong(reason) => {
+                            json!({ "status": "bad", "reason": reason })
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    json!({ "seq": request["seq"], "groups": groups })
+}
+
 /// A document's live lines as rows for `reply`, numbered from 1 so the
 /// line being solved can be row 0.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -143,6 +181,20 @@ pub fn doc_rows(lines: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_documents_steps() {
+        let r = check_reply(&json!({
+            "seq": 7,
+            "groups": [["x^2=3x", "x=3"], ["\\left(x+1\\right)^2", "=x^2+2x+1"]],
+            "context": []
+        }));
+        assert_eq!(r["seq"], 7);
+        assert_eq!(r["groups"][0][0]["status"], "unknown");
+        assert_eq!(r["groups"][0][1]["status"], "bad");
+        assert_eq!(r["groups"][0][1]["reason"], "Lost the solution x = 0");
+        assert_eq!(r["groups"][1][1]["status"], "ok");
+    }
 
     #[test]
     fn replies_with_steps() {

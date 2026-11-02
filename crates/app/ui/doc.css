@@ -534,7 +534,7 @@ body.doc-view #doc {
 #doc-context button { border: 0; background: transparent; padding: 7px 12px; font: 13px "Segoe UI", Arial, sans-serif; cursor: pointer; }
 #doc-context button:hover { background: #eef3fb; }
 
-#doc-pdf-btn {
+#doc-pdf-btn, #doc-check {
   border: 1px solid #c4c4c4;
   border-radius: 4px;
   padding: 4px 10px;
@@ -543,7 +543,7 @@ body.doc-view #doc {
   font: 600 12px "Segoe UI", Arial, sans-serif;
   cursor: pointer;
 }
-#doc-pdf-btn:hover { background: #eef3fb; }
+#doc-pdf-btn:hover, #doc-check:hover { background: #eef3fb; }
 #doc-pdf .box { width: 420px; font-size: 13px; }
 #doc-pdf .tabs { display: flex; align-items: center; margin-bottom: 10px; font-size: 14px; }
 #doc-pdf .close { margin-left: auto; border: 0; background: transparent; font-size: 18px; cursor: pointer; }
@@ -584,7 +584,33 @@ body.doc-view #doc {
   .mq-slot { color: #999; }
   .dref, .dref.missing { color: #000; }
   .mq-editable-field .mq-cursor { display: none !important; }
+  .dline .dcheck { display: none !important; }
+  .dline.check-bad .dmath .mq-root-block { background-image: none !important; }
   .dline .dlive, .dline .dres .dwarn, .dsolve, .dgraphbtn, .dgraph-bar, .dgraph-note { display: none !important; }
   .dgraph { border-color: #ccc; box-shadow: none !important; }
   .dline .dres { color: #333; overflow: visible; max-width: none; }
+}
+
+/* Step checking: a line that doesn't follow gets a red wavy underline and
+   the reason on the right. */
+#doc-check-type { display: flex; align-items: center; gap: 4px; font: 13px "Segoe UI", Arial, sans-serif; color: #555; margin-right: 6px; cursor: pointer; user-select: none; }
+#doc-check-type input { margin: 0; }
+.dline.check-bad .dmath .mq-editable-field > .mq-root-block {
+  display: inline-block;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='4'%3E%3Cpath d='M0 3 Q2 0 4 3 T8 3' fill='none' stroke='%23c4372f' stroke-width='1.2'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  padding-bottom: 4px;
+}
+.dline .dcheck {
+  display: inline-block;
+  max-width: 22em;
+  margin-right: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font: 12px/1.35 "Segoe UI", Arial, sans-serif;
+  color: #c4372f;
+  background: #fbeceb;
+  white-space: normal;
+  vertical-align: middle;
 }

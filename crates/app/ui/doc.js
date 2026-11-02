@@ -101,7 +101,7 @@
     el.appendChild(gb);
     el.classList.toggle('live', line.live);
     line.field = MQ.MathField(span, mathOptions({
-      edit: function () { changed(); },
+      edit: function () { clearCheck(line); changed(); },
       enter: function () {
         var i = indexOf(line);
         var latex = line.field.latex();
@@ -142,6 +142,12 @@
       line.field.latex(latex);
       loading--;
     }
+    // Check as I type: leaving a changed line checks its group again.
+    el.addEventListener('focusout', function (e) {
+      if (!checkAsType || el.contains(e.relatedTarget)) return;
+      if (line.checkedLatex === line.field.latex()) return;
+      setTimeout(function () { if (lines.indexOf(line) >= 0) checkGroups([groupOf(line)], false); }, 0);
+    });
     el.addEventListener('keydown', function (e) {
       var i = indexOf(line);
       if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
@@ -915,6 +921,117 @@
     return chunks.map(function (c) { return c.rows; });
   }
 
+  // ---- Checking steps ------------------------------------------------------
+
+  var checkSeq = 0;
+  var checkSent = {};
+  var checkAsType = false;
+  var checkTypeBox = document.querySelector('#doc-check-type input');
+  try { checkAsType = localStorage.getItem('graphcalc.checkAsType') === '1'; } catch (e) {}
+  checkTypeBox.checked = checkAsType;
+  checkTypeBox.addEventListener('change', function () {
+    checkAsType = checkTypeBox.checked;
+    try { localStorage.setItem('graphcalc.checkAsType', checkAsType ? '1' : '0'); } catch (e) {}
+    if (checkAsType) checkAll();
+  });
+  document.getElementById('doc-check').addEventListener('mousedown', function (e) { e.preventDefault(); });
+  document.getElementById('doc-check').addEventListener('click', function () { checkAll(); });
+
+  // A step as the checker reads it: references and blanks taken out, its
+  // leading = kept.
+  function checkLatex(latex) {
+    return latex.replace(/\\embed\{ref\}\[[^\]]*\]/g, '').replace(/\\embed\{slot\}/g, '').trim();
+  }
+
+  // Every group of math lines that says something to check.
+  function allGroups() {
+    var groups = [];
+    var cur = null;
+    lines.forEach(function (l) {
+      if (l.kind !== 'math') { cur = null; return; }
+      if (!l.step || !cur) { cur = []; groups.push(cur); }
+      cur.push(l);
+    });
+    return groups.filter(function (g) {
+      return g.some(function (l) { return relationAt(l.field.latex()) >= 0; }) &&
+        (g.length > 1 || /=.*=|[<>]|\\[lg]e/.test(g[0].field.latex()));
+    });
+  }
+
+  function checkAll() {
+    lines.forEach(function (l) { if (l.kind === 'math') clearCheck(l); });
+    var groups = allGroups();
+    if (!groups.length) {
+      showStatus('No steps to check');
+      return;
+    }
+    showStatus('Checking steps…');
+    checkGroups(groups, true);
+  }
+
+  function checkGroups(groups, report) {
+    var seq = ++checkSeq;
+    var sent = groups.map(function (g) {
+      return g.map(function (l) { return { line: l, latex: l.field.latex() }; });
+    });
+    checkSent[seq] = { groups: sent, report: report };
+    var context = liveLines().map(function (l) { return evalLatex(l.field.latex()); })
+      .filter(function (l) { return l; });
+    send({
+      type: 'docCheck',
+      seq: seq,
+      groups: sent.map(function (g) { return g.map(function (x) { return checkLatex(x.latex); }); }),
+      context: context
+    });
+  }
+
+  function checked(reply) {
+    var sent = checkSent[reply.seq];
+    delete checkSent[reply.seq];
+    if (!sent) return;
+    var bad = 0;
+    var ok = 0;
+    (reply.groups || []).forEach(function (results, gi) {
+      var g = sent.groups[gi] || [];
+      results.forEach(function (r, k) {
+        var x = g[k];
+        if (!x || lines.indexOf(x.line) < 0 || x.line.field.latex() !== x.latex) return;
+        x.line.checkedLatex = x.latex;
+        if (r.status === 'bad') bad++;
+        else if (r.status === 'ok') ok++;
+        markCheck(x.line, r.status === 'bad' ? r.reason : null);
+      });
+    });
+    if (sent.report) {
+      if (bad) showStatus(bad === 1 ? '1 step doesn’t follow' : bad + ' steps don’t follow', true);
+      else if (ok) showStatus(ok === 1 ? '1 step checked: it follows' : ok + ' steps checked: they all follow');
+      else showStatus('Nothing here could be checked');
+    }
+  }
+
+  function markCheck(line, reason) {
+    line.el.classList.toggle('check-bad', !!reason);
+    if (reason) {
+      if (!line.checkEl) {
+        line.checkEl = document.createElement('span');
+        line.checkEl.className = 'dcheck';
+        line.resEl.insertBefore(line.checkEl, line.resEl.firstChild);
+      }
+      line.checkEl.textContent = reason;
+      line.checkEl.title = reason;
+      line.el.classList.add('has-res');
+    } else if (line.checkEl) {
+      line.checkEl.remove();
+      line.checkEl = null;
+      line.el.classList.toggle('has-res', line.resEl.childNodes.length > 0);
+    }
+  }
+
+  function clearCheck(line) {
+    line.checkedLatex = null;
+    if (line.checkEl || line.el.classList.contains('check-bad')) markCheck(line, null);
+  }
+
   function evaluate() {
     clearTimeout(evalTimer);
     redrawGraphs();
@@ -953,7 +1070,9 @@
     var el = line.resEl;
     el.innerHTML = '';
     el.title = '';
-    line.el.classList.toggle('has-res', !!(value || warn));
+    // A step check's reason stays.
+    if (line.checkEl) el.appendChild(line.checkEl);
+    line.el.classList.toggle('has-res', !!(value || warn || line.checkEl));
     if (value) {
       var span = document.createElement('span');
       el.appendChild(span);
@@ -1762,6 +1881,7 @@
     else if (scBox.classList.contains('open') && e.key === 'Escape') closeShortcuts();
     else if (pdfBox.classList.contains('open') && e.key === 'Escape') closePdf();
     else if (e.key === 'Escape' && !ctrl && cancelSolves()) handled = true;
+    else if (e.key === 'F9' && !ctrl && !e.altKey) checkAll();
     else if (ctrl && !e.altKey && k === 'l' && !scBox.classList.contains('open')) {
       var cur = currentLine();
       if (cur && cur.kind === 'math') {
@@ -2114,6 +2234,7 @@
     },
     evaluated: evaluated,
     solved: solved,
+    checked: checked,
     // For tests: the document as it would be saved.
     serialize: serialize,
     stepLines: stepLines,

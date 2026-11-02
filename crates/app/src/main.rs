@@ -46,6 +46,8 @@ USAGE:
                                        it in a browser
     graphcalc --export-desmos FILE     print a graph as Desmos's Calc.setState
                                        takes it (warnings go to stderr)
+    graphcalc --check                  check a document's steps, read as JSON on
+                                       stdin, and print the verdicts
     graphcalc --analyze                read the panel's rows as JSON on stdin and
                                        print the engine's reply, for testing
     graphcalc --graph-block            draw a document's graph block, read as JSON
@@ -92,6 +94,15 @@ fn run(args: &[String]) -> Result<(), String> {
             let rows: serde_json::Value =
                 serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
             println!("{}", engine::Engine::default().update(&rows));
+            Ok(())
+        }
+        Some("--check") => {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let request: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
+            println!("{}", solve::check_reply(&request));
             Ok(())
         }
         Some("--graph-block") => {

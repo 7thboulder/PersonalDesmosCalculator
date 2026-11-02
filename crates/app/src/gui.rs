@@ -754,6 +754,14 @@ impl Running {
                     format!("window.doc.solved({reply})")
                 });
             }
+            // F9: whether each step follows, worked out off the UI thread.
+            Some("docCheck") => {
+                let request = value.clone();
+                self.in_background(move || {
+                    let reply = crate::solve::check_reply(&request);
+                    format!("window.doc.checked({reply})")
+                });
+            }
             // Esc while solving: Giac stops; the answer is dropped.
             Some("docCancel") => crate::giac::cancel(),
             // The live lines, in chunks: a name defined again starts a new
