@@ -1313,6 +1313,21 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         for statement in parsed.iter_mut().flatten().flatten() {
             special_calls(statement, &defined);
         }
+        // `H_5` and `H_m` with only `H_n = …` written are H at 5 and m.
+        let indexed = crate::subscripts::functions(
+            parsed
+                .iter()
+                .flatten()
+                .flatten()
+                .filter_map(crate::subscripts::var_definition),
+        );
+        if !indexed.is_empty() {
+            let is_function = |n: &str| indexed.contains_key(n);
+            let is_defined = |n: &str| defined.contains(n);
+            for statement in parsed.iter_mut().flatten().flatten() {
+                crate::subscripts::rewrite_statement(statement, &is_defined, &is_function);
+            }
+        }
     }
 
     // Collect definitions, refusing duplicates and reserved names.
@@ -1409,6 +1424,25 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
                 env.funcs.insert(name.clone(), def);
             }
         }
+    }
+    // `H_n = …` also defines H with any subscript, as the function `H_`.
+    let indexed =
+        crate::subscripts::functions(defs.iter().flatten().flatten().filter_map(|d| match d {
+            Def::Var(name, expr) => Some((name.as_str(), expr)),
+            Def::Func(..) => None,
+        }));
+    for (name, (param, body)) in indexed {
+        if env.funcs.contains_key(&name) {
+            continue;
+        }
+        let def = match env.old.funcs.get(&name) {
+            Some(old) if old.params == [param.clone()] && old.body == body => Rc::clone(old),
+            _ => Rc::new(FuncDef {
+                params: vec![param],
+                body,
+            }),
+        };
+        env.funcs.insert(name, def);
     }
 
     // Matrices are worked out first, and every row that mentions one is
@@ -1778,6 +1812,12 @@ fn special_expr(e: Expr, skip: &dyn Fn(&str) -> bool) -> Expr {
             if let Some(b) = crate::builtins::from_letter(&name, args.len()) {
                 return Ok(Expr::Call(b, lower(args)));
             }
+            // J_{n+1}(x): the order is an expression, the first argument.
+            if let Some(letter) = name.strip_suffix('_') {
+                if let (Some(b), 2) = (crate::builtins::bessel(letter), args.len()) {
+                    return Ok(Expr::Call(b, lower(args)));
+                }
+            }
             // J_n(x): the subscript is the order, a number or a variable.
             if let Some((letter, sub)) = name.split_once('_') {
                 if let (Some(b), 1) = (crate::builtins::bessel(letter), args.len()) {
@@ -1815,7 +1855,10 @@ fn definition(statement: &Statement) -> Option<Result<Def, String>> {
     };
     match lhs {
         Expr::Var(name) if definable(name) => {
-            if rhs.mentions(name) {
+            // `a_n = 2a_{n-1}` uses itself through the subscript.
+            let recurs =
+                crate::subscripts::indexed(name).is_some_and(|(key, _)| rhs.mentions(&key));
+            if rhs.mentions(name) || recurs {
                 return Some(Err(format!("'{name}' is defined in terms of itself")));
             }
             Some(Ok(Def::Var(name.clone(), rhs.clone())))
@@ -4717,6 +4760,9 @@ impl Env {
                         }
                     }
                     v
+                } else if name.ends_with('_') {
+                    problems.error(crate::subscripts::undefined(name));
+                    Val::nan()
                 } else if args.len() <= 2 {
                     // `a(x+1)` with `a` not a function is multiplication, and
                     // `a(1, 2)` scales a point.

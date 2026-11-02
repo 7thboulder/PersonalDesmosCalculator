@@ -463,6 +463,19 @@ impl Parser {
             Tok::Num(v) => Ok(Expr::Num(v)),
             Tok::Unit(text) => Ok(Expr::Unit(Box::new(crate::units::parse_unit(&text)?))),
             Tok::Letter(letter) => {
+                // `H_{2n-1}`: a subscript holding an expression.
+                if let Some(index) = self.subscript_expr()? {
+                    let name = format!("{letter}_");
+                    // `J_{n+1}(x)`: a Bessel function of order n+1.
+                    if crate::builtins::bessel(&letter).is_some()
+                        && self.peek() == Some(&Tok::LParen)
+                    {
+                        let mut args = vec![index];
+                        args.extend(self.paren_args()?);
+                        return Ok(Expr::Apply(name, args));
+                    }
+                    return Ok(Expr::Apply(name, vec![index]));
+                }
                 let name = self.subscripted(letter)?;
                 let mut primes = 0;
                 while self.eat(&Tok::Prime) {
@@ -796,6 +809,39 @@ impl Parser {
             return Err("A piecewise definition needs a condition, like {x<0: 1}".into());
         }
         Ok(Expr::Piecewise(branches, otherwise))
+    }
+
+    /// A subscript that holds more than letters and digits, as in
+    /// `H_{2n-1}` or `a_{(n+1)}`, read as an expression. None (and nothing
+    /// eaten) when there is no subscript or it is a plain name like `a_{12}`.
+    fn subscript_expr(&mut self) -> Result<Option<Expr>, String> {
+        if self.peek() != Some(&Tok::Underscore)
+            || self.toks.get(self.pos + 1) != Some(&Tok::LBrace)
+        {
+            return Ok(None);
+        }
+        let mut i = self.pos + 2;
+        let mut plain = true;
+        loop {
+            match self.toks.get(i) {
+                Some(Tok::RBrace) => break,
+                Some(Tok::Letter(l)) if l.len() == 1 => {}
+                Some(Tok::Num(v)) if v.fract() == 0.0 && *v >= 0.0 => {}
+                Some(_) => {
+                    plain = false;
+                    break;
+                }
+                None => break,
+            }
+            i += 1;
+        }
+        if plain {
+            return Ok(None);
+        }
+        self.pos += 2;
+        let e = self.expr()?;
+        self.expect(&Tok::RBrace)?;
+        Ok(Some(e))
     }
 
     /// Reads an optional subscript after a letter: `a_1`, `x_{12}`, `a_{bc}`.

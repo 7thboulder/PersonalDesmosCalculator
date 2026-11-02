@@ -4257,9 +4257,19 @@ var SupSub = P(MathCommand, function(_, super_) {
   _.finalizeTree = function() {
     this.ends[L].write = function(cursor, ch) {
       if (cursor.options.autoSubscriptNumerals && this === this.parent.sub) {
+        // H_{(2n-1)}: a subscript opened with a bracket ends where the
+        // bracket closes, so what is typed next goes after it.
+        if (this.ends[L] instanceof Bracket && this.ends[L] === this.ends[R]
+            && cursor[L] === this.ends[L] && !cursor.selection) {
+          cursor.insRightOf(this.parent);
+          return cursor.parent.write(cursor, ch);
+        }
         if (ch === '_') return;
         var cmd = this.chToCmd(ch);
         if (cmd instanceof Symbol) cursor.deleteSelection();
+        // H_(2n-1): a bracket opening an empty subscript stays in it, so
+        // the subscript can hold an expression.
+        else if (ch === '(' && this.isEmpty()) cursor.deleteSelection();
         else cursor.clearSelection().insRightOf(this.parent);
         return cmd.createLeftOf(cursor.show());
       }
@@ -4271,7 +4281,10 @@ var SupSub = P(MathCommand, function(_, super_) {
     };
   };
   _.moveTowards = function(dir, cursor, updown) {
-    if (cursor.options.autoSubscriptNumerals && !this.sup) {
+    // Arrows step over a plain subscript like a_1, but go into one that
+    // holds an expression, like H_{(2n-1)}, so it can be edited.
+    if (cursor.options.autoSubscriptNumerals && !this.sup
+        && /^[A-Za-z0-9]*$/.test(this.sub.latex())) {
       cursor.insDirOf(dir, this);
     }
     else super_.moveTowards.apply(this, arguments);

@@ -18,9 +18,13 @@ pub struct Defs {
 impl Defs {
     pub fn from_rows(rows: &[String]) -> Defs {
         let mut defs = Defs::default();
+        let mut values = Vec::new();
         for latex in rows {
-            if let Ok(Statement::Relation(Expr::Var(name), Relation::Eq, _)) = crate::parse(latex) {
-                defs.vars.push(name);
+            if let Ok(Statement::Relation(Expr::Var(name), Relation::Eq, value)) =
+                crate::parse(latex)
+            {
+                defs.vars.push(name.clone());
+                values.push((name, value));
                 continue;
             }
             if let Ok(Statement::Relation(Expr::Apply(name, params), Relation::Eq, body)) =
@@ -37,6 +41,11 @@ impl Defs {
                     defs.funcs.insert(name, (names, body));
                 }
             }
+        }
+        // `H_n = …` also says what H_{2n-1} is.
+        let indexed = crate::subscripts::functions(values.iter().map(|(n, v)| (n.as_str(), v)));
+        for (name, (param, body)) in indexed {
+            defs.funcs.entry(name).or_insert((vec![param], body));
         }
         defs
     }
@@ -58,6 +67,11 @@ fn letter_call(name: &str, args: &[Sym], defs: &Defs) -> Option<Result<Sym, Stri
         return None;
     }
     if let Some(b) = crate::builtins::from_letter(name, args.len()) {
+        return Some(call(b, args.to_vec()));
+    }
+    // J_{n+1}(x): the order is an expression, the first argument.
+    if let Some(letter) = name.strip_suffix('_') {
+        let b = crate::builtins::bessel(letter).filter(|_| args.len() == 2)?;
         return Some(call(b, args.to_vec()));
     }
     let (letter, sub) = name.split_once('_')?;
@@ -109,6 +123,13 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
     Ok(match e {
         Expr::Num(v) => num_f64(*v),
         Expr::Var(v) if v == "infty" => return Err("Solve can't use ∞ here".into()),
+        // H_5 with only H_n = … written is H at 5.
+        Expr::Var(v) if !defs.is_var(v) => {
+            match crate::subscripts::as_call(v, &|n| defs.funcs.contains_key(n)) {
+                Some(call) => convert(&call, defs, depth)?,
+                None => var(v),
+            }
+        }
         Expr::Var(v) => var(v),
         Expr::Neg(a) => neg(c(a)?),
         Expr::Add(a, b) => add2(c(a)?, c(b)?),
@@ -133,6 +154,7 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
                 None => match letter_call(name, &args, defs) {
                     Some(special) => special?,
                     // a(x+1) is a times x+1 when a is not a function.
+                    None if name.ends_with('_') => return Err(crate::subscripts::undefined(name)),
                     None if args.len() == 1 => mul2(var(name), args.into_iter().next().unwrap()),
                     None => return Err(format!("{name} isn't defined as a function")),
                 },

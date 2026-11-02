@@ -16,6 +16,7 @@ pub mod lexer;
 pub mod matrix;
 pub mod parser;
 pub mod special;
+pub mod subscripts;
 pub mod symbolic;
 pub mod units;
 pub mod wgsl;

@@ -124,6 +124,8 @@ struct Writer<'a> {
     names: &'a mut Names,
     /// Functions the other rows define.
     funcs: &'a HashSet<String>,
+    /// Names the other rows set, as `a = 3` does.
+    vars: &'a HashSet<String>,
 }
 
 impl Writer<'_> {
@@ -168,6 +170,12 @@ impl Writer<'_> {
                 if primes > 0 {
                     let base = &name[..name.len() - primes];
                     format!("{}{}", self.names.var(base), "'".repeat(primes))
+                } else if let Some(call) = (!self.vars.contains(name))
+                    .then(|| crate::subscripts::as_call(name, &|n| self.funcs.contains(n)))
+                    .flatten()
+                {
+                    // H_5 with only H_n = … written is H at 5.
+                    self.expr(&call)?
                 } else {
                     self.names.var(name)
                 }
@@ -192,6 +200,15 @@ impl Writer<'_> {
                     format!("{}({args})", self.names.var(name))
                 } else if let Some(b) = builtins::from_letter(name, args.len()) {
                     self.call(b, args)?
+                } else if let Some(b) = name
+                    .strip_suffix('_')
+                    .and_then(builtins::bessel)
+                    .filter(|_| args.len() == 2)
+                {
+                    // J_{n+1}(x): the order is the first argument.
+                    format!("{}({})", giac_bessel(b), self.list(args)?)
+                } else if name.ends_with('_') {
+                    return Err(crate::subscripts::undefined(name));
                 } else if let Some((b, order)) = name
                     .split_once('_')
                     .and_then(|(letter, sub)| Some((builtins::bessel(letter)?, sub)))
@@ -395,7 +412,21 @@ fn split_limit(latex: &str) -> Option<(String, String, i8, String)> {
 pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, String> {
     let mut names = Names::default();
     // Definitions in the other rows: values and functions.
-    let defs: Vec<Statement> = others.iter().filter_map(|o| crate::parse(o).ok()).collect();
+    let mut defs: Vec<Statement> = others.iter().filter_map(|o| crate::parse(o).ok()).collect();
+    // `H_n = …` also defines H with any subscript, as the function `H_`.
+    let indexed =
+        crate::subscripts::functions(defs.iter().filter_map(crate::subscripts::var_definition));
+    for (name, (param, body)) in indexed {
+        defs.push(Statement::Relation(
+            Expr::Apply(name, vec![Expr::Var(param)]),
+            Relation::Eq,
+            body,
+        ));
+    }
+    let vars: HashSet<String> = defs
+        .iter()
+        .filter_map(|d| crate::subscripts::var_definition(d).map(|(n, _)| n.to_owned()))
+        .collect();
     let funcs: HashSet<String> = defs
         .iter()
         .filter_map(|d| match d {
@@ -429,6 +460,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         let mut w = Writer {
             names: &mut names,
             funcs: &funcs,
+            vars: &vars,
         };
         let v = w.names.var(&var);
         let p = w.expr(&point)?;
@@ -455,6 +487,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                 let mut w = Writer {
                     names: &mut names,
                     funcs: &funcs,
+                    vars: &vars,
                 };
                 let g = w.expr(&e)?;
                 let v = w.names.var(&var);
@@ -591,6 +624,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                 let mut w = Writer {
                     names: &mut names,
                     funcs: &funcs,
+                    vars: &vars,
                 };
                 let (ga, gb) = (w.expr(&a)?, w.expr(&b)?);
                 if let Some(dep) = has_prime {
@@ -631,6 +665,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         let mut w = Writer {
             names: &mut names,
             funcs: &funcs,
+            vars: &vars,
         };
         match d {
             Statement::Relation(Expr::Var(n), Relation::Eq, rhs)
