@@ -362,6 +362,7 @@ impl Parser {
                 | Tok::Sum
                 | Tok::Prod
                 | Tok::Int
+                | Tok::Lim
                 | Tok::Unit(_)
                 | Tok::Unsupported(_),
             ) => true,
@@ -584,6 +585,7 @@ impl Parser {
             Tok::Sum => self.repeat(Repeat::Sum),
             Tok::Prod => self.repeat(Repeat::Product),
             Tok::Int => self.integral(),
+            Tok::Lim => self.limit(),
             Tok::Unsupported(name) => Err(format!("'\\{name}' isn't supported yet")),
             other => Err(unexpected(&other)),
         }
@@ -625,6 +627,60 @@ impl Parser {
             Box::new(hi),
             Box::new(body),
         ))
+    }
+
+    /// `\lim_{x\to c} body` after the `\lim`, with `c^+` or `c^-` for one
+    /// side. The body runs over the following term, as a sum's does. It is
+    /// worked out numerically: see [`crate::limit`].
+    fn limit(&mut self) -> Result<Expr, String> {
+        let form = || "A limit needs a variable and a point, like \\lim_{x\\to 0}".to_string();
+        if !self.eat(&Tok::Underscore) || self.peek() != Some(&Tok::LBrace) {
+            return Err(form());
+        }
+        let open = self.pos;
+        let mut depth = 0;
+        let mut close = None;
+        for (i, t) in self.toks.iter().enumerate().skip(open) {
+            match t {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.ok_or_else(form)?;
+        // The side: c^+ or c^{+} from above, c^- or c^{-} from below.
+        let (side, cut) = match &self.toks[open + 1..close] {
+            [.., Tok::Caret, Tok::Plus] => (1, 2),
+            [.., Tok::Caret, Tok::Minus] => (-1, 2),
+            [.., Tok::Caret, Tok::LBrace, Tok::Plus, Tok::RBrace] => (1, 4),
+            [.., Tok::Caret, Tok::LBrace, Tok::Minus, Tok::RBrace] => (-1, 4),
+            _ => (0, 0),
+        };
+        self.toks.drain(close - cut..close);
+        self.pos = open + 1;
+        let var = match self.next() {
+            Some(Tok::Letter(l)) => self.subscripted(l)?,
+            _ => return Err(form()),
+        };
+        if !self.eat(&Tok::Arrow) {
+            return Err(form());
+        }
+        if self.peek() == Some(&Tok::RBrace) {
+            return Err("A limit needs the point it goes to".into());
+        }
+        let point = self.expr()?;
+        self.expect(&Tok::RBrace)?;
+        if self.peek().is_none() || !(self.starts_factor() || self.peek() == Some(&Tok::Minus)) {
+            return Err("This limit needs something to take the limit of".into());
+        }
+        let body = self.term()?;
+        Ok(crate::limit::numeric(&var, point, side, body))
     }
 
     /// `\int_a^b body dx` after the `\int`. The body runs to the `dx`.

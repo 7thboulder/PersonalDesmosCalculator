@@ -4206,6 +4206,16 @@ var Class = LatexCmds['class'] = P(MathCommand, function(_, super_) {
   };
 });
 
+// Whether a block is the subscript of lim, as in lim_{x→0}. (The three
+// letters of an operator name are Letters; the first one's ctrlSeq starts
+// the \lim or \operatorname{lim} it writes.)
+function isLimSub(block) {
+  var supsub = block && block.parent;
+  if (!(supsub instanceof SupSub) || block !== supsub.sub) return false;
+  var m = supsub[L], i = m && m[L], l = i && i[L];
+  return !!(m instanceof Letter && m.letter === 'm' && i instanceof Letter && i.letter === 'i'
+    && l instanceof Letter && l.letter === 'l' && /^\\/.test(l.ctrlSeq));
+}
 var SupSub = P(MathCommand, function(_, super_) {
   _.ctrlSeq = '_{...}^{...}';
   _.createLeftOf = function(cursor) {
@@ -4256,6 +4266,8 @@ var SupSub = P(MathCommand, function(_, super_) {
   Options.p.charsThatBreakOutOfSupSub = '';
   _.finalizeTree = function() {
     this.ends[L].write = function(cursor, ch) {
+      // A limit's subscript holds the whole x→0⁺: nothing typed leaves it.
+      if (isLimSub(this)) return MathBlock.p.write.apply(this, arguments);
       if (cursor.options.autoSubscriptNumerals && this === this.parent.sub) {
         // H_{(2n-1)}: a subscript opened with a bracket ends where the
         // bracket closes, so what is typed next goes after it.
@@ -4278,6 +4290,11 @@ var SupSub = P(MathCommand, function(_, super_) {
         cursor.insRightOf(this.parent);
       }
       MathBlock.p.write.apply(this, arguments);
+      // The + or - of a one-sided limit, 0^+, ends its superscript.
+      if ((ch === '+' || ch === '-') && this === this.parent.sup && !this.parent.sub
+          && isLimSub(this.parent.parent) && this.ends[L] === this.ends[R]) {
+        cursor.insRightOf(this.parent);
+      }
     };
   };
   _.moveTowards = function(dir, cursor, updown) {
@@ -4285,6 +4302,11 @@ var SupSub = P(MathCommand, function(_, super_) {
     // holds an expression, like H_{(2n-1)}, so it can be edited.
     if (cursor.options.autoSubscriptNumerals && !this.sup
         && /^[A-Za-z0-9]*$/.test(this.sub.latex())) {
+      cursor.insDirOf(dir, this);
+    }
+    // And over the side of a limit, the + of x→0⁺.
+    else if (this.sup && !this.sub && isLimSub(this.parent)
+        && /^[+-]$/.test(this.sup.latex())) {
       cursor.insDirOf(dir, this);
     }
     else super_.moveTowards.apply(this, arguments);
@@ -4511,7 +4533,9 @@ CharCmds['/'] = P(Fraction, function(_, super_) {
           leftward instanceof (LatexCmds.text || noop) ||
           leftward instanceof SummationNotation ||
           leftward.ctrlSeq === '\\ ' ||
-          /^[,;:]$/.test(leftward.ctrlSeq)
+          /^[,;:]$/.test(leftward.ctrlSeq) ||
+          // lim_{x→0} 1/x: the fraction starts after the limit
+          (leftward instanceof SupSub && isLimSub(leftward.sub))
         ) //lookbehind for operator
       ) leftward = leftward[L];
 

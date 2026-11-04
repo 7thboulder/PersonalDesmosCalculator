@@ -44,6 +44,8 @@ pub enum Tok {
     Sum,
     Prod,
     Int,
+    /// `\lim`, as in `\lim_{x\to 0^+}`.
+    Lim,
     /// `\to`, which makes an action.
     Arrow,
     /// `\sim` (typed `~`), which makes a regression.
@@ -384,6 +386,7 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "sum" => Tok::Sum,
         "prod" => Tok::Prod,
         "int" => Tok::Int,
+        "lim" => Tok::Lim,
         "to" | "rightarrow" => Tok::Arrow,
         "sim" => Tok::Tilde,
         "mathrm" | "text" | "textrm" | "textnormal" => {

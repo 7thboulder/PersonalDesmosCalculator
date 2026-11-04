@@ -72,6 +72,9 @@ enum Kind {
         body: String,
         point: Option<f64>,
         dir: i8,
+        /// A two-sided limit at a finite point, asked as both one-sided
+        /// limits: `point_latex` is the point as written.
+        both: Option<String>,
     },
     Solve {
         var: String,
@@ -465,17 +468,25 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         let v = w.names.var(&var);
         let p = w.expr(&point)?;
         let b = w.expr(&body)?;
-        command = if dir == 0 {
+        let point_value = number_of(&point_latex, others);
+        // Both sides of a finite point, so a limit whose sides disagree
+        // can say so and give each one.
+        let both = dir == 0
+            && !point_latex.contains("\\infty")
+            && point_value.is_none_or(|v| v.is_finite());
+        command = if both {
+            format!("[limit({b},{v},{p},-1),limit({b},{v},{p},1)]")
+        } else if dir == 0 {
             format!("limit({b},{v},{p})")
         } else {
             format!("limit({b},{v},{p},{dir})")
         };
-        let point_value = number_of(&point_latex, others);
         kind = Kind::Limit {
             var,
             body: body_latex,
             point: point_value,
             dir,
+            both: both.then_some(point_latex),
         };
         chosen = Some("limit".into());
     } else {
@@ -1481,6 +1492,55 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
             body,
             point,
             dir,
+            both: Some(point_latex),
+        } => {
+            let p = Printer { names: &plan.names };
+            let sides: Vec<String> = match read_giac(&text) {
+                Ok(G::List(items)) if items.len() == 2 => {
+                    items.iter().filter_map(|g| p.latex(g).ok()).collect()
+                }
+                _ => Vec::new(),
+            };
+            if sides.len() != 2 {
+                report.error = Some("Giac couldn't take this limit from both sides".into());
+                return report;
+            }
+            let v = name_latex(var);
+            let one = |sign: &str, value: &str| {
+                format!("\\lim_{{{v}\\to {point_latex}^{sign}}}{body}={value}")
+            };
+            report.steps.push(Step {
+                note: "Giac takes the limit from the left".into(),
+                latex: one("-", &sides[0]),
+            });
+            report.steps.push(Step {
+                note: "and from the right".into(),
+                latex: one("+", &sides[1]),
+            });
+            if sides[0] != sides[1] {
+                report.steps.push(Step {
+                    note: "The two sides disagree, so the limit doesn't exist".into(),
+                    latex: format!("{q}\\ \\text{{does not exist}}"),
+                });
+                report.result = Some("\\text{does not exist}".into());
+                return report;
+            }
+            let shown = sides[1].clone();
+            report.steps.push(Step {
+                note: "The two sides agree".into(),
+                latex: format!("{q}={shown}"),
+            });
+            report.result = Some(shown.clone());
+            if !shown.contains("infty") {
+                check = limit_check(var, body, *point, *dir, &shown, others);
+            }
+        }
+        Kind::Limit {
+            var,
+            body,
+            point,
+            dir,
+            both: None,
         } => {
             note = "Giac takes the limit".into();
             report.steps.push(Step {
@@ -1861,7 +1921,11 @@ mod tests {
         );
         assert_eq!(
             giac_of("\\lim_{x\\to0}\\frac{\\sin x}{x}"),
-            "limit((sin(QQx)/QQx),QQx,0)"
+            "[limit((sin(QQx)/QQx),QQx,0,-1),limit((sin(QQx)/QQx),QQx,0,1)]"
+        );
+        assert_eq!(
+            giac_of("\\lim_{x\\to\\infty}\\frac{1}{x}"),
+            "limit((1/QQx),QQx,inf)"
         );
         assert_eq!(
             giac_of("\\lim_{x\\to 0^{+}}x\\ln x"),
@@ -1985,8 +2049,19 @@ mod tests {
         );
         // Limits.
         let p = plan("\\lim_{x\\to0}\\frac{\\sin x}{x}", &[], None).unwrap();
-        let r = finish(&p, Ok(("1".into(), String::new())));
+        let r = finish(&p, Ok(("[1,1]".into(), String::new())));
+        assert_eq!(r.result.as_deref(), Some("1"), "{r:?}");
         assert!(r.steps.last().unwrap().note.starts_with("Checked"), "{r:?}");
+        // Sides that disagree: no limit, and each side shown.
+        let p = plan("\\lim_{x\\to0}\\frac{\\left|x\\right|}{x}", &[], None).unwrap();
+        let r = finish(&p, Ok(("[-1,1]".into(), String::new())));
+        assert_eq!(r.result.as_deref(), Some("\\text{does not exist}"), "{r:?}");
+        assert!(r.steps[0].latex.ends_with("=-1"), "{r:?}");
+        assert!(r.steps[1].latex.ends_with("=1"), "{r:?}");
+        // One side only.
+        let p = plan("\\lim_{x\\to0^-}\\frac{\\left|x\\right|}{x}", &[], None).unwrap();
+        let r = finish(&p, Ok(("-1".into(), String::new())));
+        assert_eq!(r.result.as_deref(), Some("-1"), "{r:?}");
         // Special functions in the answer are checked too.
         let p = plan("\\int_{ }^{ }e^{-x^2}dx", &[], None).unwrap();
         let r = finish(&p, Ok(("1/2*sqrt(pi)*erf(QQx)".into(), String::new())));

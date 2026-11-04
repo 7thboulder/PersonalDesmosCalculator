@@ -97,11 +97,23 @@
       'ln log exp min max floor ceil round sign mod mean median total length ' +
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
       'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
-      'mandelbrot julia cobweb bifurcation ' +
+      'mandelbrot julia cobweb bifurcation lim ' +
       // Special functions, beyond Desmos. Γ, ψ, ζ, B, W, K, E and the
       // Bessel J_n, Y_n, I_n, K_n are letters, so they need no name here.
       'erf erfc erfi Si Ci Ei li Li Ai Bi'
   };
+
+  // Whether a subscript block is the one under lim, as in lim_{x→0}.
+  function limSub(block) {
+    var supsub = block.parentElement;
+    if (!supsub || !supsub.classList.contains('mq-supsub')) return false;
+    var word = '';
+    for (var n = supsub.previousElementSibling; n && word.length < 3 &&
+        n.classList.contains('mq-operator-name'); n = n.previousElementSibling) {
+      word = n.textContent + word;
+    }
+    return word === 'lim';
+  }
 
   // Desmos subscripts hold only letters and digits, so typing anything else
   // at the end of one, like = or a comma, steps out of it first: t_rack=2
@@ -143,6 +155,8 @@
     }
     if (inBound) return;
     if (cursor.nextElementSibling || !block.classList.contains('mq-sub')) return;
+    // A limit's subscript holds all of x→0⁺ (^ then + or - gives the side).
+    if (limSub(block)) return;
     if (e.key === '(' && !cursor.previousElementSibling) return;
     var field = MQ(root);
     if (field) field.keystroke('Right');
@@ -2318,7 +2332,9 @@
       ['\\frac{d}{dx}\\sin\\left(x^2\\right)', 'Derivative (exact)'], ["f'\\left(x\\right)", "Also f''"],
       ['\\sum_{n=1}^{10}n^2', 'Sum (type sum); prod for products'],
       ['\\int_0^1x^2dx', 'Integral (type int)'],
-      ['\\int_0^{\\infty}e^{-x}dx', 'Type infinity (or infty) for \u221e, as in improper integrals and bounds']]],
+      ['\\int_0^{\\infty}e^{-x}dx', 'Type infinity (or infty) for \u221e, as in improper integrals and bounds'],
+      ['\\lim_{x\\to0}\\frac{\\sin x}{x}', 'Limit (type lim_, or ;lim+ / ;lim- for one side); Solve finds it exactly'],
+      ['\\lim_{x\\to0^+}\\frac{1}{x}', 'One side: ^ then + or \u2212 after the point']]],
     ['POINTS AND GEOMETRY', [
       ['p=\\left(1,2\\right),\\ p.x', 'Point and its coordinates'],
       ['\\operatorname{distance}\\left(p,q\\right)', 'Distance between points'],
