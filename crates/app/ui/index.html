@@ -19,6 +19,7 @@
     <span class="spacer"></span>
     <button id="undo" class="icon" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
     <button id="redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
+    <button class="icon ref-toggle" title="Reference: trig identities, derivatives, integrals and special functions (Ctrl+Alt+R)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M3 4.5c2.5-1 4.8-1 7 .6 2.2-1.6 4.5-1.6 7-.6v11c-2.5-1-4.8-1-7 .6-2.2-1.6-4.5-1.6-7-.6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 5.1v11" stroke="currentColor" stroke-width="1.5"/></svg></button>
     <button id="help" class="icon" title="Functions and keyboard shortcuts (Ctrl+/)">?</button>
     <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
   </div>
@@ -78,6 +79,7 @@
     <label id="doc-check-type" title="Check a group of steps each time you leave one of its lines"><input type="checkbox"> Check as I type</label>
     <button id="doc-pdf-btn" title="Save this document as a PDF (Ctrl+P)">Export PDF</button>
     <button id="doc-shortcuts-btn" title="Make and change typing shortcuts">Shortcuts</button>
+    <button class="icon ref-toggle" title="Reference: trig identities, derivatives, integrals and special functions (Ctrl+Alt+R)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M3 4.5c2.5-1 4.8-1 7 .6 2.2-1.6 4.5-1.6 7-.6v11c-2.5-1-4.8-1-7 .6-2.2-1.6-4.5-1.6-7-.6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 5.1v11" stroke="currentColor" stroke-width="1.5"/></svg></button>
     <button id="doc-help" class="icon" title="Document keys (Ctrl+/)">?</button>
   </div>
   <div id="doc-main">
@@ -169,6 +171,7 @@
         <tr><td>Ctrl+S</td><td>Save now (documents also save as you type)</td></tr>
         <tr><td>Ctrl+P</td><td>Export a PDF</td></tr>
         <tr><td>Ctrl+Alt+G / Ctrl+Alt+D</td><td>Graphing calculator / document</td></tr>
+        <tr><td>Ctrl+Alt+R</td><td>Reference: trig identities, derivatives, integrals and special functions</td></tr>
       </table>
     </div>
   </div>
@@ -221,6 +224,7 @@
       <tr><td>Ctrl+Shift+D</td><td>Delete the current expression</td></tr>
       <tr><td>Ctrl+Alt+E</td><td>Focus the expression list</td></tr>
       <tr><td>Ctrl+Alt+K</td><td>Show or hide the keypad</td></tr>
+      <tr><td>Ctrl+Alt+R</td><td>Reference: trig identities, derivatives, integrals and special functions</td></tr>
       <tr><td>Ctrl+Alt+S, or the row's <b>Solve</b> button</td><td>Solve, simplify, factor, differentiate or integrate the current expression, with the working</td></tr>
       <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
       <tr><td>Ctrl+S / Ctrl+Shift+S / Ctrl+O</td><td>Save / save as / open</td></tr>
@@ -287,10 +291,22 @@
     </div>
   </div>
 </div>
+<div id="reference">
+  <div class="ref-head">
+    <b>Reference</b>
+    <span class="ref-flash"></span>
+    <button class="ref-close" title="Close (Esc)">&times;</button>
+  </div>
+  <input class="ref-search" type="search" placeholder="Search, such as sec, digamma or double angle" spellcheck="false" autocomplete="off">
+  <div class="ref-jump"></div>
+  <div class="ref-body"><p class="ref-empty" style="display:none">Nothing matches.</p></div>
+  <div class="ref-foot">Click a side to type it at the cursor; <b>+</b> types the whole formula.</div>
+</div>
 <script>{{JQUERY}}</script>
 <script>{{MATHQUILL_JS}}</script>
 <script>{{SCRIPT}}</script>
 <script>{{SHORTCUTS_SCRIPT}}</script>
 <script>{{DOC_SCRIPT}}</script>
+<script>{{REFERENCE_SCRIPT}}</script>
 </body>
 </html>

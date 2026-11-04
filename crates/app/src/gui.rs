@@ -24,6 +24,9 @@ use wry::{Rect, WebView, WebViewBuilder};
 
 /// Width of the expression panel in logical pixels, close to Desmos's default.
 const PANEL_WIDTH: f64 = 380.0;
+/// The reference panel, which opens beside the expression list over the
+/// left edge of the graph.
+const REFERENCE_WIDTH: f64 = 400.0;
 /// Zoom factor for one scroll-wheel notch.
 const WHEEL_ZOOM: f64 = 1.2;
 /// How often frame timings are pushed to the panel.
@@ -124,6 +127,8 @@ struct Running {
     proxy: EventLoopProxy<UserEvent>,
     /// The Document view is showing: the panel covers the whole window.
     doc_view: bool,
+    /// The reference panel is open beside the expression list.
+    reference_open: bool,
     /// The open document and the library folder, remembered across starts.
     docs: docs::State,
     /// A document's graph block open in the graph view, with the graph it
@@ -286,7 +291,7 @@ impl Running {
 
         let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
-            .with_bounds(panel_bounds(&window, false))
+            .with_bounds(panel_bounds(&window, false, false))
             .with_html(crate::ui::panel_html())
             .with_devtools(cfg!(debug_assertions))
             .with_ipc_handler(move |request| {
@@ -337,6 +342,7 @@ impl Running {
             open_on_start: options.open.clone(),
             proxy,
             doc_view: false,
+            reference_open: false,
             docs: docs::read_state(),
             block_edit: None,
         };
@@ -378,7 +384,11 @@ impl Running {
         self.config.height = size.height;
         self.surface.configure(&self.gpu.device, &self.config);
         if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(panel_bounds(&self.window, self.doc_view));
+            let _ = webview.set_bounds(panel_bounds(
+                &self.window,
+                self.doc_view,
+                self.reference_open,
+            ));
         }
         let area = self.graph_area();
         self.viewport.resize(area.width as f64, area.height as f64);
@@ -693,6 +703,16 @@ impl Running {
             Some(command @ ("new" | "open" | "save" | "saveAs")) => {
                 let command = command.to_owned();
                 self.file_command(&command);
+            }
+            Some("reference") => {
+                self.reference_open = value["open"] == true;
+                if let Some(webview) = &self.webview {
+                    let _ = webview.set_bounds(panel_bounds(
+                        &self.window,
+                        self.doc_view,
+                        self.reference_open,
+                    ));
+                }
             }
             Some("view") => {
                 let doc_view = value["view"] == "doc";
@@ -1063,7 +1083,7 @@ impl Running {
         }
         self.doc_view = doc_view;
         if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(panel_bounds(&self.window, doc_view));
+            let _ = webview.set_bounds(panel_bounds(&self.window, doc_view, self.reference_open));
             if doc_view {
                 let _ = webview.focus();
             }
@@ -1287,11 +1307,18 @@ impl Running {
     }
 }
 
-/// The panel's place in the window: the left strip beside the graph, or
-/// all of it in the Document view.
-fn panel_bounds(window: &Window, doc_view: bool) -> Rect {
+/// The panel's place in the window: the left strip beside the graph (wider,
+/// over the graph's left edge, while the reference is open), or all of it in
+/// the Document view.
+fn panel_bounds(window: &Window, doc_view: bool, reference_open: bool) -> Rect {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-    let width = if doc_view { size.width } else { PANEL_WIDTH };
+    let width = if doc_view {
+        size.width
+    } else if reference_open {
+        (PANEL_WIDTH + REFERENCE_WIDTH).min(size.width)
+    } else {
+        PANEL_WIDTH
+    };
     Rect {
         position: wry::dpi::LogicalPosition::new(0.0, 0.0).into(),
         size: wry::dpi::LogicalSize::new(width, size.height).into(),

@@ -2711,7 +2711,7 @@
   };
 
   // The document view (doc.js) types with the same editor settings.
-  window.panel = { mathOptions: MATH_OPTIONS, absBars: absBars, send: send };
+  window.panel = { mathOptions: MATH_OPTIONS, absBars: absBars, send: send, currentField: currentField };
   document.getElementById('block-done').addEventListener('click', function () {
     if (window.doc) window.doc.show(true);
   });
