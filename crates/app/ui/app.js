@@ -62,20 +62,27 @@
     'mu nu xi rho sigma upsilon phi chi psi omega ' +
     'Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega';
 
-  // Older files may hold abs(x); Desmos shows absolute value only as bars,
-  // so it opens as |x|.
+  // Older files (and Desmos graphs) may hold abs(x), floor(x) or ceil(x);
+  // they open as |x|, ⌊x⌋ and ⌈x⌉, as typing them gives.
+  var BRACKETED = [
+    ['\\operatorname{abs}\\left(', '\\left|', '\\right|'],
+    ['\\operatorname{floor}\\left(', '\\left\\lfloor ', '\\right\\rfloor '],
+    ['\\operatorname{ceil}\\left(', '\\left\\lceil ', '\\right\\rceil ']
+  ];
   function absBars(latex) {
-    var open = '\\operatorname{abs}\\left(';
-    var at = latex.indexOf(open);
-    while (at >= 0) {
-      var i = at + open.length, depth = 1;
-      while (i < latex.length && depth > 0) {
-        if (latex.startsWith('\\left', i)) { depth++; i += 5; } else if (latex.startsWith('\\right', i)) { depth--; i += 6; } else i++;
+    BRACKETED.forEach(function (b) {
+      var open = b[0];
+      var at = latex.indexOf(open);
+      while (at >= 0) {
+        var i = at + open.length, depth = 1;
+        while (i < latex.length && depth > 0) {
+          if (latex.startsWith('\\left', i)) { depth++; i += 5; } else if (latex.startsWith('\\right', i)) { depth--; i += 6; } else i++;
+        }
+        if (depth > 0 || latex[i] !== ')') break;
+        latex = latex.slice(0, at) + b[1] + latex.slice(at + open.length, i - 6) + b[2] + latex.slice(i + 1);
+        at = latex.indexOf(open);
       }
-      if (depth > 0 || latex[i] !== ')') break;
-      latex = latex.slice(0, at) + '\\left|' + latex.slice(at + open.length, i - 6) + '\\right|' + latex.slice(i + 1);
-      at = latex.indexOf(open);
-    }
+    });
     return latex;
   }
 
@@ -90,11 +97,12 @@
     autoSubscriptNumerals: true,
     // Every Greek letter Desmos spells out, so typing omega gives ω, and
     // matrix for a matrix in place.
-    // Typing abs makes |x| bars, as in Desmos.
-    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs ' + GREEK_LETTERS,
+    // Typing abs makes |x| bars, as in Desmos, and floor and ceil make ⌊x⌋
+    // and ⌈x⌉.
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs floor ceil ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
-      'ln log exp min max floor ceil round sign mod mean median total length ' +
+      'ln log exp min max round sign mod mean median total length ' +
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
       'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
       'mandelbrot julia cobweb bifurcation lim ' +
@@ -124,6 +132,16 @@
     if (e.key.length !== 1 || /[A-Za-z0-9_]/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
     var root = e.target.closest && e.target.closest('.mq-editable-field');
     var cursor = root && root.querySelector('.mq-cursor');
+    // floor(x) and ceil(x) typed out of habit: the ( is already there as
+    // ⌊ or ⌈, and ) at the end steps out past ⌋ or ⌉.
+    var opener = cursor && cursor.parentElement && cursor.parentElement.previousElementSibling;
+    if (opener && /^[\u230a\u2308]$/.test(opener.textContent.trim()) && !cursor.nextElementSibling &&
+        (e.key === '(' && !cursor.previousElementSibling || e.key === ')' && cursor.previousElementSibling)) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === ')') { var out = MQ(root); if (out) out.keystroke('Right'); }
+      return;
+    }
     // Typing -> makes the action arrow, as in Desmos.
     var before = cursor && cursor.previousElementSibling;
     if (e.key === '>' && before && /^[-\u2212]$/.test(before.textContent.trim())) {
@@ -2087,7 +2105,7 @@
     ['LIST OPERATIONS', named('join sort unique').concat([['for', 't: for ']])],
     ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
       ['\u222b', 'c:\\int'], ['\u221e', 'c:\\infty'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
-    ['NUMBER THEORY', named('gcd lcm mod floor ceil round').concat([['abs', 'c:|']], named('sign nCr nPr'), [['n!', 't:!']])],
+    ['NUMBER THEORY', named('gcd lcm mod').concat([['floor', 'c:\\floor'], ['ceil', 'c:\\ceil']], named('round'), [['abs', 'c:|']], named('sign nCr nPr'), [['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
     ['COMPLEX', named('real imag conj arg')],
     ['MATRICES', named('det inv transpose rref trace rank eigenvalues eigenvectors identity')],
@@ -2309,7 +2327,7 @@
       ['\\sqrt{x},\\ \\sqrt[3]{x}', 'Square and nth roots (type sqrt, nthroot)'], ['n!', 'Factorial']]],
     ['NUMBERS', [
       ['\\left|x\\right|', 'Absolute value (type | or abs)'],
-      ['\\operatorname{floor}\\left(x\\right)', 'Also ceil'],
+      ['\\left\\lfloor x\\right\\rfloor ,\\ \\left\\lceil x\\right\\rceil ', 'Floor and ceiling (type floor, ceil)'],
       ['\\operatorname{round}\\left(x,2\\right)', 'Round, optionally to places'],
       ['\\operatorname{sign}\\left(x\\right)', 'Sign: -1, 0 or 1'],
       ['\\operatorname{mod}\\left(a,b\\right)', 'Remainder'],

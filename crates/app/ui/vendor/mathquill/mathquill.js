@@ -4781,7 +4781,15 @@ var OPP_BRACKS = {
   '&rang;': '&lang;',
   '\\langle ': '\\rangle ',
   '\\rangle ': '\\langle ',
-  '|': '|'
+  '|': '|',
+  '&lfloor;': '&rfloor;',
+  '&rfloor;': '&lfloor;',
+  '\\lfloor ': '\\rfloor ',
+  '\\rfloor ': '\\lfloor ',
+  '&lceil;': '&rceil;',
+  '&rceil;': '&lceil;',
+  '\\lceil ': '\\rceil ',
+  '\\rceil ': '\\lceil '
 };
 
 function bindCharBracketPair(open, ctrlSeq) {
@@ -4798,6 +4806,14 @@ CharCmds['|'] = bind(Bracket, L, '|', '|', '|', '|');
 // Typing abs makes absolute value bars, as in Desmos (an autocommand in
 // the app's options; there is no \abs in LaTeX).
 LatexCmds.abs = CharCmds['|'];
+// Typing floor or ceil makes floor or ceiling brackets, ⌊x⌋ and ⌈x⌉.
+LatexCmds.floor = bind(Bracket, L, '&lfloor;', '&rfloor;', '\\lfloor ', '\\rfloor ');
+LatexCmds.ceil = bind(Bracket, L, '&lceil;', '&rceil;', '\\lceil ', '\\rceil ');
+// \left\lfloor and friends, as the brackets above write themselves.
+var NAMED_DELIMS = {
+  '\\lfloor': ['&lfloor;', '\\lfloor '], '\\rfloor': ['&rfloor;', '\\rfloor '],
+  '\\lceil': ['&lceil;', '\\lceil '], '\\rceil': ['&rceil;', '\\rceil ']
+};
 
 LatexCmds.left = P(MathCommand, function(_) {
   _.parser = function() {
@@ -4806,13 +4822,15 @@ LatexCmds.left = P(MathCommand, function(_) {
     var succeed = Parser.succeed;
     var optWhitespace = Parser.optWhitespace;
 
-    return optWhitespace.then(regex(/^(?:[([|]|\\\{)/))
+    return optWhitespace.then(regex(/^(?:[([|]|\\\{|\\l(?:floor|ceil)(?![a-zA-Z]))/))
       .then(function(ctrlSeq) { // TODO: \langle, \rangle
         var open = (ctrlSeq.charAt(0) === '\\' ? ctrlSeq.slice(1) : ctrlSeq);
+        if (NAMED_DELIMS[ctrlSeq]) { open = NAMED_DELIMS[ctrlSeq][0]; ctrlSeq = NAMED_DELIMS[ctrlSeq][1]; }
         return latexMathParser.then(function (block) {
           return string('\\right').skip(optWhitespace)
-            .then(regex(/^(?:[\])|]|\\\})/)).map(function(end) {
+            .then(regex(/^(?:[\])|]|\\\}|\\r(?:floor|ceil)(?![a-zA-Z]))/)).map(function(end) {
               var close = (end.charAt(0) === '\\' ? end.slice(1) : end);
+              if (NAMED_DELIMS[end]) { close = NAMED_DELIMS[end][0]; end = NAMED_DELIMS[end][1]; }
               var cmd = Bracket(0, open, close, ctrlSeq, end);
               cmd.blocks = [ block ];
               block.adopt(cmd, 0, 0);
