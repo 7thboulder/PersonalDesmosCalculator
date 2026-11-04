@@ -23,6 +23,8 @@
     { trigger: ';dd', latex: '\\frac{d' + SLOT + '}{d' + SLOT + '}', note: 'Derivative' },
     { trigger: ';dx', latex: '\\frac{d}{dx}', note: 'd/dx' },
     { trigger: ';lim', latex: '\\lim_{' + SLOT + '\\to ' + SLOT + '}', note: 'Limit' },
+    { trigger: ';lim+', latex: '\\lim_{' + SLOT + '\\to ' + SLOT + '^+}', note: 'Limit from above (the right)', where: 'both' },
+    { trigger: ';lim-', latex: '\\lim_{' + SLOT + '\\to ' + SLOT + '^-}', note: 'Limit from below (the left)', where: 'both' },
     { trigger: 'vv', latex: '\\vec{' + SLOT + '}', note: 'Vector arrow' },
     { trigger: ';cb', latex: '\\sqrt[3]{' + SLOT + '}', note: 'Cube root' },
     { trigger: ';nck', latex: '\\binom{' + SLOT + '}{' + SLOT + '}', note: 'Binomial coefficient' },
@@ -32,7 +34,7 @@
     { trigger: ';=>', latex: '\\Rightarrow ', note: 'Implies' },
     { trigger: ';<=>', latex: '\\Leftrightarrow ', note: 'If and only if' }
   ].map(function (s) {
-    return { trigger: s.trigger, latex: s.latex, note: s.note, where: 'doc', on: true, builtin: true, base: s.trigger };
+    return { trigger: s.trigger, latex: s.latex, note: s.note, where: s.where || 'doc', on: true, builtin: true, base: s.trigger };
   });
 
   function copy(list) { return JSON.parse(JSON.stringify(list)); }
@@ -85,7 +87,7 @@
       if (s === ignore || !s.on) return;
       if (s.trigger === trigger) out.push('Another shortcut already uses "' + trigger + '".');
       else if (trigger.length > s.trigger.length && trigger.indexOf(s.trigger) === 0) {
-        out.push('"' + s.trigger + '" fires first, so this one never will.');
+        out.push('"' + s.trigger + '" waits a moment for the rest of this one, so it fires a little later.');
       }
     });
     return out;
@@ -152,12 +154,63 @@
     return slots[0];
   }
 
+  // Deletes `text`, typed just before the cursor, a keystroke at a time (<=
+  // counts as one symbol, ≤).
+  function removeTyped(field, cursor, text) {
+    var symbols = 0;
+    var n = cursor.previousElementSibling;
+    var got = '';
+    while (n && got.length < text.length) {
+      var t = n.textContent.trim();
+      got = ({ '−': '-', '·': '*', '≤': '<=', '≥': '>=' }[t] || t) + got;
+      symbols++;
+      n = n.previousElementSibling;
+    }
+    for (var k = 0; k < symbols; k++) field.keystroke('Backspace');
+  }
+
+  function applies(s, where) { return s.on && (where.inDoc || s.where === 'both'); }
+
+  // A trigger that begins a longer one (;lim and ;lim+) is typed out and
+  // waits: the next key either finishes the longer one or fires it.
+  var pending = null;
+  var PENDING_MS = 800;
+
+  // Fires the waiting trigger, if it is still just before the cursor.
+  function firePending() {
+    var p = pending;
+    pending = null;
+    if (!p) return false;
+    clearTimeout(p.timer);
+    var cursor = p.root.querySelector('.mq-cursor');
+    if (!cursor || !document.body.contains(p.root)) return false;
+    var typed = typedBefore(cursor);
+    if (typed.slice(-p.s.trigger.length) !== p.s.trigger) return false;
+    removeTyped(p.field, cursor, p.s.trigger);
+    expand(p.field, p.root, p.s.latex);
+    return true;
+  }
+
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     var where = fieldIn(e.target);
     if (!where) return;
     var field = MQ(where.root);
     if (!field) return;
+    if (pending && (pending.root !== where.root || e.key.length !== 1)) {
+      // Editing or moving away leaves the trigger as typed.
+      var cancel = pending.root !== where.root ||
+        /^(Backspace|Delete|Escape|Arrow|Home|End)/.test(e.key);
+      var fired = !cancel && firePending();
+      if (cancel) clearTimeout(pending.timer);
+      pending = null;
+      // Tab after a trigger goes to its first blank, where firing put the cursor.
+      if (fired && e.key === 'Tab') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
     if (e.key === 'Tab' && !e.shiftKey) {
       var slot = nextSlot(where.root);
       if (slot) {
@@ -173,26 +226,34 @@
     var typed = typedBefore(cursor) + e.key;
     var best = null;
     list.forEach(function (s) {
-      if (!s.on || (!where.inDoc && s.where !== 'both')) return;
+      if (!applies(s, where)) return;
       if (typed.length >= s.trigger.length && typed.slice(-s.trigger.length) === s.trigger &&
           (!best || s.trigger.length > best.trigger.length)) best = s;
     });
+    if (pending) {
+      clearTimeout(pending.timer);
+      var waiting = pending;
+      pending = null;
+      // The key doesn't finish a longer trigger: the waiting one fires, and
+      // the key is typed into its first blank.
+      if (!best || best.trigger.length <= waiting.s.trigger.length) {
+        pending = waiting;
+        firePending();
+        return;
+      }
+    }
     if (!best) return;
+    var longer = list.some(function (s) {
+      return applies(s, where) && s.trigger.length > best.trigger.length && s.trigger.indexOf(best.trigger) === 0;
+    });
+    if (longer) {
+      // Typed as usual for now; fired by the next key or after a moment.
+      pending = { s: best, root: where.root, field: field, timer: setTimeout(firePending, PENDING_MS) };
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    // The characters already typed are deleted one keystroke at a time (<=
-    // counts as one symbol, ≤).
-    var removing = best.trigger.slice(0, -1);
-    var symbols = 0;
-    var n = cursor.previousElementSibling;
-    var got = '';
-    while (n && got.length < removing.length) {
-      var t = n.textContent.trim();
-      got = ({ '−': '-', '·': '*', '≤': '<=', '≥': '>=' }[t] || t) + got;
-      symbols++;
-      n = n.previousElementSibling;
-    }
-    for (var k = 0; k < symbols; k++) field.keystroke('Backspace');
+    removeTyped(field, cursor, best.trigger.slice(0, -1));
     expand(field, where.root, best.latex);
   }, true);
 

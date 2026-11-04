@@ -1057,3 +1057,120 @@ button.icon:disabled { color: #bbb; cursor: default; }
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 body.dragging-row, body.dragging-row * { cursor: grabbing !important; user-select: none; }
+
+/* Reference panel: beside the expression list in the graph view (the
+   window widens the panel strip to make room over the graph), and on the
+   right of the page in the Document view. */
+#reference {
+  display: none;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 380px;
+  width: 400px;
+  flex-direction: column;
+  background: #fff;
+  border-left: 1px solid #ccc;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.12);
+  z-index: 40;
+  font-size: 12px;
+  user-select: none;
+}
+body.ref-open #reference { display: flex; }
+body.ref-open:not(.doc-view) #panel { width: 380px; }
+body.ref-open:not(.doc-view) .overlay { right: 400px; }
+body.ref-open:not(.doc-view) #toast { left: 190px; }
+body.doc-view #reference {
+  top: 45px;
+  left: auto;
+  right: 0;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+}
+body.ref-open.doc-view #doc-scroll { margin-right: 400px; }
+button.ref-toggle { display: inline-flex; align-items: center; justify-content: center; }
+button.ref-toggle.on { background: #dfe9fb; color: #2f72dc; }
+#reference .ref-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 8px 0 12px;
+  background: #f2f2f2;
+  border-bottom: 1px solid #ccc;
+  flex: none;
+  box-sizing: border-box;
+}
+#reference .ref-head b { font-size: 14px; }
+#reference .ref-flash { flex: 1; color: #c74440; opacity: 0; transition: opacity 0.2s; }
+#reference .ref-flash.on { opacity: 1; }
+#reference .ref-close { border: 0; background: none; font-size: 20px; color: #666; cursor: pointer; padding: 0 6px; }
+#reference .ref-search {
+  margin: 8px 10px 4px;
+  padding: 6px 8px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  outline: none;
+  flex: none;
+  user-select: text;
+}
+#reference .ref-search:focus { border-color: #2f72dc; }
+#reference .ref-jump { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 10px 8px; border-bottom: 1px solid #e4e4e4; flex: none; }
+#reference .ref-jump button {
+  border: 1px solid #d4d4d4;
+  border-radius: 12px;
+  background: #fafafa;
+  padding: 2px 8px;
+  font: 11px "Segoe UI", Arial, sans-serif;
+  color: #555;
+  cursor: pointer;
+}
+#reference .ref-jump button:hover { background: #eef4fd; border-color: #9dbbe9; color: #2f72dc; }
+#reference .ref-body { position: relative; flex: 1; overflow-y: auto; padding: 0 10px 16px; }
+#reference .ref-empty { color: #888; text-align: center; margin-top: 24px; }
+#reference .ref-section h2 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -10px;
+  padding: 8px 10px 6px;
+  background: #fff;
+  border-bottom: 1px solid #eee;
+  font-size: 13px;
+  color: #2f72dc;
+}
+#reference .ref-group h3 { margin: 12px 0 4px; font-size: 12px; color: #555; }
+#reference .ref-info { color: #555; margin: 2px 0; }
+#reference .ref-info span { display: inline-block; width: 52px; color: #888; }
+#reference .ref-info code { font: 12px Consolas, monospace; background: #f4f4f4; padding: 0 4px; border-radius: 3px; }
+#reference .ref-info.plain { font-style: italic; color: #777; }
+#reference .ref-text { color: #555; margin: 4px 0; }
+#reference .ref-item { position: relative; padding: 3px 26px 3px 0; border-bottom: 1px solid #f3f3f3; }
+#reference .ref-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 3px; font-size: 14px; }
+#reference .ref-side, #reference .ref-static { padding: 1px 3px; border-radius: 3px; }
+#reference .ref-side { cursor: pointer; }
+#reference .ref-side:hover { background: #dfe9fb; box-shadow: inset 0 0 0 1px #9dbbe9; }
+#reference .ref-side:active { background: #c7d9f7; }
+#reference .ref-rel { color: #555; }
+#reference .ref-note { color: #888; font-size: 11px; margin-top: 1px; }
+#reference .ref-all {
+  position: absolute;
+  right: 0;
+  top: 4px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d4d4d4;
+  border-radius: 4px;
+  background: #fff;
+  color: #2f72dc;
+  font: 600 15px/1 "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+  opacity: 0.55;
+}
+#reference .ref-item:hover .ref-all { opacity: 1; }
+#reference .ref-all:hover { background: #dfe9fb; border-color: #9dbbe9; }
+#reference .ref-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+#reference .ref-table th { font: 600 11px "Segoe UI", Arial, sans-serif; color: #777; text-align: left; padding: 4px 3px; border-bottom: 1px solid #ddd; }
+#reference .ref-table th .ref-static { font-size: 13px; color: #333; }
+#reference .ref-table td { padding: 2px 1px; border-bottom: 1px solid #f3f3f3; color: #333; }
+#reference .ref-foot { flex: none; padding: 6px 10px; border-top: 1px solid #e4e4e4; color: #888; font-size: 11px; background: #fafafa; }

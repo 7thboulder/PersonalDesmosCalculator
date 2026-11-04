@@ -600,6 +600,24 @@ fn unknown_functions(latex: &str) -> Vec<String> {
 /// The graph as Desmos's `Calc.setState` takes it, for pasting into
 /// desmos.com (desmos.com/3d for a 3D graph), and a warning for each
 /// thing that had to be left out because Desmos has no equivalent.
+/// ⌊x⌋ and ⌈x⌉ as Desmos writes them: floor(x) and ceil(x).
+fn desmos_brackets(latex: &str) -> String {
+    let mut out = latex.to_owned();
+    for (from, to) in [
+        ("\\left\\lfloor ", "\\operatorname{floor}\\left("),
+        ("\\left\\lfloor", "\\operatorname{floor}\\left("),
+        ("\\right\\rfloor ", "\\right)"),
+        ("\\right\\rfloor", "\\right)"),
+        ("\\left\\lceil ", "\\operatorname{ceil}\\left("),
+        ("\\left\\lceil", "\\operatorname{ceil}\\left("),
+        ("\\right\\rceil ", "\\right)"),
+        ("\\right\\rceil", "\\right)"),
+    ] {
+        out = out.replace(from, to);
+    }
+    out
+}
+
 pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<String>) {
     let mut list = Vec::new();
     let mut warnings = Vec::new();
@@ -684,6 +702,8 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
         if latex.trim().is_empty() {
             continue;
         }
+        // Desmos writes floor(x) and ceil(x) by name.
+        let latex = &desmos_brackets(latex);
         for f in unknown_functions(latex) {
             warnings.push(format!(
                 "{name} uses {f}, which Desmos may not know; Desmos will show an error there."
@@ -1059,6 +1079,14 @@ mod tests {
         // The app's own files open as before.
         let own = r#"{"format":"graphcalc","version":1,"rows":[]}"#;
         assert_eq!(open_any(own).unwrap(), (json!([]), None, false));
+    }
+
+    #[test]
+    fn floor_and_ceiling_export_by_name() {
+        assert_eq!(
+            desmos_brackets("y=\\left\\lfloor x\\right\\rfloor +\\left\\lceil 2x\\right\\rceil "),
+            "y=\\operatorname{floor}\\left(x\\right)+\\operatorname{ceil}\\left(2x\\right)"
+        );
     }
 
     #[test]

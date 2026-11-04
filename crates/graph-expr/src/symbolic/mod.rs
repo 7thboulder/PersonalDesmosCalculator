@@ -541,6 +541,11 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
         report.error = Some("Type an expression or equation first".into());
         return report;
     }
+    // The engine works limits out numerically; Giac finds them exactly.
+    if source.contains("\\lim") {
+        report.error = Some("Limits are worked out by Giac".into());
+        return report;
+    }
     if crate::dots::is_symbolic(source) {
         report.op = "nfold".into();
         report.choices = vec![Choice {

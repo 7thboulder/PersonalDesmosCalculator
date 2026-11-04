@@ -44,6 +44,8 @@ pub enum Tok {
     Sum,
     Prod,
     Int,
+    /// `\lim`, as in `\lim_{x\to 0^+}`.
+    Lim,
     /// `\to`, which makes an action.
     Arrow,
     /// `\sim` (typed `~`), which makes a regression.
@@ -303,6 +305,14 @@ fn push(toks: &mut Vec<Tok>, tok: Tok, i: &mut usize) {
     *i += 1;
 }
 
+/// Whether `word` is spelled at `at`, and not followed by another letter.
+fn word_at(chars: &[char], at: usize, word: &str) -> bool {
+    let n = word.chars().count();
+    chars.len() >= at + n
+        && chars[at..at + n].iter().copied().eq(word.chars())
+        && !chars.get(at + n).is_some_and(|c| c.is_ascii_alphabetic())
+}
+
 /// Handles `\name`, returning the index after everything it consumed.
 fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Result<usize, String> {
     let tok = match name {
@@ -328,6 +338,21 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
                     match (next, is_left) {
                         (Some('{'), _) => Tok::LCurly,
                         (Some('}'), _) => Tok::RCurly,
+                        // ⌊x⌋ and ⌈x⌉ read as floor(x) and ceil(x).
+                        _ if word_at(chars, i - 1, "lfloor") || word_at(chars, i - 1, "lceil") => {
+                            let name = if chars[i - 1 + 1] == 'f' {
+                                "floor"
+                            } else {
+                                "ceil"
+                            };
+                            i += name.len();
+                            toks.push(Tok::OpName(name.into()));
+                            Tok::LParen
+                        }
+                        _ if word_at(chars, i - 1, "rfloor") || word_at(chars, i - 1, "rceil") => {
+                            i += if chars[i] == 'f' { 5 } else { 4 };
+                            Tok::RParen
+                        }
                         _ => {
                             // `\left\langle` and friends: read the word and give up.
                             while i < chars.len() && chars[i].is_ascii_alphabetic() {
@@ -384,6 +409,14 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         "sum" => Tok::Sum,
         "prod" => Tok::Prod,
         "int" => Tok::Int,
+        "lim" => Tok::Lim,
+        "lfloor" | "lceil" => {
+            toks.push(Tok::OpName(
+                if name == "lfloor" { "floor" } else { "ceil" }.into(),
+            ));
+            Tok::LParen
+        }
+        "rfloor" | "rceil" => Tok::RParen,
         "to" | "rightarrow" => Tok::Arrow,
         "sim" => Tok::Tilde,
         "mathrm" | "text" | "textrm" | "textnormal" => {
@@ -442,6 +475,31 @@ mod tests {
                 Num(4.0),
                 RBrace
             ]
+        );
+    }
+
+    #[test]
+    fn floor_and_ceiling_brackets() {
+        let toks =
+            tokenize("2\\left\\lfloor x\\right\\rfloor +\\left\\lceil y\\right\\rceil ").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Num(2.0),
+                OpName("floor".into()),
+                LParen,
+                Letter("x".into()),
+                RParen,
+                Plus,
+                OpName("ceil".into()),
+                LParen,
+                Letter("y".into()),
+                RParen
+            ]
+        );
+        assert_eq!(
+            tokenize("\\lfloor x\\rfloor").unwrap(),
+            tokenize("\\left\\lfloor x\\right\\rfloor ").unwrap()
         );
     }
 
