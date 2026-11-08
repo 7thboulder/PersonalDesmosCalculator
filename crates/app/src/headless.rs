@@ -80,6 +80,7 @@ pub fn block_png(
     width: u32,
     height: u32,
     scale: f32,
+    settings: graph_core::GridSettings,
 ) -> Result<Vec<u8>, String> {
     let (width, height) = (width.clamp(16, 4096), height.clamp(16, 4096));
     let mut vp = Viewport::new(width as f64, height as f64);
@@ -88,6 +89,7 @@ pub fn block_png(
         vp.units_per_px = units / width as f64;
     }
     let mut engine = Engine::default();
+    engine.grid = settings;
     engine.update(&block_rows(rows));
     let scene = engine.with_plot(&vp, scale, |plot| build_scene(&vp, scale, plot, text));
     let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, scale);
@@ -127,6 +129,7 @@ pub fn block_image(
         num(&ask["width"], 600.0) as u32,
         num(&ask["height"], 360.0) as u32,
         num(&ask["scale"], 1.0).clamp(0.5, 4.0) as f32,
+        crate::files::settings_from(&ask["settings"]),
     )?;
     Ok(format!("data:image/png;base64,{}", crate::ui::base64(&png)))
 }
@@ -181,6 +184,16 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     let mut engine = Engine::default();
     if three_d {
         engine.mode = Mode::ThreeD;
+    }
+    // --polar draws the polar grid, --degrees reads angles in degrees.
+    if let Some((_, space)) = &opened {
+        engine.grid = space.settings;
+    }
+    if flag("--polar").is_some() {
+        engine.grid.polar = true;
+    }
+    if flag("--degrees").is_some() {
+        engine.grid.degrees = true;
     }
     let (rows, latex): (serde_json::Value, Vec<String>) = match &opened {
         Some((rows, _)) => (
@@ -1248,7 +1261,17 @@ mod tests {
         let mut text = graph_core::TextAtlas::system();
         let (w, h) = (200u32, 100u32);
         // y = 1 crosses the middle of a view centred on (0, 1).
-        let png = super::block_png(&gpu, &mut text, &rows, [0.0, 1.0, 10.0], w, h, 1.0).unwrap();
+        let png = super::block_png(
+            &gpu,
+            &mut text,
+            &rows,
+            [0.0, 1.0, 10.0],
+            w,
+            h,
+            1.0,
+            Default::default(),
+        )
+        .unwrap();
         let decoder = png::Decoder::new(std::io::Cursor::new(png));
         let mut reader = decoder.read_info().unwrap();
         let mut px = vec![0; reader.output_buffer_size().unwrap()];

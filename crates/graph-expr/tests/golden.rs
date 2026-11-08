@@ -1382,3 +1382,136 @@ fn greek_letters_in_3d() {
     assert!(close(r[1].surfaces[0].program.eval2(1.0, 0.0), 2f64.sin()));
     assert!(r[2].slider.is_none(), "φ is a spherical coordinate in 3D");
 }
+
+#[test]
+fn undefined_answers_show_their_form() {
+    let form = |latex: &[&str]| rows(latex).last().unwrap().undefined_as.clone();
+    // A trig pole is undefined, not 1.6×10^16.
+    let r = rows(&["f(x)=\\tan x", "f(\\frac{\\pi}{2})"]);
+    assert!(matches!(r[1].value, Some(Value::Number(v)) if v.is_nan()));
+    assert_eq!(r[1].undefined_as.as_deref(), Some("\\frac{1}{0}"));
+    assert_eq!(
+        form(&["\\tan(\\frac{3\\pi}{2})"]).as_deref(),
+        Some("-\\frac{1}{0}")
+    );
+    assert_eq!(
+        form(&["\\sec(\\frac{\\pi}{2})"]).as_deref(),
+        Some("\\frac{1}{0}")
+    );
+    assert_eq!(form(&["\\frac{1}{0}"]).as_deref(), Some("\\frac{1}{0}"));
+    assert_eq!(form(&["\\frac{0}{0}"]).as_deref(), Some("\\frac{0}{0}"));
+    assert_eq!(form(&["\\ln(0)"]).as_deref(), Some("\\ln\\left(0\\right)"));
+    assert_eq!(form(&["\\sqrt{-4}"]).as_deref(), Some("\\sqrt{-4}"));
+    // Through a variable.
+    assert_eq!(
+        form(&["a=\\frac{2}{b}", "b=0", "a+1"]).as_deref(),
+        Some("\\frac{2}{0}")
+    );
+    // Overflow is not undefined.
+    assert_eq!(form(&["e^{1000}"]), None);
+    // Exact zeros of sine and cosine.
+    assert_eq!(value(&["\\sin(\\pi)"]), 0.0);
+    assert_eq!(value(&["\\cos(\\frac{\\pi}{2})"]), 0.0);
+    assert_eq!(value(&["\\tan(\\pi)"]), 0.0);
+    assert!(close(value(&["\\tan(1.5)"]), 14.101419947171719));
+}
+
+/// Polar rows of every common shape trace r(θ)·(cos θ, sin θ).
+#[test]
+fn polar_rows_trace_their_radius() {
+    use std::f64::consts::PI;
+    let cases: &[(&[&str], fn(f64) -> f64)] = &[
+        (&["r=2\\sin(3\\theta)"], |t| 2.0 * (3.0 * t).sin()),
+        (&["r=1+\\cos\\theta"], |t| 1.0 + t.cos()),
+        (&["2\\sin\\theta=r"], |t| 2.0 * t.sin()),
+        (&["r=e^{\\theta/10}"], |t| (t / 10.0).exp()),
+        (&["r=\\frac{1}{\\theta}"], |t| 1.0 / t),
+        (&["r=\\sec\\theta"], |t| 1.0 / t.cos()),
+        (&["a=3", "r=a\\cos(2\\theta)"], |t| 3.0 * (2.0 * t).cos()),
+        (&["f(t)=t^2", "r=f(\\theta)"], |t| t * t),
+        (&["r=\\sqrt{\\cos(2\\theta)}"], |t| (2.0 * t).cos().sqrt()),
+        (&["r=\\theta\\{\\theta<\\pi\\}"], |t| {
+            if t < PI {
+                t
+            } else {
+                f64::NAN
+            }
+        }),
+    ];
+    for (latex, radius) in cases {
+        let r = rows(latex).pop().unwrap();
+        assert!(r.error.is_none(), "{latex:?}: {:?}", r.error);
+        assert_eq!(r.parametrics.len(), 1, "{latex:?}");
+        let p = &r.parametrics[0];
+        for k in 1..40 {
+            let t = k as f64 * 0.37;
+            let want = radius(t);
+            let (x, y) = (p.x.eval(t), p.y.eval(t));
+            if want.is_nan() {
+                assert!(x.is_nan() && y.is_nan(), "{latex:?} at {t}: undefined");
+                continue;
+            }
+            assert!(
+                (x - want * t.cos()).abs() < 1e-9 * want.abs().max(1.0)
+                    && (y - want * t.sin()).abs() < 1e-9 * want.abs().max(1.0),
+                "{latex:?} at θ = {t}: ({x}, {y}), want r = {want}"
+            );
+        }
+    }
+    // A list of radii is one curve each.
+    assert_eq!(one("r=[1,2,3]\\theta").parametrics.len(), 3);
+    // Domain bounds can use sliders.
+    let all = analyze(&[
+        RowInput {
+            id: 0,
+            latex: "b=\\pi".into(),
+            ..Default::default()
+        },
+        RowInput {
+            id: 1,
+            latex: "r=\\theta".into(),
+            domain: Some(["0".into(), "2b".into()]),
+            ..Default::default()
+        },
+    ]);
+    assert!(all[1].parameter.as_ref().unwrap().error.is_none());
+    assert!(close(all[1].parametrics[0].domain.1, 2.0 * PI));
+}
+
+#[test]
+fn degree_mode_reads_angles_in_degrees() {
+    use graph_expr::{analyze_angles, Mode};
+    let in_degrees = |latex: &[&str]| {
+        let input: Vec<RowInput> = latex
+            .iter()
+            .enumerate()
+            .map(|(i, l)| RowInput {
+                id: i as u64,
+                latex: l.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        analyze_angles(&input, &mut Cache::default(), Mode::Flat, true)
+    };
+    let value = |latex: &[&str]| in_degrees(latex).pop().unwrap().number().unwrap();
+    assert!(close(value(&["\\sin(30)"]), 0.5));
+    assert!(close(value(&["\\arctan(1)"]), 45.0));
+    assert!(close(value(&["f(x)=\\cos x", "f(60)"]), 0.5));
+    let pole = in_degrees(&["\\tan(90)"]).pop().unwrap();
+    assert_eq!(pole.undefined_as.as_deref(), Some("\\frac{1}{0}"));
+    // θ runs over six turns in degrees, and r = 1 + cos θ is a cardioid.
+    let r = in_degrees(&["r=1+\\cos\\theta"]).pop().unwrap();
+    let p = &r.parametrics[0];
+    assert_eq!(p.domain, (0.0, 2160.0));
+    assert!(p.x.eval(90.0).abs() < 1e-12 && close(p.y.eval(90.0), 1.0));
+    assert!(close(p.x.eval(0.0), 2.0));
+    // θ in a region is in degrees too.
+    let wedge = in_degrees(&["\\theta<45"])
+        .pop()
+        .unwrap()
+        .region()
+        .cloned()
+        .unwrap();
+    assert!(wedge.program.eval2(1.0, 0.5) < 0.0);
+    assert!(wedge.program.eval2(0.5, 1.0) > 0.0);
+}

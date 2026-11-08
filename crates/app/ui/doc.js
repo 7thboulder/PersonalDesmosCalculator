@@ -1371,6 +1371,8 @@
       rows: (block.rows || []).filter(function (r) { return r && typeof r === 'object'; }),
       view: block.view && block.view.w > 0 ? block.view : defaultView(),
       height: block.height > 0 ? block.height : GRAPH_HEIGHT,
+      // Its own wrench-menu settings, as Desmos keeps per graph.
+      settings: block.settings && typeof block.settings === 'object' ? block.settings : {},
       shown: null, inflight: false, again: false
     };
     var box = document.createElement('div');
@@ -1384,6 +1386,12 @@
     bar.className = 'dgraph-bar';
     [['open', 'Open in graph view', function () { openGraph(line); }],
       ['home', 'Reset the view', function () { line.view = defaultView(); changed(); drawGraph(line); }],
+      ['grid', '', function () {
+        line.settings = Object.assign({}, line.settings, { polarMode: !line.settings.polarMode, showGrid: true });
+        showGridButton(line);
+        changed();
+        drawGraph(line);
+      }],
       ['remove', 'Remove the graph', function () {
         var i = indexOf(line);
         removeLine(line);
@@ -1398,6 +1406,8 @@
       bar.appendChild(btn);
     });
     box.appendChild(bar);
+    line.gridButton = bar.querySelector('.dgraph-grid');
+    showGridButton(line);
     var note = document.createElement('div');
     note.className = 'dgraph-note';
     box.appendChild(note);
@@ -1482,6 +1492,13 @@
   }
 
   // Asks the engine for the block's picture; one request at a time.
+  // The grid switch names the grid it changes to.
+  function showGridButton(line) {
+    var polar = !!line.settings.polarMode;
+    line.gridButton.textContent = polar ? 'Cartesian grid' : 'Polar grid';
+    line.gridButton.title = polar ? 'Show a Cartesian grid' : 'Show a polar grid';
+  }
+
   function drawGraph(line) {
     if (indexOf(line) < 0) return;
     if (line.inflight) { line.again = true; return; }
@@ -1489,6 +1506,7 @@
     if (!width) { setTimeout(function () { drawGraph(line); }, 100); return; }
     var ask = {
       type: 'docGraph', id: line.id, rows: graphRows(line, false), view: Object.assign({}, line.view),
+      settings: line.settings,
       width: Math.round(width * scale()), height: Math.round(line.height * scale()), scale: scale()
     };
     // Nothing changed since the picture showing was drawn.
@@ -1550,7 +1568,10 @@
   // and its view when Done.
   function openGraph(line) {
     editingGraph = { line: line, sent: graphRows(line, true) };
-    send({ type: 'graphEdit', rows: editingGraph.sent, view: line.view, title: titleEl.value || 'Untitled' });
+    send({
+      type: 'graphEdit', rows: editingGraph.sent, view: line.view, settings: line.settings,
+      title: titleEl.value || 'Untitled'
+    });
     show(false);
   }
 
@@ -1569,6 +1590,10 @@
       return copy;
     });
     if (msg.view && msg.view.w > 0) e.line.view = msg.view;
+    if (msg.settings && typeof msg.settings === 'object') {
+      e.line.settings = msg.settings;
+      showGridButton(e.line);
+    }
     if (msg.done) editingGraph = null;
     changed();
     drawGraph(e.line);
@@ -1587,7 +1612,9 @@
           return m;
         }
         if (l.kind === 'graph') {
-          return { type: 'graph', id: l.id, rows: l.rows, view: l.view, height: l.height };
+          var g = { type: 'graph', id: l.id, rows: l.rows, view: l.view, height: l.height };
+          if (Object.keys(l.settings).length) g.settings = l.settings;
+          return g;
         }
         var text = lineText(l);
         if (l.kind === 'heading') return { type: 'heading', level: l.level, text: text };

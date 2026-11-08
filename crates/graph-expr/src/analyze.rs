@@ -294,6 +294,9 @@ pub struct RowAnalysis {
     pub error: Option<String>,
     /// A computed value to show under the row, as Desmos does for `2+3` or `b = 2a`.
     pub value: Option<Value>,
+    /// When `value` is an undefined number, the form that made it so, as
+    /// LaTeX: `\frac{1}{0}` for tan(π/2), `\ln\left(0\right)` for ln 0.
+    pub undefined_as: Option<String>,
     /// Undefined names that could be added as sliders.
     pub missing: Vec<String>,
     /// The row is `name = number`, so the panel shows a slider for it.
@@ -381,6 +384,7 @@ impl RowAnalysis {
             kind,
             error: None,
             value: None,
+            undefined_as: None,
             missing: Vec::new(),
             slider: None,
             curves: Vec::new(),
@@ -529,6 +533,8 @@ struct FastCompile<'a> {
 /// Desmos's default domains: 0 ≤ t ≤ 1 and 0 ≤ θ ≤ 12π.
 const T_DOMAIN: (f64, f64) = (0.0, 1.0);
 const THETA_DOMAIN: (f64, f64) = (0.0, 12.0 * std::f64::consts::PI);
+/// The same six turns in degree mode.
+const THETA_DOMAIN_DEGREES: (f64, f64) = (0.0, 2160.0);
 
 /// No graph variable is in scope (a plain value or a variable's definition).
 const NO_FREE: &[(&str, Arg)] = &[];
@@ -1243,6 +1249,19 @@ pub fn analyze_cached(rows: &[RowInput], cache: &mut Cache) -> Vec<RowAnalysis> 
 
 /// As `analyze_cached`, for a graph in the given mode.
 pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<RowAnalysis> {
+    analyze_angles(rows, cache, mode, false)
+}
+
+/// As `analyze_mode`, with angles in degrees when `degrees` is set, as in
+/// Desmos's degree mode: trig functions take degrees, inverse ones give
+/// degrees, and θ in polar rows is in degrees. A cache must not be shared
+/// between the two.
+pub fn analyze_angles(
+    rows: &[RowInput],
+    cache: &mut Cache,
+    mode: Mode,
+    degrees: bool,
+) -> Vec<RowAnalysis> {
     let written: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| {
@@ -1312,6 +1331,9 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         }
         for statement in parsed.iter_mut().flatten().flatten() {
             special_calls(statement, &defined);
+            if degrees {
+                degree_calls(statement);
+            }
         }
         // `H_5` and `H_m` with only `H_n = …` written are H at 5 and m.
         let indexed = crate::subscripts::functions(
@@ -1399,6 +1421,7 @@ pub fn analyze_mode(rows: &[RowInput], cache: &mut Cache, mode: Mode) -> Vec<Row
         new: Cache::default(),
         recording: Vec::new(),
         mode,
+        degrees,
     };
     for table in tables.iter().flatten() {
         for column in &table.columns {
@@ -1771,6 +1794,52 @@ fn failed_row(id: u64, f: matrix::Failure) -> RowAnalysis {
     row
 }
 
+/// Rewrites trig calls for degree mode: `sin(a)` becomes `sin(a·π/180)`
+/// and `arcsin(a)` becomes `arcsin(a)·180/π`.
+fn degree_calls(statement: &mut Statement) {
+    let fix = |e: &mut Expr| {
+        let taken = std::mem::replace(e, Expr::Num(0.0));
+        *e = degree_expr(taken);
+    };
+    match statement {
+        Statement::Expr(e) => fix(e),
+        Statement::Relation(a, _, b) | Statement::Regression(a, b) => {
+            if !matches!(a, Expr::Apply(..)) {
+                fix(a);
+            }
+            fix(b);
+        }
+        Statement::Chain(c) => c.operands.iter_mut().for_each(fix),
+    }
+}
+
+fn degree_expr(e: Expr) -> Expr {
+    use Builtin::*;
+    const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
+    units::rewrite(e, &mut |e| match e {
+        Expr::Call(f @ (Sin | Cos | Tan | Csc | Sec | Cot), args) => {
+            let args = args
+                .into_iter()
+                .map(|a| {
+                    Expr::Mul(
+                        Box::new(degree_expr(a)),
+                        Box::new(Expr::Num(RADIANS_PER_DEGREE)),
+                    )
+                })
+                .collect();
+            Ok(Expr::Call(f, args))
+        }
+        Expr::Call(f @ (Arcsin | Arccos | Arctan | Arccsc | Arcsec | Arccot), args) => {
+            let args = args.into_iter().map(degree_expr).collect();
+            Ok(Expr::Mul(
+                Box::new(Expr::Call(f, args)),
+                Box::new(Expr::Num(1.0 / RADIANS_PER_DEGREE)),
+            ))
+        }
+        e => Err(e),
+    })
+}
+
 /// Rewrites `Γ(x)`, `ζ(s)`, `J_n(x)` and the other special functions
 /// written with letters as calls, unless `defined` (or the parameters of
 /// the function this row defines) has the name.
@@ -2030,6 +2099,8 @@ struct Env {
     /// What each value being worked out has read so far, innermost last.
     recording: Vec<Vec<Read>>,
     mode: Mode,
+    /// Angles in degrees: θ in polar rows is in degrees.
+    degrees: bool,
 }
 
 /// A value's constants as bits, to key remembered function calls; None
@@ -2298,6 +2369,11 @@ impl Env {
                     // A list or point written out in full needs no echo.
                     (_, _) if is_literal(expr) => {}
                     _ => row.value = Some(value.clone()),
+                }
+                if let Value::Number(n) = value {
+                    if !n.is_finite() {
+                        row.undefined_as = self.undefined_form(expr);
+                    }
                 }
                 // A point or polygon variable is drawn, as in Desmos.
                 row.points = points_of(&value);
@@ -2977,9 +3053,24 @@ impl Env {
         if row.error.is_none() && val.has_points() {
             row.error = Some("r can't equal a point".into());
         }
-        let parameter = self.parameter(input, "theta", THETA_DOMAIN);
+        let parameter = if self.degrees {
+            self.parameter(input, "theta", THETA_DOMAIN_DEGREES)
+        } else {
+            self.parameter(input, "theta", THETA_DOMAIN)
+        };
         if row.error.is_none() {
-            let theta = || Low::Arg(Arg::X);
+            let degrees = self.degrees;
+            let theta = || {
+                if degrees {
+                    bin(
+                        BinOp::Mul,
+                        Low::Arg(Arg::X),
+                        Low::Const(std::f64::consts::PI / 180.0),
+                    )
+                } else {
+                    Low::Arg(Arg::X)
+                }
+            };
             for item in &val.items {
                 let Item::Num(radius) = item else { continue };
                 let x = bin(
@@ -3289,6 +3380,11 @@ impl Env {
                 Low::Const(std::f64::consts::TAU),
             ],
         );
+        let theta = if self.degrees {
+            bin(BinOp::Mul, theta, Low::Const(180.0 / std::f64::consts::PI))
+        } else {
+            theta
+        };
         let bindings: HashMap<String, Val> = [
             ("r".to_owned(), Val::num(r)),
             ("theta".to_owned(), Val::num(theta)),
@@ -3407,6 +3503,11 @@ impl Env {
         row.error = problems.first_message();
         if row.error.is_none() {
             row.value = val.constant();
+            if let Some(Value::Number(n)) = row.value {
+                if !n.is_finite() {
+                    row.undefined_as = self.undefined_form(expr);
+                }
+            }
             if let Some(v) = &row.value {
                 row.points = points_of(v);
                 row.points3 = points3_of(v);
@@ -5742,5 +5843,236 @@ fn peel_restrictions(e: &Expr, conditions: &mut Vec<Condition>) -> Expr {
             peel_restrictions(&branches[0].1, conditions)
         }
         other => other.clone(),
+    }
+}
+
+/// A number worked out while explaining an undefined answer, with the form
+/// that first made it undefined, such as `\frac{1}{0}`.
+type Traced = (f64, Option<String>);
+
+/// How deep `Env::trace` follows function calls and variables.
+const TRACE_DEPTH: usize = 32;
+
+/// `\frac{n}{0}`.
+fn over_zero(n: f64) -> String {
+    let sign = if n < 0.0 { "-" } else { "" };
+    format!(
+        "{sign}\\frac{{{}}}{{0}}",
+        crate::format::value_latex(n.abs())
+    )
+}
+
+/// A call to a built-in function written as LaTeX, as in `\ln\left(0\right)`.
+fn call_latex(f: Builtin, args: &[f64]) -> String {
+    let parts: Vec<String> = args
+        .iter()
+        .map(|a| crate::format::value_latex(*a))
+        .collect();
+    let joined = parts.join(",");
+    match f {
+        Builtin::Sqrt => return format!("\\sqrt{{{joined}}}"),
+        Builtin::Factorial => return format!("\\left({joined}\\right)!"),
+        _ => {}
+    }
+    const COMMANDS: &[&str] = &[
+        "sin", "cos", "tan", "csc", "sec", "cot", "arcsin", "arccos", "arctan", "sinh", "cosh",
+        "tanh", "csch", "sech", "coth", "ln", "log", "exp",
+    ];
+    let name = f.name();
+    let head = match name {
+        "Γ" => "\\Gamma".to_owned(),
+        "ψ" => "\\psi".to_owned(),
+        "ζ" => "\\zeta".to_owned(),
+        n if COMMANDS.contains(&n) => format!("\\{n}"),
+        n if n.chars().count() == 1 => n.to_owned(),
+        n => format!("\\operatorname{{{n}}}"),
+    };
+    format!("{head}\\left({joined}\\right)")
+}
+
+/// The form that makes a built-in function undefined at `args`, all of them
+/// finite numbers, when its answer `v` is not a finite number. None when the
+/// answer only overflowed, as e^1000 does.
+fn call_form(f: Builtin, args: &[f64], v: f64) -> Option<String> {
+    let x = args.first().copied().unwrap_or(f64::NAN);
+    match f {
+        // tan = sin/cos and cot = cos/sin, so at a pole they are ±1/0.
+        Builtin::Tan => Some(over_zero(crate::builtins::sin(x))),
+        Builtin::Cot => Some(over_zero(crate::builtins::cos(x))),
+        Builtin::Sec | Builtin::Csc => Some(over_zero(1.0)),
+        Builtin::Exp | Builtin::Sinh | Builtin::Cosh if v.is_infinite() => None,
+        Builtin::Factorial | Builtin::Gamma if v.is_infinite() && x > 0.0 => None,
+        _ => Some(call_latex(f, args)),
+    }
+}
+
+/// A binary operation on traced numbers: the first form that went
+/// undefined is carried along until the answer is a number again.
+fn trace_op(op: BinOp, a: Traced, b: Traced) -> Traced {
+    let v = op.apply(a.0, b.0);
+    if v.is_finite() {
+        return (v, None);
+    }
+    if let Some(form) = a.1.or(b.1) {
+        return (v, Some(form));
+    }
+    if !(a.0.is_finite() && b.0.is_finite()) {
+        return (v, None);
+    }
+    let form = match op {
+        BinOp::Div if b.0 == 0.0 => Some(over_zero(a.0)),
+        // 0^-n is 1/0^n.
+        BinOp::Pow if a.0 == 0.0 && b.0 < 0.0 => Some(over_zero(1.0)),
+        BinOp::Pow if v.is_nan() => Some(format!(
+            "\\left({}\\right)^{{{}}}",
+            crate::format::value_latex(a.0),
+            crate::format::value_latex(b.0)
+        )),
+        _ => None,
+    };
+    (v, form)
+}
+
+impl Env {
+    /// Why a row's number came out undefined: the form where it first went
+    /// undefined, such as `\frac{1}{0}` for tan(π/2). None when the number
+    /// only overflowed, or the row uses something this can't follow.
+    fn undefined_form(&mut self, e: &Expr) -> Option<String> {
+        let (v, form) = self.trace(e, &[], 0)?;
+        if v.is_finite() {
+            return None;
+        }
+        form
+    }
+
+    /// Works `e` out again as a plain number, noting the form of anything
+    /// that goes undefined on the way. Only run on a row whose answer is
+    /// already known to be undefined, so it favours being simple over fast.
+    fn trace(&mut self, e: &Expr, scope: &[(String, Traced)], depth: usize) -> Option<Traced> {
+        if depth > TRACE_DEPTH {
+            return None;
+        }
+        Some(match e {
+            Expr::Num(v) => (*v, None),
+            Expr::Var(name) => {
+                if let Some((_, v)) = scope.iter().rev().find(|(n, _)| n == name) {
+                    return Some(v.clone());
+                }
+                if let Some((_, v)) = CONSTANTS.iter().find(|(c, _)| c == name) {
+                    return Some((*v, None));
+                }
+                if !self.vars.contains_key(name) {
+                    return None;
+                }
+                let n = match self.value_of(name, &mut HashSet::new()).ok()? {
+                    Value::Number(n) => n,
+                    _ => return None,
+                };
+                if n.is_finite() {
+                    (n, None)
+                } else {
+                    let body = self.vars.get(name)?.clone();
+                    let form = self.trace(&body, &[], depth + 1).and_then(|t| t.1);
+                    (n, form)
+                }
+            }
+            Expr::Neg(a) => {
+                let (v, form) = self.trace(a, scope, depth)?;
+                (-v, form)
+            }
+            Expr::Add(a, b)
+            | Expr::Sub(a, b)
+            | Expr::Mul(a, b)
+            | Expr::Div(a, b)
+            | Expr::Pow(a, b) => {
+                let op = match e {
+                    Expr::Add(..) => BinOp::Add,
+                    Expr::Sub(..) => BinOp::Sub,
+                    Expr::Mul(..) => BinOp::Mul,
+                    Expr::Div(..) => BinOp::Div,
+                    _ => BinOp::Pow,
+                };
+                let a = self.trace(a, scope, depth)?;
+                let b = self.trace(b, scope, depth)?;
+                trace_op(op, a, b)
+            }
+            Expr::Factorial(a) => {
+                let a = self.trace(a, scope, depth)?;
+                self.trace_call(Builtin::Factorial, vec![a])
+            }
+            Expr::Call(f, args) => {
+                if f.takes_list() {
+                    return None;
+                }
+                let mut traced = Vec::with_capacity(args.len());
+                for a in args {
+                    traced.push(self.trace(a, scope, depth)?);
+                }
+                self.trace_call(*f, traced)
+            }
+            Expr::Apply(name, args) => {
+                if let Some(f) = self.funcs.get(name).cloned() {
+                    if f.params.len() != args.len() {
+                        return None;
+                    }
+                    let mut inner = Vec::with_capacity(args.len());
+                    for (p, a) in f.params.iter().zip(args) {
+                        inner.push((p.clone(), self.trace(a, scope, depth)?));
+                    }
+                    return self.trace(&f.body, &inner, depth + 1);
+                }
+                // `a(x+1)` with no function a is a product.
+                let [arg] = &args[..] else {
+                    return None;
+                };
+                let a = self.trace(&Expr::Var(name.clone()), scope, depth)?;
+                let b = self.trace(arg, scope, depth)?;
+                trace_op(BinOp::Mul, a, b)
+            }
+            Expr::Piecewise(branches, otherwise) => {
+                for (condition, value) in branches {
+                    let mut operands = Vec::with_capacity(condition.operands.len());
+                    for o in &condition.operands {
+                        operands.push(self.trace(o, scope, depth)?);
+                    }
+                    if let Some(bad) = operands.iter().find(|o| o.0.is_nan()) {
+                        return Some((f64::NAN, bad.1.clone()));
+                    }
+                    let holds = condition.relations.iter().enumerate().all(|(i, r)| {
+                        let op = match r {
+                            Relation::Eq => BinOp::Eq,
+                            Relation::Lt => BinOp::Lt,
+                            Relation::Gt => BinOp::Gt,
+                            Relation::Le => BinOp::Le,
+                            Relation::Ge => BinOp::Ge,
+                        };
+                        op.apply(operands[i].0, operands[i + 1].0) == 1.0
+                    });
+                    if holds {
+                        return self.trace(value, scope, depth);
+                    }
+                }
+                match otherwise {
+                    Some(o) => self.trace(o, scope, depth)?,
+                    None => (f64::NAN, None),
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    fn trace_call(&self, f: Builtin, args: Vec<Traced>) -> Traced {
+        let values: Vec<f64> = args.iter().map(|a| a.0).collect();
+        let v = f.eval(&values);
+        if v.is_finite() {
+            return (v, None);
+        }
+        if let Some(form) = args.into_iter().find_map(|a| a.1) {
+            return (v, Some(form));
+        }
+        if !values.iter().all(|a| a.is_finite()) {
+            return (v, None);
+        }
+        (v, call_form(f, &values, v))
     }
 }

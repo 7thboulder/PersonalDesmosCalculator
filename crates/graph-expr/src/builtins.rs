@@ -184,6 +184,38 @@ pub fn from_name(name: &str) -> Option<Builtin> {
     NAMES.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
 }
 
+/// Whether `v`, a sine or cosine of `x`, is only rounding away from 0: `x`
+/// is a float just beside a multiple of π (or of π/2 for cosine), so the
+/// true answer at the multiple the person meant, such as sin(π), is 0.
+/// Values near x = 0 are left alone, where sin x ≈ x is tiny but real.
+fn rounding_zero(v: f64, x: f64) -> bool {
+    x.abs() > 1.0 && v.abs() <= 4.0 * f64::EPSILON * x.abs()
+}
+
+/// sin x, exactly 0 at the multiples of π.
+pub fn sin(x: f64) -> f64 {
+    let v = x.sin();
+    if rounding_zero(v, x) {
+        0.0
+    } else {
+        v
+    }
+}
+
+/// cos x, exactly 0 at the odd multiples of π/2.
+pub fn cos(x: f64) -> f64 {
+    let v = x.cos();
+    if rounding_zero(v, x) {
+        0.0
+    } else {
+        v
+    }
+}
+
+fn nonzero(v: f64) -> Option<f64> {
+    (v != 0.0).then_some(v)
+}
+
 pub fn is_operator_name(name: &str) -> bool {
     from_name(name).is_some()
 }
@@ -253,12 +285,20 @@ impl Builtin {
     pub fn eval(self, a: &[f64]) -> f64 {
         let x = a.first().copied().unwrap_or(f64::NAN);
         match self {
-            Sin => x.sin(),
-            Cos => x.cos(),
-            Tan => x.tan(),
-            Csc => 1.0 / x.sin(),
-            Sec => 1.0 / x.cos(),
-            Cot => 1.0 / x.tan(),
+            Sin => sin(x),
+            Cos => cos(x),
+            Tan => match (sin(x), cos(x)) {
+                (_, c) if c == 0.0 => f64::NAN,
+                (s, _) if s == 0.0 => 0.0,
+                _ => x.tan(),
+            },
+            Csc => nonzero(sin(x)).map_or(f64::NAN, |s| 1.0 / s),
+            Sec => nonzero(cos(x)).map_or(f64::NAN, |c| 1.0 / c),
+            Cot => match (sin(x), cos(x)) {
+                (s, _) if s == 0.0 => f64::NAN,
+                (_, c) if c == 0.0 => 0.0,
+                _ => 1.0 / x.tan(),
+            },
             Arcsin => x.asin(),
             Arccos => x.acos(),
             Arctan if a.len() == 2 => x.atan2(a[1]),

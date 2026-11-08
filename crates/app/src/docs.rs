@@ -62,6 +62,11 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
                 if let Some(id) = line["id"].as_str().filter(|id| is_id(id)) {
                     graph["id"] = Value::String(id.to_owned());
                 }
+                // Its own wrench-menu settings, when not the defaults.
+                let settings = crate::files::settings_from(&line["settings"]);
+                if settings != graph_core::GridSettings::default() {
+                    graph["settings"] = crate::files::settings_json(&settings);
+                }
                 graph
             }
             _ => {

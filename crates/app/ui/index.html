@@ -21,7 +21,7 @@
     <button id="redo" class="icon" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
     <button class="icon ref-toggle" title="Reference: trig identities, derivatives, integrals and special functions (Ctrl+Alt+R)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M3 4.5c2.5-1 4.8-1 7 .6 2.2-1.6 4.5-1.6 7-.6v11c-2.5-1-4.8-1-7 .6-2.2-1.6-4.5-1.6-7-.6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 5.1v11" stroke="currentColor" stroke-width="1.5"/></svg></button>
     <button id="help" class="icon" title="Functions and keyboard shortcuts (Ctrl+/)">?</button>
-    <button class="icon" title="Settings (coming later)" disabled>&#x2699;</button>
+    <button id="settings-btn" class="icon" title="Graph settings"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M12.6 2.6a4.2 4.2 0 0 0-4.9 5.6l-5.1 5.1a1.6 1.6 0 0 0 2.3 2.3l5.1-5.1a4.2 4.2 0 0 0 5.6-4.9l-2.6 2.6-2.2-.6-.6-2.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button>
   </div>
   <div id="block-bar" hidden>
     <span class="what">Graph in <b></b></span>
@@ -43,6 +43,22 @@
   <button data-file="import">Import from Desmos&hellip;</button>
   <button data-file="exportDesmos">Export to Desmos&hellip;</button>
   <button data-file="help">Functions and shortcuts<span class="key">Ctrl+/</span></button>
+</div>
+<div id="settings-menu">
+  <div class="set-head">Grid</div>
+  <div class="grid-kinds">
+    <button data-grid="cartesian" title="Cartesian grid"><svg viewBox="0 0 28 28" width="28" height="28"><path d="M3 9.7h22M3 18.3h22M9.7 3v22M18.3 3v22" stroke="currentColor" stroke-width="1.3" fill="none"/></svg></button>
+    <button data-grid="polar" title="Polar grid"><svg viewBox="0 0 28 28" width="28" height="28"><circle cx="14" cy="14" r="5" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="14" cy="14" r="10.5" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M14 2v24M2 14h24M5.5 5.5l17 17M22.5 5.5l-17 17" stroke="currentColor" stroke-width="1" fill="none"/></svg></button>
+  </div>
+  <label><input type="checkbox" data-set="showGrid"> Grid</label>
+  <label class="sub"><input type="checkbox" data-set="minorGridlines"> Minor Gridlines</label>
+  <label><input type="checkbox" data-set="showXAxis"> X-Axis</label>
+  <label class="sub"><input type="checkbox" data-set="xAxisNumbers"> Numbers</label>
+  <label><input type="checkbox" data-set="showYAxis"> Y-Axis</label>
+  <label class="sub"><input type="checkbox" data-set="yAxisNumbers"> Numbers</label>
+  <div class="angle-kinds">
+    <button data-degrees="false">Radians</button><button data-degrees="true">Degrees</button>
+  </div>
 </div>
 <div id="import" class="overlay">
   <div class="box">
