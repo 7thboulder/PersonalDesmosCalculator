@@ -13,6 +13,7 @@ pub mod text;
 pub mod three;
 pub mod viewport;
 
+pub use grid::GridSettings;
 pub use implicit::{trace_implicit, Field};
 pub use ode::Equation;
 pub use poi::{

@@ -6,7 +6,7 @@
 // Only the Windows window saves and opens outside tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use graph_core::{View3, Viewport};
+use graph_core::{GridSettings, View3, Viewport};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -24,6 +24,8 @@ pub struct Document {
     current: String,
     rows: String,
     three_d: bool,
+    /// The wrench menu's settings, when not the defaults.
+    settings: String,
     /// The next rows to arrive are the freshly loaded graph, not an edit.
     loading: bool,
 }
@@ -63,8 +65,23 @@ impl Document {
         self.refresh();
     }
 
+    /// The wrench menu's settings changed, which is a change too.
+    pub fn settings_changed(&mut self, settings: &GridSettings) {
+        self.settings = if *settings == GridSettings::default() {
+            String::new()
+        } else {
+            settings_json(settings).to_string()
+        };
+        self.refresh();
+    }
+
     fn refresh(&mut self) {
-        self.current = format!("{}{}", self.rows, if self.three_d { " 3d" } else { "" });
+        self.current = format!(
+            "{}{}{}",
+            self.rows,
+            if self.three_d { " 3d" } else { "" },
+            self.settings
+        );
     }
 
     pub fn dirty(&self) -> bool {
@@ -113,6 +130,9 @@ pub fn to_file(rows: &Value, vp: &Viewport, space: &Space) -> String {
     if space.three_d {
         file["mode"] = json!("3d");
     }
+    if space.settings != GridSettings::default() {
+        file["settings"] = settings_json(&space.settings);
+    }
     if let Some(b) = &space.view {
         file["box"] = json!({
             "center": b.center,
@@ -129,6 +149,41 @@ pub fn to_file(rows: &Value, vp: &Viewport, space: &Space) -> String {
 pub struct Space {
     pub three_d: bool,
     pub view: Option<BoxView>,
+    /// The wrench menu's settings.
+    pub settings: GridSettings,
+}
+
+/// The wrench menu's settings as JSON, named as Desmos names them in a
+/// graph's state (`minorGridlines` is this app's own).
+pub fn settings_json(s: &GridSettings) -> Value {
+    json!({
+        "polarMode": s.polar,
+        "showGrid": s.grid,
+        "minorGridlines": s.minor,
+        "showXAxis": s.x_axis,
+        "showYAxis": s.y_axis,
+        "xAxisNumbers": s.x_numbers,
+        "yAxisNumbers": s.y_numbers,
+        "degreeMode": s.degrees,
+    })
+}
+
+/// Reads settings written by `settings_json`, or a Desmos state's `graph`;
+/// anything missing keeps its default.
+pub fn settings_from(v: &Value) -> GridSettings {
+    let d = GridSettings::default();
+    let flag = |key: &str, default: bool| v[key].as_bool().unwrap_or(default);
+    GridSettings {
+        polar: flag("polarMode", d.polar),
+        grid: flag("showGrid", d.grid),
+        // Desmos turns minor lines off with one subdivision.
+        minor: flag("minorGridlines", d.minor) && v["xAxisMinorSubdivisions"].as_f64() != Some(1.0),
+        x_axis: flag("showXAxis", d.x_axis),
+        y_axis: flag("showYAxis", d.y_axis),
+        x_numbers: flag("xAxisNumbers", d.x_numbers),
+        y_numbers: flag("yAxisNumbers", d.y_numbers),
+        degrees: flag("degreeMode", d.degrees),
+    }
 }
 
 /// A saved 3D view: the box's range and the camera's angles.
@@ -193,6 +248,7 @@ pub fn space_of(text: &str) -> Space {
     Space {
         three_d: file["mode"] == "3d",
         view,
+        settings: settings_from(&file["settings"]),
     }
 }
 
@@ -237,7 +293,11 @@ fn desmos_space(state: &Value) -> Space {
         }
         _ => None,
     };
-    Space { three_d, view }
+    Space {
+        three_d,
+        view,
+        settings: settings_from(g),
+    }
 }
 
 /// A saved view: the world point at the centre and the width shown.
@@ -782,12 +842,31 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
             vp.units_per_px * vp.width_px,
             vp.units_per_px * vp.height_px,
         );
-        json!({
+        let mut graph = json!({
             "viewport": {
                 "xmin": vp.center[0] - w / 2.0, "xmax": vp.center[0] + w / 2.0,
                 "ymin": vp.center[1] - h / 2.0, "ymax": vp.center[1] + h / 2.0,
             },
-        })
+        });
+        let st = &space.settings;
+        if *st != GridSettings::default() {
+            for (key, value) in [
+                ("polarMode", st.polar),
+                ("showGrid", st.grid),
+                ("showXAxis", st.x_axis),
+                ("showYAxis", st.y_axis),
+                ("xAxisNumbers", st.x_numbers),
+                ("yAxisNumbers", st.y_numbers),
+                ("degreeMode", st.degrees),
+            ] {
+                graph[key] = json!(value);
+            }
+            if !st.minor {
+                graph["xAxisMinorSubdivisions"] = json!(1);
+                graph["yAxisMinorSubdivisions"] = json!(1);
+            }
+        }
+        graph
     };
     let state = json!({
         "version": 11,
@@ -947,6 +1026,7 @@ mod tests {
         let space = Space {
             three_d: true,
             view: Some(BoxView::of(&view3)),
+            ..Default::default()
         };
         let text = autosave_contents(&doc, &edited, &vp, &space);
 
@@ -1168,6 +1248,7 @@ mod tests {
         let space = Space {
             three_d: true,
             view: Some(view),
+            ..Default::default()
         };
         let rows = json!([{"latex": "z=x^2+y^2"}]);
         let (state, warnings) = to_desmos(&rows, &Viewport::new(100.0, 100.0), &space);
@@ -1192,5 +1273,33 @@ mod tests {
         let b = back.view.unwrap();
         assert_eq!((b.center, b.half), (view.center, view.half));
         assert!((b.yaw - view.yaw).abs() < 1e-9 && (b.pitch - view.pitch).abs() < 1e-9);
+    }
+
+    #[test]
+    fn graph_settings_save_open_and_cross_to_desmos() {
+        let settings = GridSettings {
+            polar: true,
+            minor: false,
+            y_numbers: false,
+            degrees: true,
+            ..Default::default()
+        };
+        let space = Space {
+            settings,
+            ..Default::default()
+        };
+        let rows = json!([{"latex": "r=\\theta"}]);
+        let vp = Viewport::new(100.0, 100.0);
+        let text = to_file(&rows, &vp, &space);
+        assert_eq!(space_of(&text).settings, settings);
+        // A graph with the default settings writes none.
+        let plain = to_file(&rows, &vp, &Space::default());
+        assert!(!plain.contains("settings"));
+        assert_eq!(space_of(&plain).settings, GridSettings::default());
+
+        let (state, _) = to_desmos(&rows, &vp, &space);
+        assert_eq!(state["graph"]["polarMode"], true);
+        assert_eq!(state["graph"]["degreeMode"], true);
+        assert_eq!(space_of(&state.to_string()).settings, settings);
     }
 }

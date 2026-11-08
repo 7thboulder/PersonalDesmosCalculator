@@ -3,7 +3,7 @@
 //! reply the panel shows (errors, values, slider offers). Kept free of
 //! window code so it is tested on every platform.
 
-use graph_core::grid::{grid_spacing, line_indices};
+use graph_core::grid::{grid_spacing, line_indices, GridSettings};
 use graph_core::scene::{DEFAULT_CURVE_WIDTH, DEFAULT_POINT_SIZE, MAJOR_SPACING_LOGICAL};
 use graph_core::three::{self, Mesh, View3};
 use graph_core::{
@@ -12,7 +12,7 @@ use graph_core::{
 };
 use graph_expr::format::{exact_latex, matrix_entry_latex, result_latex, value_latex};
 use graph_expr::{
-    analyze_mode, wgsl, Cache, ColumnInput, Compare, Fractal, Ink, Interval, Mode, NewValue, Ode,
+    analyze_angles, wgsl, Cache, ColumnInput, Compare, Fractal, Ink, Interval, Mode, NewValue, Ode,
     Program, RowAnalysis, RowInput, RowKind, Stroke,
 };
 use graph_render::{Frame3, Shading, Test};
@@ -300,6 +300,10 @@ pub struct Engine {
     pub generation: u64,
     /// Variable values from the last update, reused where unchanged.
     cache: Cache,
+    /// The wrench menu's settings: the grid, the axes and degree mode.
+    pub grid: GridSettings,
+    /// Whether `cache` holds values worked out in degrees.
+    cache_degrees: bool,
 }
 
 impl Engine {
@@ -352,7 +356,12 @@ impl Engine {
                     .collect(),
             })
             .collect();
-        let results = analyze_mode(&inputs, &mut self.cache, self.mode);
+        // Values worked out in radians mean nothing in degrees.
+        if self.cache_degrees != self.grid.degrees {
+            self.cache = Cache::default();
+            self.cache_degrees = self.grid.degrees;
+        }
+        let results = analyze_angles(&inputs, &mut self.cache, self.mode, self.grid.degrees);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
         self.generation += 1;
@@ -610,7 +619,13 @@ impl Engine {
                 _ => None,
             })
             .collect();
-        Value::Array(results.iter().map(|r| row_json(r, &defined)).collect())
+        let degrees = self.grid.degrees;
+        Value::Array(
+            results
+                .iter()
+                .map(|r| row_json(r, &defined, degrees))
+                .collect(),
+        )
     }
 
     /// One stroke of a matrix's picture. The transformation view has its
@@ -811,6 +826,7 @@ impl Engine {
             points: &points,
             fields: &fields,
             marks,
+            grid: self.grid,
         })
     }
 
@@ -1183,7 +1199,7 @@ fn point_style(row: &Value) -> PointStyle {
     }
 }
 
-fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
+fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>, degrees: bool) -> Value {
     let (kind, name) = match &r.kind {
         RowKind::Empty => ("empty", None),
         RowKind::Variable(n) => ("variable", Some(n)),
@@ -1201,9 +1217,12 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
         "kind": kind,
         "name": name,
         "error": r.error,
-        "value": r.value.as_ref().map(|v| match &r.unit {
-            Some(unit) => format!("{}\\ {unit}", result_latex(v)),
-            None => result_latex(v),
+        "value": r.value.as_ref().map(|v| match (&r.undefined_as, &r.unit) {
+            // Shown as Desmos would, but with what made it undefined:
+            // tan(π/2) = 1/0 = undefined.
+            (Some(form), _) => format!("{form}=\\operatorname{{undefined}}"),
+            (None, Some(unit)) => format!("{}\\ {unit}", result_latex(v)),
+            (None, None) => result_latex(v),
         }),
         // A regression's parameters and R², as Desmos lists them under it.
         "fit": r.fit.as_ref().map(|f| {
@@ -1282,6 +1301,7 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>) -> Value {
             "name": p.name,
             "latex": name_latex(p.name),
             "default": match p.name {
+                "theta" if degrees => ["0", "2160"],
                 "theta" => ["0", "12\\pi"],
                 _ => ["0", "1"],
             },

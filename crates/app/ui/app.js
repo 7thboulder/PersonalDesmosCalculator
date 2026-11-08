@@ -2657,8 +2657,68 @@
     });
   });
 
+  // ---- Graph settings (the wrench menu) -------------------------------------
+
+  // As Desmos names them in a graph's state. The engine keeps the real copy
+  // and sends it back whenever a graph opens.
+  var graphSettings = {
+    polarMode: false, showGrid: true, minorGridlines: true, showXAxis: true,
+    showYAxis: true, xAxisNumbers: true, yAxisNumbers: true, degreeMode: false
+  };
+  var settingsMenu = document.getElementById('settings-menu');
+  function showSettings(s) {
+    Object.keys(graphSettings).forEach(function (k) {
+      if (typeof s[k] === 'boolean') graphSettings[k] = s[k];
+    });
+    var g = graphSettings;
+    settingsMenu.querySelectorAll('[data-grid]').forEach(function (b) {
+      b.classList.toggle('on', (b.dataset.grid === 'polar') === g.polarMode);
+    });
+    settingsMenu.querySelectorAll('[data-degrees]').forEach(function (b) {
+      b.classList.toggle('on', (b.dataset.degrees === 'true') === g.degreeMode);
+    });
+    settingsMenu.querySelectorAll('input[data-set]').forEach(function (box) {
+      box.checked = g[box.dataset.set];
+    });
+    // A sub-option only matters while its parent is on.
+    [['minorGridlines', 'showGrid'], ['xAxisNumbers', 'showXAxis'], ['yAxisNumbers', 'showYAxis']]
+      .forEach(function (p) {
+        var box = settingsMenu.querySelector('input[data-set="' + p[0] + '"]');
+        box.disabled = !g[p[1]];
+        box.parentNode.classList.toggle('off', !g[p[1]]);
+      });
+  }
+  function changeSettings(change) {
+    var next = Object.assign({}, graphSettings, change);
+    showSettings(next);
+    send({ type: 'settings', settings: Object.assign({}, graphSettings) });
+  }
+  document.getElementById('settings-btn').addEventListener('mousedown', function (e) {
+    e.stopPropagation();
+    e.preventDefault();
+    settingsMenu.classList.toggle('open');
+  });
+  settingsMenu.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+  settingsMenu.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.grid) changeSettings({ polarMode: b.dataset.grid === 'polar', showGrid: true });
+    else if (b.dataset.degrees) changeSettings({ degreeMode: b.dataset.degrees === 'true' });
+  });
+  settingsMenu.addEventListener('change', function (e) {
+    var box = e.target;
+    if (!box.dataset || !box.dataset.set) return;
+    var change = {};
+    change[box.dataset.set] = box.checked;
+    changeSettings(change);
+  });
+  document.addEventListener('mousedown', function () { settingsMenu.classList.remove('open'); });
+  showSettings(graphSettings);
+
   // Called by Rust through evaluate_script.
   window.engine = {
+    // The wrench menu's settings, from a graph opened or a graph block.
+    settings: showSettings,
     // The graph became 2D or 3D, from the switch, a file or a new graph.
     mode: showMode,
     // While desmos.com is asked for a pasted link.

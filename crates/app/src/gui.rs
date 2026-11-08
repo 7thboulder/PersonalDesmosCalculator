@@ -405,6 +405,7 @@ impl Running {
         Space {
             three_d: self.three_d(),
             view: Some(BoxView::of(&self.view3)),
+            settings: self.engine.grid,
         }
     }
 
@@ -429,7 +430,24 @@ impl Running {
         if let Some(view) = space.view {
             view.apply(&mut self.view3);
         }
+        self.show_settings(space.settings);
         self.set_mode(space.three_d);
+    }
+
+    /// Takes the wrench menu's settings and shows them in the panel. The
+    /// rows are read again by whoever changes the mode or rows next, or
+    /// here when degree mode changed.
+    fn show_settings(&mut self, settings: graph_core::GridSettings) {
+        let degrees_changed = settings.degrees != self.engine.grid.degrees;
+        self.engine.grid = settings;
+        self.doc.settings_changed(&settings);
+        let json = files::settings_json(&settings);
+        self.run_script(&format!("window.engine.settings({json})"));
+        if degrees_changed && self.rows_received {
+            let results = self.engine.update(&self.rows);
+            self.run_script(&format!("window.engine.analysis({results})"));
+        }
+        self.window.request_redraw();
     }
 
     fn cursor_moved(&mut self, position: PhysicalPosition<f64>) {
@@ -691,6 +709,26 @@ impl Running {
                     }
                 }
             }
+            // The wrench menu.
+            Some("settings") => {
+                let settings = files::settings_from(&value["settings"]);
+                if settings != self.engine.grid {
+                    self.show_settings(settings);
+                    if self.block_edit.is_some() {
+                        let reply = serde_json::json!({
+                            "rows": self.rows,
+                            "settings": value["settings"],
+                            "done": false,
+                        });
+                        self.doc_reply("graphEdited", reply);
+                    } else {
+                        self.update_title();
+                        if !self.smoke_test && self.autosave_due.is_none() {
+                            self.autosave_due = Some(Instant::now() + AUTOSAVE_DELAY);
+                        }
+                    }
+                }
+            }
             Some("exportDesmos") => {
                 let (state, warnings) = files::to_desmos(&self.rows, &self.viewport, &self.space());
                 let reply = serde_json::json!({
@@ -849,6 +887,7 @@ impl Running {
             }
         }
         self.viewport = vp;
+        self.show_settings(files::settings_from(&value["settings"]));
         let rows = headless::block_rows(&value["rows"]);
         let title = serde_json::Value::String(value["title"].as_str().unwrap_or("").to_owned());
         self.run_script(&format!("window.engine.load({rows})"));
@@ -873,9 +912,10 @@ impl Running {
             "y": self.viewport.center[1],
             "w": self.viewport.units_per_px * area.width as f64,
         });
+        let settings = files::settings_json(&self.engine.grid);
         self.doc_reply(
             "graphEdited",
-            serde_json::json!({ "rows": self.rows, "view": view, "done": true }),
+            serde_json::json!({ "rows": self.rows, "view": view, "settings": settings, "done": true }),
         );
         self.doc = saved.doc;
         self.viewport = saved.viewport;
@@ -913,6 +953,7 @@ impl Running {
                 self.apply_space(Space {
                     three_d: self.three_d(),
                     view: None,
+                    settings: Default::default(),
                 });
                 self.run_script("window.engine.load([])");
             }

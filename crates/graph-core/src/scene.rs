@@ -1,4 +1,4 @@
-use crate::grid::{grid_spacing, line_indices};
+use crate::grid::{grid_spacing, line_indices, GridSettings};
 use crate::implicit::{trace_implicit, Field};
 use crate::ode::{field_marks, solutions, Equation};
 use crate::sample::{sample_curve, sample_parametric, Axis};
@@ -183,6 +183,8 @@ pub struct Plot<'a> {
     pub points: &'a [Points<'a>],
     pub fields: &'a [SlopeField<'a>],
     pub marks: &'a [Mark],
+    /// Grid, axes and angle settings.
+    pub grid: GridSettings,
 }
 
 /// One frame's triangles, in parts: the renderer draws `vertices` up to
@@ -424,6 +426,7 @@ pub fn build_scene_cached(
         points,
         fields,
         marks,
+        grid: settings,
     } = *plot;
     let mut out = Vec::with_capacity(64 * 1024);
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
@@ -435,25 +438,41 @@ pub fn build_scene_cached(
     let ratio = (spacing.major / spacing.minor).round() as i64;
     let thin = scale.max(1.0).round();
 
-    // Minor lines first so major lines and axes draw over them.
-    for pass in [Pass::Minor, Pass::Major] {
-        let (step, color) = match pass {
-            Pass::Minor => (spacing.minor, MINOR_GRID),
-            Pass::Major => (spacing.major, MAJOR_GRID),
+    if settings.grid && settings.polar {
+        polar_grid(
+            vp,
+            spacing.major,
+            spacing.minor,
+            settings.minor,
+            thin,
+            &mut out,
+        );
+    } else if settings.grid {
+        // Minor lines first so major lines and axes draw over them.
+        let passes: &[Pass] = if settings.minor {
+            &[Pass::Minor, Pass::Major]
+        } else {
+            &[Pass::Major]
         };
-        for i in line_indices(x0, x1, step) {
-            if skip(pass, i, ratio) {
-                continue;
+        for &pass in passes {
+            let (step, color) = match pass {
+                Pass::Minor => (spacing.minor, MINOR_GRID),
+                Pass::Major => (spacing.major, MAJOR_GRID),
+            };
+            for i in line_indices(x0, x1, step) {
+                if skip(pass, i, ratio) {
+                    continue;
+                }
+                let sx = snap(vp.to_screen(i as f64 * step, 0.0)[0] as f32, thin);
+                stroke_polyline(&[[sx, 0.0], [sx, h]], thin, color, &mut out);
             }
-            let sx = snap(vp.to_screen(i as f64 * step, 0.0)[0] as f32, thin);
-            stroke_polyline(&[[sx, 0.0], [sx, h]], thin, color, &mut out);
-        }
-        for i in line_indices(y0, y1, step) {
-            if skip(pass, i, ratio) {
-                continue;
+            for i in line_indices(y0, y1, step) {
+                if skip(pass, i, ratio) {
+                    continue;
+                }
+                let sy = snap(vp.to_screen(0.0, i as f64 * step)[1] as f32, thin);
+                stroke_polyline(&[[0.0, sy], [w, sy]], thin, color, &mut out);
             }
-            let sy = snap(vp.to_screen(0.0, i as f64 * step)[1] as f32, thin);
-            stroke_polyline(&[[0.0, sy], [w, sy]], thin, color, &mut out);
         }
     }
 
@@ -461,15 +480,18 @@ pub fn build_scene_cached(
     let axis_w = (1.5 * scale).round().max(1.0);
     let [ox, oy] = vp.to_screen(0.0, 0.0);
     let (ox, oy) = (snap(ox as f32, axis_w), snap(oy as f32, axis_w));
-    if (0.0..=w).contains(&ox) {
+    if settings.y_axis && (0.0..=w).contains(&ox) {
         stroke_polyline(&[[ox, 0.0], [ox, h]], axis_w, AXIS, &mut out);
     }
-    if (0.0..=h).contains(&oy) {
+    if settings.x_axis && (0.0..=h).contains(&oy) {
         stroke_polyline(&[[0.0, oy], [w, oy]], axis_w, AXIS, &mut out);
     }
 
     let shade_after = out.len();
-    labels(vp, scale, spacing.major, text, &mut out);
+    labels(vp, scale, spacing.major, settings, text, &mut out);
+    if settings.grid && settings.polar {
+        angle_labels(vp, scale, settings.degrees, text, &mut out);
+    }
 
     // Sampling and tracing are the expensive parts, so every curve runs on
     // its own thread, unless its lines from an earlier frame still serve.
@@ -837,10 +859,19 @@ fn draw_label(
 
 /// Numbers along both axes at every major grid line. When an axis is off
 /// screen its numbers stay pinned to the nearest edge, as in Desmos.
-fn labels(vp: &Viewport, scale: f32, major: f64, text: &mut TextAtlas, out: &mut Vec<Vertex>) {
+fn labels(
+    vp: &Viewport,
+    scale: f32,
+    major: f64,
+    settings: GridSettings,
+    text: &mut TextAtlas,
+    out: &mut Vec<Vertex>,
+) {
     if !text.has_font() {
         return;
     }
+    let show_x = settings.x_axis && settings.x_numbers;
+    let show_y = settings.y_axis && settings.y_numbers;
     let size = (LABEL_SIZE * scale).round();
     let halo = LABEL_HALO * scale;
     let gap = LABEL_GAP * scale;
@@ -862,7 +893,7 @@ fn labels(vp: &Viewport, scale: f32, major: f64, text: &mut TextAtlas, out: &mut
     let every = if widest + 2.0 * gap > major_px { 2 } else { 1 };
     let baseline = (oy + gap + digit).clamp(gap + digit, h - gap);
     for i in xs {
-        if i == 0 || i % every != 0 {
+        if !show_x || i == 0 || i % every != 0 {
             continue;
         }
         let label = axis_label(i, major);
@@ -883,7 +914,7 @@ fn labels(vp: &Viewport, scale: f32, major: f64, text: &mut TextAtlas, out: &mut
 
     // y axis: right-aligned left of the axis, centred on each line.
     for i in line_indices(y0, y1, major) {
-        if i == 0 {
+        if !show_y || i == 0 {
             continue;
         }
         let label = axis_label(i, major);
@@ -895,10 +926,235 @@ fn labels(vp: &Viewport, scale: f32, major: f64, text: &mut TextAtlas, out: &mut
     }
 
     // A single 0 sits below and left of the origin.
-    if (0.0..=w).contains(&ox) && (0.0..=h).contains(&oy) {
+    if (show_x || show_y) && (0.0..=w).contains(&ox) && (0.0..=h).contains(&oy) {
         let zero = ("0".to_string(), None);
         let width = label_width(text, &zero, size);
         draw_label(text, &zero, size, halo, ox - gap - width, baseline, out);
+    }
+}
+
+/// Spokes of the polar grid, every 15°, as in Desmos; every other one is a
+/// major line and is labelled.
+const SPOKES: usize = 24;
+/// How far inside the edge of the graph the angle labels sit, in logical
+/// pixels.
+const ANGLE_LABEL_INSET: f32 = 22.0;
+
+/// The angles, from the origin, that the visible part of the graph spans:
+/// a whole turn when the origin is on screen.
+fn visible_angles(vp: &Viewport) -> (f64, f64) {
+    let (x0, x1) = vp.x_range();
+    let (y0, y1) = vp.y_range();
+    if x0 <= 0.0 && 0.0 <= x1 && y0 <= 0.0 && 0.0 <= y1 {
+        return (0.0, std::f64::consts::TAU);
+    }
+    // The origin is outside, so the rectangle spans less than half a turn
+    // seen from it: measure each corner from the centre's direction.
+    let mid = ((y0 + y1) / 2.0).atan2((x0 + x1) / 2.0);
+    let wrap = |a: f64| {
+        (a - mid + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+    };
+    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+    for (x, y) in [(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
+        let d = wrap(y.atan2(x));
+        lo = lo.min(d);
+        hi = hi.max(d);
+    }
+    (mid + lo, mid + hi)
+}
+
+/// The nearest and farthest the visible graph comes to the origin.
+fn visible_radii(vp: &Viewport) -> (f64, f64) {
+    let (x0, x1) = vp.x_range();
+    let (y0, y1) = vp.y_range();
+    let nx = 0.0f64.clamp(x0, x1);
+    let ny = 0.0f64.clamp(y0, y1);
+    let fx = x0.abs().max(x1.abs());
+    let fy = y0.abs().max(y1.abs());
+    ((nx * nx + ny * ny).sqrt(), (fx * fx + fy * fy).sqrt())
+}
+
+/// The part of the screen segment from `a` to `b` inside the box from
+/// `lo` to `hi`, if any.
+fn clip_segment(
+    a: [f64; 2],
+    b: [f64; 2],
+    lo: [f64; 2],
+    hi: [f64; 2],
+) -> Option<([f64; 2], [f64; 2])> {
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    let d = [b[0] - a[0], b[1] - a[1]];
+    for k in 0..2 {
+        for (p, q) in [(-d[k], a[k] - lo[k]), (d[k], hi[k] - a[k])] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return None;
+                }
+            } else {
+                let t = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+            }
+        }
+    }
+    (t0 <= t1).then(|| {
+        let at = |t: f64| [a[0] + d[0] * t, a[1] + d[1] * t];
+        (at(t0), at(t1))
+    })
+}
+
+/// Desmos's polar grid: circles at each grid spacing about the origin and
+/// spokes every 15°.
+fn polar_grid(
+    vp: &Viewport,
+    major: f64,
+    minor: f64,
+    show_minor: bool,
+    thin: f32,
+    out: &mut Vec<Vertex>,
+) {
+    let (w, h) = (vp.width_px, vp.height_px);
+    let [ox, oy] = vp.to_screen(0.0, 0.0);
+    let (near, far) = visible_radii(vp);
+    let (a0, a1) = visible_angles(vp);
+    let ratio = (major / minor).round() as i64;
+    // A little past the edges, so lines run off the paper cleanly.
+    let (lo, hi) = ([-4.0, -4.0], [w + 4.0, h + 4.0]);
+    let inside = |p: [f64; 2]| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
+    let passes: &[Pass] = if show_minor {
+        &[Pass::Minor, Pass::Major]
+    } else {
+        &[Pass::Major]
+    };
+
+    for &pass in passes {
+        let (step, color) = match pass {
+            Pass::Minor => (minor, MINOR_GRID),
+            Pass::Major => (major, MAJOR_GRID),
+        };
+        // Circles.
+        let first = ((near / step).ceil() as i64).max(1);
+        let last = (far / step).floor() as i64;
+        if last - first < 4000 {
+            for i in first..=last {
+                if pass == Pass::Minor && i % ratio == 0 {
+                    continue;
+                }
+                let r_px = i as f64 * step / vp.units_per_px;
+                // Segments about 3 px long along the visible arc.
+                let n = ((r_px * (a1 - a0) / 3.0).ceil() as usize).clamp(16, 20_000);
+                let at = |k: usize| {
+                    let a = a0 + (a1 - a0) * k as f64 / n as f64;
+                    [ox + r_px * a.cos(), oy - r_px * a.sin()]
+                };
+                // Only the runs on screen are stroked, each with one point
+                // past either end.
+                let mut run: Vec<[f32; 2]> = Vec::new();
+                let mut prev = at(0);
+                let mut prev_in = inside(prev);
+                for k in 1..=n {
+                    let p = at(k);
+                    let p_in = inside(p);
+                    if p_in || prev_in {
+                        if run.is_empty() {
+                            run.push([prev[0] as f32, prev[1] as f32]);
+                        }
+                        run.push([p[0] as f32, p[1] as f32]);
+                    } else if !run.is_empty() {
+                        stroke_polyline(&run, thin, color, out);
+                        run.clear();
+                    }
+                    prev = p;
+                    prev_in = p_in;
+                }
+                if run.len() >= 2 {
+                    stroke_polyline(&run, thin, color, out);
+                }
+            }
+        }
+        // Spokes: odd ones are minor, even ones major.
+        for k in 0..SPOKES {
+            let major_spoke = k % 2 == 0;
+            if major_spoke != (pass == Pass::Major) {
+                continue;
+            }
+            let a = k as f64 * std::f64::consts::TAU / SPOKES as f64;
+            let reach = far / vp.units_per_px + 10.0;
+            let end = [ox + reach * a.cos(), oy - reach * a.sin()];
+            if let Some((p, q)) = clip_segment([ox, oy], end, lo, hi) {
+                let line = [[p[0] as f32, p[1] as f32], [q[0] as f32, q[1] as f32]];
+                stroke_polyline(&line, thin, color, out);
+            }
+        }
+    }
+}
+
+/// The angle on each major spoke, just inside the edge of the graph where
+/// the spoke leaves it: π/6, π/3, … or 30°, 60°, … in degree mode.
+fn angle_labels(
+    vp: &Viewport,
+    scale: f32,
+    degrees: bool,
+    text: &mut TextAtlas,
+    out: &mut Vec<Vertex>,
+) {
+    if !text.has_font() {
+        return;
+    }
+    const RADIANS: [&str; 12] = [
+        "0",
+        "\u{3c0}/6",
+        "\u{3c0}/3",
+        "\u{3c0}/2",
+        "2\u{3c0}/3",
+        "5\u{3c0}/6",
+        "\u{3c0}",
+        "7\u{3c0}/6",
+        "4\u{3c0}/3",
+        "3\u{3c0}/2",
+        "5\u{3c0}/3",
+        "11\u{3c0}/6",
+    ];
+    let size = (LABEL_SIZE * scale).round();
+    let halo = LABEL_HALO * scale;
+    let digit = size * DIGIT_HEIGHT;
+    let inset = (ANGLE_LABEL_INSET * scale) as f64;
+    let (w, h) = (vp.width_px, vp.height_px);
+    let [ox, oy] = vp.to_screen(0.0, 0.0);
+    let (lo, hi) = ([inset, inset], [w - inset, h - inset]);
+    if hi[0] <= lo[0] || hi[1] <= lo[1] {
+        return;
+    }
+    let reach = w + h + (ox.abs() + oy.abs());
+    for (k, radians) in RADIANS.iter().enumerate() {
+        // 0 sits on the x axis among its numbers.
+        if k == 0 {
+            continue;
+        }
+        let a = k as f64 * std::f64::consts::PI / 6.0;
+        let end = [ox + reach * a.cos(), oy - reach * a.sin()];
+        let Some((_, at)) = clip_segment([ox, oy], end, lo, hi) else {
+            continue;
+        };
+        let label = if degrees {
+            (format!("{}\u{b0}", k * 30), None)
+        } else {
+            (radians.to_string(), None)
+        };
+        let width = label_width(text, &label, size);
+        let gap = LABEL_GAP * scale;
+        // Labels on an axis sit beside it, clear of the line and its numbers.
+        let (dx, dy) = match k {
+            3 | 9 => (width / 2.0 + gap, 0.0),
+            6 => (0.0, -(digit / 2.0 + gap)),
+            _ => (0.0, 0.0),
+        };
+        let x = at[0] as f32 - width / 2.0 + dx;
+        let baseline = at[1] as f32 + digit / 2.0 + dy;
+        draw_label(text, &label, size, halo, x, baseline, out);
     }
 }
 

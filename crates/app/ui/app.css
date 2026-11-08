@@ -587,6 +587,52 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #file-menu .key { color: #999; font-size: 12px; }
 #add-menu .glyph { display: inline-block; width: 24px; color: #666; font-style: italic; }
 
+/* ---- Graph settings (the wrench menu) ---- */
+#settings-menu {
+  display: none;
+  position: fixed;
+  z-index: 20;
+  top: 40px;
+  right: 6px;
+  width: 210px;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+  font-size: 14px;
+  color: #333;
+}
+#settings-menu.open { display: block; }
+#settings-menu .set-head { font-weight: bold; margin-bottom: 6px; }
+#settings-menu .grid-kinds { display: flex; gap: 8px; margin-bottom: 8px; }
+#settings-menu .grid-kinds button {
+  padding: 3px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #888;
+  cursor: pointer;
+  line-height: 0;
+}
+#settings-menu .grid-kinds button.on { border-color: #2f72dc; color: #2f72dc; background: #eef3fc; }
+#settings-menu label { display: block; padding: 3px 0; cursor: pointer; user-select: none; }
+#settings-menu label.sub { padding-left: 22px; }
+#settings-menu label.off { color: #aaa; }
+#settings-menu .angle-kinds { display: flex; margin-top: 8px; }
+#settings-menu .angle-kinds button {
+  flex: 1;
+  padding: 5px 0;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #555;
+  font-size: 13px;
+  cursor: pointer;
+}
+#settings-menu .angle-kinds button:first-child { border-radius: 4px 0 0 4px; }
+#settings-menu .angle-kinds button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+#settings-menu .angle-kinds button.on { background: #2f72dc; border-color: #2f72dc; color: #fff; }
+
 /* ---- Tables ---- */
 .table-row .body { padding: 10px 36px 10px 12px; }
 .note-row .body { padding: 10px 36px 10px 12px; }

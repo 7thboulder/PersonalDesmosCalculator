@@ -1,3 +1,37 @@
+/// The graph settings that change how the paper is drawn, as in Desmos's
+/// wrench menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridSettings {
+    /// Circles and spokes about the origin instead of squares.
+    pub polar: bool,
+    /// Whether any grid lines show.
+    pub grid: bool,
+    /// The fainter lines between the major ones.
+    pub minor: bool,
+    pub x_axis: bool,
+    pub y_axis: bool,
+    pub x_numbers: bool,
+    pub y_numbers: bool,
+    /// Angles in degrees: trig functions take degrees, and the polar grid's
+    /// spokes are labelled 30°, 60°, … instead of π/6, π/3, …
+    pub degrees: bool,
+}
+
+impl Default for GridSettings {
+    fn default() -> Self {
+        Self {
+            polar: false,
+            grid: true,
+            minor: true,
+            x_axis: true,
+            y_axis: true,
+            x_numbers: true,
+            y_numbers: true,
+            degrees: false,
+        }
+    }
+}
+
 /// Spacing of the major and minor grid lines in world units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridSpacing {
