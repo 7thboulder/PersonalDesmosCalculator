@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 /// The panel's reply for row `id`, whose LaTeX is `latex`. The other rows
 /// supply functions the row may use.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
     reply_in(rows, id, latex, op, false)
 }
@@ -18,9 +19,8 @@ pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: b
         .into_iter()
         .flatten()
         .filter(|r| r["id"].as_u64() != Some(id))
-        .filter_map(|r| r["latex"].as_str())
+        .filter_map(row_latex)
         .filter(|l| !l.is_empty())
-        .map(str::to_owned)
         .collect();
     // A differential equation's initial point and derivatives.
     let row = rows
@@ -54,6 +54,34 @@ pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: b
         "answer": report.answer,
         "error": report.error,
     })
+}
+
+/// A row as LaTeX: a matrix row's grid becomes `A = [matrix]`, so Solve
+/// can work with it.
+fn row_latex(r: &Value) -> Option<String> {
+    let latex = r["latex"].as_str()?;
+    let Some(grid) = r["matrix"].as_array() else {
+        return Some(latex.to_owned());
+    };
+    let rows: Vec<String> = grid
+        .iter()
+        .map(|cells| {
+            cells
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|c| match c.as_str().unwrap_or("").trim() {
+                    "" => "0".to_owned(),
+                    t => t.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        })
+        .collect();
+    Some(format!(
+        "{latex}=\\begin{{bmatrix}}{}\\end{{bmatrix}}",
+        rows.join("\\\\")
+    ))
 }
 
 /// As `solve`, in degree mode when `degrees` is set. Solve's own algebra
@@ -247,6 +275,67 @@ mod tests {
         assert_eq!(r["result"], "x=-2\\quad\\text{or}\\quad x=2");
         assert!(r["steps"].as_array().unwrap().len() > 1);
         assert_eq!(r["error"], Value::Null);
+    }
+
+    /// New kinds of problem: systems, inequalities, recurrences, matrices,
+    /// Fourier transforms and assumptions. Needs the Giac worker.
+    #[test]
+    fn giac_problem_types() {
+        if !crate::giac::available() {
+            eprintln!("GRAPHCALC_GIAC isn't set; skipping");
+            return;
+        }
+        let none = symbolic::Initial::default();
+        let a = "A=\\begin{bmatrix}2&1\\\\1&2\\end{bmatrix}";
+        let fact = "f\\left(n\\right)=\\left\\{n=0:1,2f\\left(n-1\\right)+1\\right\\}";
+        let cases: &[(&str, &[&str], Option<&str>, &str)] = &[
+            // Systems, in one row and with another row.
+            ("x+y=3,x-y=1", &[], None, "x=2,\\ y=1"),
+            ("x^{2}+y^{2}=25", &["y=x+1"], Some("giac:system"), "y=4"),
+            // Inequalities Solve's own algebra can't do.
+            ("-1<2x+1<5", &[], None, "-1<x<2"),
+            (
+                "\\sin\\left(x\\right)>2",
+                &[],
+                Some("giac:solve"),
+                "No solutions",
+            ),
+            // Recurrences: a recursive function, and a subscript one.
+            (fact, &[], None, "2^{n"),
+            ("a_{n+1}=3a_{n}", &["a_{0}=2"], None, "3^{n}"),
+            // Matrices.
+            ("A", &[a], Some("giac:eigenvals"), "\\lambda="),
+            ("A", &[a], Some("giac:eigenvects"), "P="),
+            ("A", &[a], Some("giac:inv"), "\\frac{2}{3}"),
+            ("A", &[a], Some("giac:det"), "3"),
+            ("A", &[a], Some("giac:charpoly"), "\\lambda"),
+            // Fourier.
+            (
+                "e^{-\\left|x\\right|}",
+                &[],
+                Some("giac:fourier"),
+                "\\omega",
+            ),
+            // Assumptions as a restriction.
+            ("\\sqrt{x^{2}}\\left\\{x>0\\right\\}", &[], None, "x"),
+            ("x^{2}=4\\left\\{x>0\\right\\}", &[], None, "x=2"),
+        ];
+        for (latex, others, op, want) in cases {
+            let others: Vec<String> = others.iter().map(|s| s.to_string()).collect();
+            let r = solve(latex, &others, *op, &none, true);
+            let result = r.result.clone().unwrap_or_default();
+            eprintln!(
+                "{latex} -> {result:?} / {:?}",
+                r.steps.last().map(|s| &s.note)
+            );
+            for st in &r.steps {
+                eprintln!("    {} | {}", st.note, st.latex);
+            }
+            assert!(r.error.is_none(), "{latex}: {r:?}");
+            assert!(result.contains(want), "{latex}: {result}");
+            let last = &r.steps.last().unwrap().note;
+            assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
+        }
     }
 
     /// Runs with the real Giac worker when `GRAPHCALC_GIAC` names it (the

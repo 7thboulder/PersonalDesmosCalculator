@@ -1208,6 +1208,7 @@ pub fn inequality(
         }
     }
     let mut pieces: Vec<String> = Vec::new();
+    let mut sets: Vec<String> = Vec::new();
     let mut i = 0;
     while i < items.len() {
         if !items[i].1 {
@@ -1231,6 +1232,27 @@ pub fn inequality(
             (false, _, k) => Some((points[k].1.clone(), false)),
         };
         let below = |closed: bool| if closed { "\\le " } else { "<" };
+        // The same piece in interval notation.
+        sets.push(match (&lo, &hi) {
+            (Some((a, _)), Some(_)) if first.0 && last.0 && first.2 == last.2 => {
+                format!("\\left\\{{{}\\right\\}}", latex(a))
+            }
+            _ => format!(
+                "{}{},{}{}",
+                if matches!(lo, Some((_, true))) {
+                    "\\left["
+                } else {
+                    "\\left("
+                },
+                lo.as_ref().map_or("-\\infty".into(), |(a, _)| latex(a)),
+                hi.as_ref().map_or("\\infty".into(), |(b, _)| latex(b)),
+                if matches!(hi, Some((_, true))) {
+                    "\\right]"
+                } else {
+                    "\\right)"
+                },
+            ),
+        });
         pieces.push(match (lo, hi) {
             (None, None) => format!("\\text{{every }}{xs}"),
             (None, Some((b, c))) => format!("{xs}{}{}", below(c), latex(&b)),
@@ -1250,6 +1272,10 @@ pub fn inequality(
     let row = (pieces.len() == 1 && !pieces[0].contains("text")).then(|| pieces[0].clone());
     let result = pieces.join("\\quad\\text{or}\\quad ");
     st.push("So", result.clone());
+    st.push(
+        "In interval notation",
+        format!("{xs}\\in {}", sets.join("\\cup ")),
+    );
     Ok((result, row))
 }
 

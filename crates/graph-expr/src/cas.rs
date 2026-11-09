@@ -7,7 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, Relation, Repeat, Statement};
+use crate::ast::{Condition, Expr, Relation, Repeat, Statement};
+
+mod extra;
 use crate::builtins::{self, Builtin};
 use crate::symbolic::{Choice, Report, Step};
 use crate::{analyze_angles, Cache, Mode, RowInput, Value};
@@ -72,6 +74,14 @@ impl Names {
         giac
     }
 
+    /// The name `name` has in Giac's answers, as `var` gives it.
+    fn var_back(&self, name: &str) -> String {
+        self.back
+            .iter()
+            .find(|(_, o)| o.as_str() == name)
+            .map_or_else(|| name.to_owned(), |(g, _)| g.clone())
+    }
+
     fn original(&self, giac: &str) -> Option<&str> {
         self.back.get(giac).map(String::as_str)
     }
@@ -129,6 +139,30 @@ enum Kind {
         var: String,
         original: String,
     },
+    /// Several equations; `residuals` are each one's left side minus its
+    /// right, in LaTeX, for the check.
+    System {
+        vars: Vec<String>,
+        residuals: Vec<String>,
+    },
+    Inequality {
+        var: String,
+        question: String,
+    },
+    /// A closed form for `call`, such as `f(n)` or `a_n`.
+    Recurrence {
+        call: String,
+        var: String,
+        check: Option<extra::RecurrenceCheck>,
+    },
+    Matrix {
+        what: String,
+        original: String,
+    },
+    Fourier {
+        var: String,
+        original: String,
+    },
 }
 
 /// What to ask Giac for one problem.
@@ -146,6 +180,8 @@ pub struct Plan {
     question: String,
     /// The other rows, for the numeric check.
     others: Vec<String>,
+    /// What a restriction on the row lets Giac assume, as written.
+    assumed: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +261,18 @@ impl Writer<'_> {
             }
             Expr::Factorial(a) => format!("factorial({})", self.expr(a)?),
             Expr::Call(f, args) => self.call(*f, args)?,
+            Expr::Apply(name, args)
+                if !self.funcs.contains(name) && crate::matrix::is_function(name) =>
+            {
+                let giac = match name.as_str() {
+                    "transpose" => "tran",
+                    "eigenvalues" => "eigenvals",
+                    "eigenvectors" => "eigenvects",
+                    "identity" => "idn",
+                    other => other,
+                };
+                format!("{giac}({})", self.list(args)?)
+            }
             Expr::Apply(name, args) => {
                 if self.funcs.contains(name) {
                     let args = self.list(args)?;
@@ -467,12 +515,26 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         .collect();
 
     let mut question = latex.trim().to_owned();
+    let mut conditions = Vec::new();
     let kind;
     let command;
     let mut choices = Vec::new();
     let mut chosen = op.and_then(|o| o.strip_prefix("giac:")).map(str::to_owned);
     let used: Vec<String>;
 
+    if let Some(system) = extra::plan_system(
+        latex,
+        others,
+        chosen.as_deref(),
+        &extra::Context {
+            defs: &defs,
+            funcs: &funcs,
+            vars: &vars,
+            conditions: &[],
+        },
+    ) {
+        return system;
+    }
     if let Some((var_latex, point_latex, dir, body_latex)) = split_limit(latex) {
         let var = match crate::parse(&var_latex) {
             Ok(Statement::Expr(Expr::Var(v))) => v,
@@ -519,6 +581,22 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         chosen = Some("limit".into());
     } else {
         let statement = crate::parse(latex)?;
+        let (statement, found) = extra::take_restriction(statement);
+        conditions = found;
+        if let Some(special) = extra::plan(
+            &statement,
+            latex,
+            others,
+            chosen.as_deref(),
+            &extra::Context {
+                defs: &defs,
+                funcs: &funcs,
+                vars: &vars,
+                conditions: &conditions,
+            },
+        ) {
+            return special;
+        }
         match statement {
             Statement::Expr(e) => {
                 used = free_names(&e);
@@ -642,6 +720,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             if used.iter().any(|n| n == "s") {
                                 choices.push(choice("giac:ilaplace", "Inverse Laplace transform"));
                             }
+                            choices.push(choice("giac:fourier", "Fourier transform"));
                         }
                     }
                 }
@@ -692,22 +771,66 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                         "giac:solve",
                         &format!("Solve for ${}$", name_latex(&var)),
                     )];
+                    if others
+                        .iter()
+                        .any(|o| crate::parse(o).is_ok_and(|s| extra::is_equation_row(&s, &vars)))
+                    {
+                        choices.push(choice("giac:system", "Solve with the other equations"));
+                    }
                 }
             }
             _ => return Err("Giac solves equations with =".into()),
         }
     }
 
-    // Definitions the problem reads, in the order they were written.
+    let mut setup = setup_lines(&defs, &used, &mut names, &funcs, &vars);
+    setup.extend(extra::assumptions(&conditions, &mut names, &funcs, &vars)?);
+
+    Ok(Plan {
+        setup,
+        command,
+        op: format!("giac:{}", chosen.unwrap_or_default()),
+        choices,
+        names,
+        kind,
+        question,
+        others: others.to_vec(),
+        assumed: (!conditions.is_empty())
+            .then(|| {
+                latex
+                    .rfind("\\left\\{")
+                    .map(|at| restriction_text(&latex[at..]))
+            })
+            .flatten(),
+    })
+}
+
+/// `\left\{x>0\right\}` as `x>0`.
+fn restriction_text(r: &str) -> String {
+    r.trim()
+        .trim_start_matches("\\left\\{")
+        .trim_end_matches("\\right\\}")
+        .to_owned()
+}
+
+/// The lines Giac runs before the problem: the angle mode, then the
+/// definitions the problem reads, in the order they were written.
+fn setup_lines(
+    defs: &[Statement],
+    used: &[String],
+    names: &mut Names,
+    funcs: &HashSet<String>,
+    vars: &HashSet<String>,
+) -> Vec<String> {
     let mut setup = vec![
         "restart".to_owned(),
         format!("angle_radian:={}", if degrees() { 0 } else { 1 }),
     ];
-    for d in &defs {
+    for d in defs {
         let mut w = Writer {
-            names: &mut names,
-            funcs: &funcs,
-            vars: &vars,
+            names: &mut *names,
+            funcs,
+            vars,
         };
         match d {
             Statement::Relation(Expr::Var(n), Relation::Eq, rhs)
@@ -735,16 +858,7 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
         }
     }
 
-    Ok(Plan {
-        setup,
-        command,
-        op: format!("giac:{}", chosen.unwrap_or_default()),
-        choices,
-        names,
-        kind,
-        question,
-        others: others.to_vec(),
-    })
+    setup
 }
 
 fn name_latex(name: &str) -> String {
@@ -1275,6 +1389,26 @@ fn tidy_tex(tex: &str, names: &Names) -> String {
 
 /// The values of `rows` (LaTeX), worked out together; the last `n` are
 /// read.
+/// The engine's analysis of `input`, in degrees in degree mode.
+fn analyze_inputs(input: &[RowInput]) -> Vec<crate::RowAnalysis> {
+    let deg = degrees();
+    std::panic::catch_unwind(|| analyze_angles(input, &mut Cache::default(), Mode::Flat, deg))
+        .unwrap_or_default()
+}
+
+fn analyze_rows(rows: &[String]) -> Vec<crate::RowAnalysis> {
+    let input: Vec<RowInput> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, l)| RowInput {
+            id: i as u64,
+            latex: l.clone(),
+            ..Default::default()
+        })
+        .collect();
+    analyze_inputs(&input)
+}
+
 fn values(rows: &[String]) -> Vec<Option<(f64, f64)>> {
     let input: Vec<RowInput> = rows
         .iter()
@@ -1285,10 +1419,7 @@ fn values(rows: &[String]) -> Vec<Option<(f64, f64)>> {
             ..Default::default()
         })
         .collect();
-    let deg = degrees();
-    let out =
-        std::panic::catch_unwind(|| analyze_angles(&input, &mut Cache::default(), Mode::Flat, deg))
-            .unwrap_or_default();
+    let out = analyze_inputs(&input);
     out.iter()
         .map(|r| match &r.value {
             Some(Value::Number(v)) if v.is_finite() => Some((*v, 0.0)),
@@ -1468,7 +1599,22 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
     let q = &plan.question;
     let mut check = Check::NotDone;
     let mut note = "Giac works it out".to_owned();
+    if let Some(a) = &plan.assumed {
+        report.steps.push(Step {
+            note: "Giac takes the restriction as given".into(),
+            latex: a.clone(),
+        });
+    }
+    let mut more = None;
     match &plan.kind {
+        Kind::System { .. }
+        | Kind::Inequality { .. }
+        | Kind::Recurrence { .. }
+        | Kind::Matrix { .. }
+        | Kind::Fourier { .. } => match extra::finish(plan, &text, &shown, readable, &mut report) {
+            Some(c) => more = Some(c),
+            None => return report,
+        },
         Kind::Antiderivative { var, body } => {
             if text.contains("integrate(") {
                 report.error =
@@ -1733,6 +1879,9 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
         }
     }
     let _ = note;
+    if let Some(c) = more {
+        check = c;
+    }
     report.steps.push(Step {
         note: match check {
             Check::Passed(n) if n > 1 => format!("Checked numerically at {n} points"),
