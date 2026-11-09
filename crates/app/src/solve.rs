@@ -7,6 +7,12 @@ use serde_json::{json, Value};
 /// The panel's reply for row `id`, whose LaTeX is `latex`. The other rows
 /// supply functions the row may use.
 pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
+    reply_in(rows, id, latex, op, false)
+}
+
+/// As `reply`, with angles in degrees when `degrees` is set, as the graph's
+/// degree mode has them.
+pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: bool) -> Value {
     let others: Vec<String> = rows
         .as_array()
         .into_iter()
@@ -31,7 +37,14 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
             .map(|d| d.as_str().unwrap_or("").to_owned())
             .collect(),
     };
-    let report = solve(latex, &others, op, &initial, crate::giac::available());
+    let report = solve_in(
+        latex,
+        &others,
+        op,
+        &initial,
+        crate::giac::available(),
+        degrees,
+    );
     json!({
         "id": id,
         "op": report.op,
@@ -41,6 +54,37 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
         "answer": report.answer,
         "error": report.error,
     })
+}
+
+/// As `solve`, in degree mode when `degrees` is set. Solve's own algebra
+/// works in radians, so a problem with trig in it goes to Giac, which
+/// works in degrees, and its answer is checked in degrees.
+fn solve_in(
+    latex: &str,
+    others: &[String],
+    op: Option<&str>,
+    initial: &symbolic::Initial,
+    giac: bool,
+    degrees: bool,
+) -> symbolic::Report {
+    let angles = cas::uses_angles(latex) || others.iter().any(|o| cas::uses_angles(o));
+    if !degrees || !angles {
+        return solve(latex, others, op, initial, giac);
+    }
+    if !giac {
+        return symbolic::Report {
+            error: Some(
+                "Solving trig in degree mode needs Giac, which isn't part of this build".into(),
+            ),
+            ..Default::default()
+        };
+    }
+    let op = op.filter(|o| o.starts_with("giac:"));
+    let mut report = cas::in_degrees(true, || with_giac(latex, others, op, giac));
+    if let Some(first) = report.steps.first_mut() {
+        first.note = format!("{} (angles in degrees)", first.note);
+    }
+    report
 }
 
 /// Rust's own algebra first, then Giac (when `giac` is there) for what it
@@ -263,6 +307,25 @@ mod tests {
             let last = &r.steps.last().unwrap().note;
             assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
         }
+        // Degree mode: trig in degrees, checked in degrees.
+        let deg: &[(&str, Option<&str>, &str)] = &[
+            ("\\sin\\left(x\\right)=\\frac{1}{2}", None, "30"),
+            ("\\frac{d}{dx}\\sin\\left(x\\right)", None, "180"),
+            ("\\cos\\left(60\\right)", None, "\\frac{1}{2}"),
+            ("\\arctan\\left(1\\right)", None, "45"),
+        ];
+        for (latex, op, want) in deg {
+            let r = solve_in(latex, &[], *op, &none, true, true);
+            let result = r.result.clone().unwrap_or_default();
+            eprintln!("deg {latex} -> {result:?}");
+            assert!(r.error.is_none(), "{latex}: {r:?}");
+            assert!(result.contains(want), "{latex}: {result}");
+            let last = &r.steps.last().unwrap().note;
+            assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
+        }
+        // No trig: Solve's own algebra, as in radians.
+        let r = solve_in("x^{2}=4", &[], None, &none, true, true);
+        assert_eq!(r.result.as_deref(), Some("x=-2\\quad\\text{or}\\quad x=2"));
         // Something Rust can't do falls through to Giac by itself.
         let r = solve("\\lim_{x\\to0^{+}}x\\ln x", &[], None, &none, true);
         assert!(r.error.is_none(), "{r:?}");

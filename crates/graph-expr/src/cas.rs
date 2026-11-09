@@ -10,7 +10,35 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{Expr, Relation, Repeat, Statement};
 use crate::builtins::{self, Builtin};
 use crate::symbolic::{Choice, Report, Step};
-use crate::{analyze, RowInput, Value};
+use crate::{analyze_angles, Cache, Mode, RowInput, Value};
+
+thread_local! {
+    static DEGREES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` (planning a problem and finishing it) with angles in degrees
+/// when `on`, as Desmos's degree mode has them: Giac works in degrees and
+/// the answers are checked in degrees.
+pub fn in_degrees<T>(on: bool, f: impl FnOnce() -> T) -> T {
+    let before = DEGREES.with(|d| d.replace(on));
+    let out = f();
+    DEGREES.with(|d| d.set(before));
+    out
+}
+
+fn degrees() -> bool {
+    DEGREES.with(|d| d.get())
+}
+
+/// Whether LaTeX uses a trig function, whose meaning degree mode changes.
+pub fn uses_angles(latex: &str) -> bool {
+    [
+        r"\sin", r"\cos", r"\tan", r"\csc", r"\sec", r"\cot", r"\arc", "{arc", "{sec", "{csc",
+        "{cot",
+    ]
+    .iter()
+    .any(|t| latex.contains(t))
+}
 
 /// How names in the problem are written for Giac. Every name the person
 /// wrote gets a `QQ` in front, so `D`, `E` or `beta` can't clash with one of
@@ -671,7 +699,10 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
     }
 
     // Definitions the problem reads, in the order they were written.
-    let mut setup = vec!["restart".to_owned()];
+    let mut setup = vec![
+        "restart".to_owned(),
+        format!("angle_radian:={}", if degrees() { 0 } else { 1 }),
+    ];
     for d in &defs {
         let mut w = Writer {
             names: &mut names,
@@ -1254,7 +1285,10 @@ fn values(rows: &[String]) -> Vec<Option<(f64, f64)>> {
             ..Default::default()
         })
         .collect();
-    let out = std::panic::catch_unwind(|| analyze(&input)).unwrap_or_default();
+    let deg = degrees();
+    let out =
+        std::panic::catch_unwind(|| analyze_angles(&input, &mut Cache::default(), Mode::Flat, deg))
+            .unwrap_or_default();
     out.iter()
         .map(|r| match &r.value {
             Some(Value::Number(v)) if v.is_finite() => Some((*v, 0.0)),
@@ -1964,7 +1998,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(p.setup, vec!["restart", "QQa:=2", "QQf(QQt):=(QQt^2)"]);
+        assert_eq!(
+            p.setup,
+            vec!["restart", "angle_radian:=1", "QQa:=2", "QQf(QQt):=(QQt^2)"]
+        );
         assert_eq!(p.command, "integrate(QQf(QQx),QQx,0,QQa)");
     }
 
