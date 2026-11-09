@@ -17,6 +17,7 @@ pub mod limit;
 pub mod matrix;
 pub mod parser;
 pub mod recursion;
+pub mod series;
 pub mod special;
 pub mod subscripts;
 pub mod symbolic;

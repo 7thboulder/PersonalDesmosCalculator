@@ -62,9 +62,39 @@ pub fn parse_with_units(latex: &str) -> Result<Statement, String> {
             _ => return Err("Only a value can be converted, like 5 km in mi".into()),
         };
     }
-    match p.peek() {
-        None => Ok(statement),
-        Some(tok) => Err(unexpected(tok)),
+    if let Some(tok) = p.peek() {
+        return Err(unexpected(tok));
+    }
+    // ∂ belongs only in the fraction of a partial derivative.
+    if format!("{statement:?}").contains("Var(\"partial\")") {
+        return Err("Write a partial derivative as a fraction, like ∂/∂x (type partial)".into());
+    }
+    Ok(statement)
+}
+
+/// `\nabla f`: the partial derivatives of `f` as a point: in x and y (and
+/// z when it reads z), or else in the two or three letters it reads.
+fn gradient(body: Expr) -> Expr {
+    let mut names: Vec<String> = Vec::new();
+    body.visit_names(&mut |n, applied| {
+        let constant = matches!(n, "e" | "pi" | "tau" | "infty" | "i");
+        if !applied && !constant && !names.iter().any(|m| m == n) {
+            names.push(n.to_owned());
+        }
+    });
+    let has = |v: &str| names.iter().any(|n| n == v);
+    let vars: Vec<String> = if has("z") {
+        vec!["x".into(), "y".into(), "z".into()]
+    } else if has("x") || has("y") || !(2..=3).contains(&names.len()) {
+        vec!["x".into(), "y".into()]
+    } else {
+        names
+    };
+    let d = |v: &String| Box::new(Expr::Derivative(v.clone(), Box::new(body.clone())));
+    match vars.as_slice() {
+        [a, b, c] => Expr::Point3(d(a), d(b), d(c)),
+        [a, b] => Expr::Point(d(a), d(b)),
+        _ => unreachable!(),
     }
 }
 
@@ -463,6 +493,17 @@ impl Parser {
         match tok {
             Tok::Num(v) => Ok(Expr::Num(v)),
             Tok::Unit(text) => Ok(Expr::Unit(Box::new(crate::units::parse_unit(&text)?))),
+            Tok::Letter(letter) if letter == "nabla" => {
+                // `\nabla f`: the gradient, a point of partial derivatives.
+                if !(self.starts_factor() || self.peek() == Some(&Tok::Minus)) {
+                    return Err("∇ needs something to take the gradient of".into());
+                }
+                let body = self.term()?;
+                Ok(gradient(body))
+            }
+            // Only meaningful in the fraction of a partial derivative; a
+            // stray one is caught once the whole row is read.
+            Tok::Letter(letter) if letter == "partial" => Ok(Expr::Var(letter)),
             Tok::Letter(letter) => {
                 // `H_{2n-1}`: a subscript holding an expression.
                 if let Some(index) = self.subscript_expr()? {
@@ -507,14 +548,18 @@ impl Parser {
                 self.expect(&Tok::LBrace)?;
                 let den = self.expr()?;
                 self.expect(&Tok::RBrace)?;
-                if let Some(var) = derivative_variable(&num, &den) {
+                if let Some(vars) = derivative_vars(&num, &den)? {
                     if self.peek().is_none()
                         || !(self.starts_factor() || self.peek() == Some(&Tok::Minus))
                     {
-                        return Err(format!("d/d{var} needs something to differentiate"));
+                        return Err(format!("d/d{} needs something to differentiate", vars[0]));
                     }
                     let body = self.term()?;
-                    return Ok(Expr::Derivative(var, Box::new(body)));
+                    // The variable next to the body is the first one used.
+                    return Ok(vars
+                        .into_iter()
+                        .rev()
+                        .fold(body, |b, v| Expr::Derivative(v, Box::new(b))));
                 }
                 Ok(Expr::bin(Expr::Div, num, den))
             }
@@ -1046,18 +1091,71 @@ fn indexable(e: &Expr) -> bool {
     )
 }
 
-/// The variable of `\frac{d}{dx}`, if this fraction is one.
-fn derivative_variable(num: &Expr, den: &Expr) -> Option<String> {
-    if num != &Expr::Var("d".into()) {
-        return None;
-    }
-    match den {
-        Expr::Mul(a, b) if **a == Expr::Var("d".into()) => match &**b {
-            Expr::Var(v) => Some(v.clone()),
-            _ => None,
-        },
+/// The variables of a derivative written as a fraction, in the order they
+/// are written: `\frac{d}{dx}` gives x, `\frac{d^2}{dx^2}` gives x, x and
+/// `\frac{\partial^2}{\partial x\partial y}` gives x, y. None when the
+/// fraction isn't a derivative; Err when it looks like one whose orders
+/// don't add up.
+fn derivative_vars(num: &Expr, den: &Expr) -> Result<Option<Vec<String>>, String> {
+    let is_d = |e: &Expr| matches!(e, Expr::Var(d) if d == "d" || d == "partial");
+    let whole = |e: &Expr| match e {
+        Expr::Num(k) if k.fract() == 0.0 && *k >= 1.0 && *k <= 20.0 => Some(*k as usize),
         _ => None,
+    };
+    let order = match num {
+        e if is_d(e) => 1,
+        Expr::Pow(d, k) if is_d(d) => match whole(k) {
+            Some(k) => k,
+            None => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    // The bottom as a list of factors, left to right.
+    fn factors(e: &Expr, out: &mut Vec<Expr>) {
+        match e {
+            Expr::Mul(a, b) => {
+                factors(a, out);
+                factors(b, out);
+            }
+            other => out.push(other.clone()),
+        }
     }
+    let mut fs = Vec::new();
+    factors(den, &mut fs);
+    if fs.len() < 2 || !is_d(&fs[0]) {
+        return Ok(None);
+    }
+    let partial = matches!(num, Expr::Var(p) if p == "partial")
+        || matches!(num, Expr::Pow(p, _) if **p == Expr::Var("partial".into()));
+    let mut vars = Vec::new();
+    let mut i = 0;
+    while i < fs.len() {
+        if !is_d(&fs[i]) {
+            return Ok(None);
+        }
+        let (v, k) = match fs.get(i + 1) {
+            Some(Expr::Var(v)) if !is_d(&Expr::Var(v.clone())) => (v.clone(), 1),
+            Some(Expr::Pow(b, k)) => match (&**b, whole(k)) {
+                (Expr::Var(v), Some(k)) if v != "d" && v != "partial" => (v.clone(), k),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        vars.extend(std::iter::repeat_n(v, k));
+        i += 2;
+    }
+    if vars.len() != order {
+        let d = if partial { "∂" } else { "d" };
+        return Err(format!(
+            "The orders don't match: {d}^{order} on top needs {order} variable{} below",
+            if order == 1 { "" } else { "s" }
+        ));
+    }
+    let distinct: std::collections::HashSet<&String> = vars.iter().collect();
+    if !partial && distinct.len() > 1 {
+        return Err("Use ∂ for a derivative in more than one variable".into());
+    }
+    Ok(Some(vars))
 }
 
 #[cfg(test)]
@@ -1142,6 +1240,28 @@ mod tests {
         // f'(x) is still a derivative, and d/dx still differentiates.
         assert!(matches!(ode("f'(x)=2").0, Expr::Prime(..)));
         assert!(matches!(e("\\frac{d}{dx}x^2"), Expr::Derivative(..)));
+        // Partial and higher derivatives: the variable written last is
+        // applied first.
+        let d = |v: &str, b: Expr| Expr::Derivative(v.into(), Box::new(b));
+        let x2y = Expr::bin(Expr::Mul, pow(v("x"), n(2.0)), v("y"));
+        assert_eq!(e("\\frac{\\partial}{\\partial y}x^2y"), d("y", x2y.clone()));
+        assert_eq!(e("\\frac{∂}{∂y}x^2y"), d("y", x2y.clone()));
+        assert_eq!(
+            e("\\frac{\\partial^2}{\\partial x\\partial y}x^2y"),
+            d("x", d("y", x2y.clone()))
+        );
+        assert_eq!(
+            e("\\frac{\\partial^{3}}{\\partial x^{2}\\partial y}x^2y"),
+            d("x", d("x", d("y", x2y.clone())))
+        );
+        assert_eq!(e("\\frac{d^2}{dx^2}x^2y"), d("x", d("x", x2y.clone())));
+        assert_eq!(
+            e("\\nabla\\left(x^2y\\right)"),
+            Expr::bin(Expr::Point, d("x", x2y.clone()), d("y", x2y))
+        );
+        assert!(parse("\\frac{d^2}{dx}x").is_err());
+        assert!(parse("\\frac{d^2}{dxdy}x").is_err());
+        assert!(parse("\\partial x").is_err());
         // Systems, either way round.
         let point = |a: Expr, b: Expr| Expr::bin(Expr::Point, a, b);
         let system = (

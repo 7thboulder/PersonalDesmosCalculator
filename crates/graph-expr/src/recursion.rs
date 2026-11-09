@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use crate::calculus::integrate;
 use crate::compile::Low;
 
 /// How deep calls may go before the call gives up, as Desmos's limit does.
@@ -199,10 +198,17 @@ impl Recursion {
                     self.eval(b, env)
                 }
             }
-            Low::Integral { hole, body, lo, hi } => {
+            Low::Integral {
+                how,
+                hole,
+                body,
+                lo,
+                hi,
+            } => {
                 let (lo, hi) = (self.eval(lo, env), self.eval(hi, env));
                 let hole = *hole;
-                integrate(
+                crate::compile::accumulate(
+                    *how,
                     &mut |t| {
                         env.push((hole, t));
                         let v = self.eval(body, env);
@@ -211,6 +217,7 @@ impl Recursion {
                     },
                     lo,
                     hi,
+                    1 << 12,
                 )
             }
             Low::SelfCall(f, args) => {

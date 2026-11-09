@@ -3904,9 +3904,17 @@ impl Env {
                 (re, im)
             }
             Expr::Repeat(kind, var, lo, hi, body) => {
-                let bound = |v: Scalar| real(v).filter(|n| n.is_finite()).map(f64::round);
-                let a = bound(go!(lo))?;
-                let b = bound(go!(hi))?;
+                let (lo_v, hi_v) = (real(go!(lo))?, real(go!(hi))?);
+                if lo_v.is_infinite() || hi_v.is_infinite() {
+                    let v = self.infinite_repeat(
+                        *kind, var, lo_v, hi_v, body, scope, free, depth, visiting,
+                    )?;
+                    crate::series::record(v);
+                    return Some((v.number(), 0.0));
+                }
+                let bound = |v: f64| Some(v).filter(|n| n.is_finite()).map(f64::round);
+                let a = bound(lo_v)?;
+                let b = bound(hi_v)?;
                 let (op, empty) = match kind {
                     Repeat::Sum => (BinOp::Add, 0.0),
                     Repeat::Product => (BinOp::Mul, 1.0),
@@ -3943,6 +3951,71 @@ impl Env {
             }
             _ => return None,
         })
+    }
+
+    /// `\sum_{var=a}^{\infty} body` (or a product, or from -∞), worked out
+    /// numerically with a check that it converges. Through a compiled
+    /// program when the body allows, so a million terms take moments;
+    /// term by term otherwise, with fewer terms. None when a term isn't a
+    /// real number.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn infinite_repeat(
+        &mut self,
+        kind: Repeat,
+        var: &str,
+        lo: f64,
+        hi: f64,
+        body: &Expr,
+        scope: &[(&str, Option<Scalar>)],
+        free: Free,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<crate::series::Outcome> {
+        // `n(n+1)` multiplies when n is the sum's own variable.
+        let bound: Vec<&str> = scope.iter().map(|(n, _)| *n).chain([var]).collect();
+        let body = &products(body, &|n| bound.contains(&n) || !self.funcs.contains_key(n));
+        let mut names: Vec<(String, Bind)> = scope
+            .iter()
+            .map(|(n, v)| (n.to_string(), Bind::Value(*v)))
+            .collect();
+        names.push((var.to_owned(), Bind::Slot(0)));
+        let mut c = FastCompile {
+            prog: fastsum::Program {
+                slots: 1,
+                ..Default::default()
+            },
+            lists: Vec::new(),
+            free,
+        };
+        let mut ops = Vec::new();
+        let compiled = self
+            .compile_fast(body, &names, &mut ops, &mut c, depth, visiting)
+            .is_some();
+        let run = |term: &mut dyn FnMut(f64) -> Option<f64>, budget: usize| match kind {
+            Repeat::Sum => crate::series::sum(term, lo, hi, budget),
+            Repeat::Product => crate::series::product(term, lo, hi, budget),
+        };
+        let real = |(a, b): Scalar| (b == 0.0 || !a.is_finite()).then_some(a);
+        if compiled {
+            c.prog.ops = ops;
+            let mut slots = vec![(f64::NAN, 0.0); c.prog.slots.max(1)];
+            let mut stack = Vec::with_capacity(32);
+            let prog = &c.prog;
+            let mut term = |k: f64| {
+                slots[0] = (k, 0.0);
+                prog.run(&prog.ops, &mut slots, &mut stack).and_then(real)
+            };
+            return run(&mut term, crate::series::MAX_TERMS);
+        }
+        let mut inner = scope.to_vec();
+        inner.push((var, None));
+        let last = inner.len() - 1;
+        let mut term = |k: f64| {
+            inner[last].1 = Some((k, 0.0));
+            self.quick(body, &inner, free, depth, visiting)
+                .and_then(real)
+        };
+        run(&mut term, 1 << 14)
     }
 
     /// `\sum_{var=a}^{b} body` (or a product) through a compiled program,
@@ -4814,6 +4887,36 @@ impl Env {
                         _ => None,
                     }
                 };
+                let infinite = |e: &Expr| crate::symbolic::convert::infinity(e);
+                if infinite(lo).is_some() || infinite(hi).is_some() {
+                    // Out to ∞ and reading x: a sum (or product) worked
+                    // out at each point of the graph.
+                    let mut end = |e: &Expr, problems: &mut Problems| -> Option<f64> {
+                        infinite(e).or_else(|| bound(e, problems))
+                    };
+                    let (Some(a), Some(b)) = (end(lo, problems), end(hi, problems)) else {
+                        problems.error(format!("A {what}'s bounds must be whole numbers or ∞"));
+                        return Val::nan();
+                    };
+                    let hole = self.hole();
+                    let mut inner = bindings.clone();
+                    inner.insert(var.clone(), Val::num(Low::Hole(hole)));
+                    let body = self.lower_with(body, &inner, free, depth, problems, visiting);
+                    let how = match kind {
+                        Repeat::Sum => crate::compile::Accum::Sum,
+                        Repeat::Product => crate::compile::Accum::Product,
+                    };
+                    return self.broadcast(&[body], problems, |items| match items[0] {
+                        Item::Num(f) => Ok(Item::Num(Low::Integral {
+                            how,
+                            hole,
+                            body: Box::new(f.clone()),
+                            lo: Box::new(Low::Const(a)),
+                            hi: Box::new(Low::Const(b)),
+                        })),
+                        _ => Err(format!("An infinite {what} of points isn't supported")),
+                    });
+                }
                 let (Some(a), Some(b)) = (bound(lo, problems), bound(hi, problems)) else {
                     problems.error(format!("A {what}'s bounds must be finite numbers"));
                     return Val::nan();
@@ -4854,6 +4957,7 @@ impl Env {
                     match (items[0], items[1], items[2]) {
                         (Item::Num(a), Item::Num(b), Item::Num(f)) => {
                             Ok(Item::Num(Low::Integral {
+                                how: crate::compile::Accum::Integral,
                                 hole,
                                 body: Box::new(f.clone()),
                                 lo: Box::new(a.clone()),
@@ -6281,5 +6385,30 @@ impl Env {
             return (v, None);
         }
         (v, call_form(f, &values, v))
+    }
+}
+/// `e` with each `f(a)` whose `f` isn't a function (`is_product`) read as
+/// the product f·a, as Desmos does.
+fn products(e: &Expr, is_product: &dyn Fn(&str) -> bool) -> Expr {
+    let b = |x: &Expr| Box::new(products(x, is_product));
+    match e {
+        Expr::Apply(name, args) if args.len() == 1 && is_product(name) => {
+            Expr::Mul(Box::new(Expr::Var(name.clone())), b(&args[0]))
+        }
+        Expr::Apply(name, args) => Expr::Apply(
+            name.clone(),
+            args.iter().map(|a| products(a, is_product)).collect(),
+        ),
+        Expr::Neg(a) => Expr::Neg(b(a)),
+        Expr::Factorial(a) => Expr::Factorial(b(a)),
+        Expr::Add(x, y) => Expr::Add(b(x), b(y)),
+        Expr::Sub(x, y) => Expr::Sub(b(x), b(y)),
+        Expr::Mul(x, y) => Expr::Mul(b(x), b(y)),
+        Expr::Div(x, y) => Expr::Div(b(x), b(y)),
+        Expr::Pow(x, y) => Expr::Pow(b(x), b(y)),
+        Expr::Call(f, args) => {
+            Expr::Call(*f, args.iter().map(|a| products(a, is_product)).collect())
+        }
+        other => other.clone(),
     }
 }

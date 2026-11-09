@@ -8,7 +8,7 @@
 //! adaptive Gauss-Kronrod, with a change of variable for infinite bounds.
 
 use crate::builtins::Builtin;
-use crate::compile::{BinOp, Low};
+use crate::compile::{Accum, BinOp, Low};
 
 fn c(v: f64) -> Low {
     Low::Const(v)
@@ -147,7 +147,44 @@ pub fn derivative(e: &Low, v: &Low) -> Low {
             total
         }
         Low::SelfCall(..) => c(f64::NAN),
-        Low::Integral { hole, body, lo, hi } => {
+        Low::Integral {
+            how: Accum::Sum,
+            hole,
+            body,
+            lo,
+            hi,
+        } => Low::Integral {
+            // Term by term, the bounds being whole numbers or ∞.
+            how: Accum::Sum,
+            hole: *hole,
+            body: Box::new(derivative(body, v)),
+            lo: lo.clone(),
+            hi: hi.clone(),
+        },
+        Low::Integral {
+            how: Accum::Product,
+            hole,
+            body,
+            lo,
+            hi,
+        } => mul(
+            // (∏ t)' = ∏ t · Σ t'/t.
+            e.clone(),
+            Low::Integral {
+                how: Accum::Sum,
+                hole: *hole,
+                body: Box::new(div(derivative(body, v), (**body).clone())),
+                lo: lo.clone(),
+                hi: hi.clone(),
+            },
+        ),
+        Low::Integral {
+            how: Accum::Integral,
+            hole,
+            body,
+            lo,
+            hi,
+        } => {
             // Leibniz: f(hi) hi' - f(lo) lo' + the integral of ∂f/∂v.
             let at = |bound: &Low| body.fill(*hole, bound);
             let ends = sub(mul(at(hi), d(hi)), mul(at(lo), d(lo)));
@@ -158,6 +195,7 @@ pub fn derivative(e: &Low, v: &Low) -> Low {
                 add(
                     ends,
                     Low::Integral {
+                        how: Accum::Integral,
                         hole: *hole,
                         body: Box::new(inner),
                         lo: lo.clone(),
@@ -577,6 +615,7 @@ mod tests {
     fn leibniz_rule_for_variable_bounds() {
         // d/dx ∫_0^x t² dt = x².
         let e = Low::Integral {
+            how: Accum::Integral,
             hole: 7,
             body: Box::new(sq(&Low::Hole(7))),
             lo: Box::new(c(0.0)),

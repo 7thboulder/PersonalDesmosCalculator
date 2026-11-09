@@ -28,7 +28,7 @@ pub fn numeric(var: &str, point: Expr, side: i8, body: Expr) -> Expr {
     if let Some(s) = infinite {
         // x = ±10, ±100, ... : the side doesn't matter at infinity.
         let at = |k: i32| Expr::Num(s * 10f64.powi(k));
-        return one_side(var, &body, at);
+        return settles(var, &body, s, one_side(var, &body, at));
     }
     let scale = add(num(1.0), abs(point.clone()));
     let near = |s: f64| {
@@ -62,6 +62,57 @@ pub fn numeric(var: &str, point: Expr, side: i8, body: Expr) -> Expr {
             )
         }
     }
+}
+
+/// `limit` (at ±∞, with `s` the sign) when the body really settles there:
+/// at a dozen points spread through each of the decades from 10³ to 10⁴
+/// and 10⁴ to 10⁵, the values' spread must shrink, as it doesn't for
+/// sin x, whose values at powers of ten alone look like they converge.
+/// An infinite limit must grow past the whole decade before.
+fn settles(var: &str, body: &Expr, s: f64, limit: Expr) -> Expr {
+    let decade = |from: f64| -> Vec<Expr> {
+        (0..12)
+            .map(|i| {
+                let x = s * 10f64.powf(from + (i as f64 + 0.37) / 12.0);
+                substitute(body.clone(), var, &Expr::Num(x))
+            })
+            .collect()
+    };
+    let (d1, d2) = (decade(3.0), decade(4.0));
+    let max = |d: &[Expr]| Expr::Call(Builtin::Max, d.to_vec());
+    let min = |d: &[Expr]| Expr::Call(Builtin::Min, d.to_vec());
+    let spread = |d: &[Expr]| sub(max(d), min(d));
+    let only = |c: Condition, then: Expr| Expr::Piecewise(vec![(c, then)], None);
+    let finite = only(
+        Condition {
+            operands: vec![
+                spread(&d2),
+                add(
+                    mul(num(0.8), spread(&d1)),
+                    mul(num(1e-9), add(num(1.0), abs(limit.clone()))),
+                ),
+            ],
+            relations: vec![Relation::Le],
+        },
+        limit.clone(),
+    );
+    Expr::Piecewise(
+        vec![
+            (
+                cond(abs(limit.clone()), Relation::Lt, num(f64::INFINITY)),
+                finite,
+            ),
+            (
+                cond(limit.clone(), Relation::Gt, num(0.0)),
+                only(cond(min(&d2), Relation::Gt, max(&d1)), limit.clone()),
+            ),
+            (
+                cond(limit.clone(), Relation::Lt, num(0.0)),
+                only(cond(max(&d2), Relation::Lt, min(&d1)), limit),
+            ),
+        ],
+        None,
+    )
 }
 
 /// The limit from one side, with `at(k)` the point 10⁻ᵏ of the way in
@@ -218,6 +269,25 @@ mod tests {
         );
         near("\\lim_{x\\to\\infty}\\frac{3x^2+1}{x^2-5}", 3.0);
         near("\\lim_{x\\to-\\infty}e^x", 0.0);
+        // Oscillating forever: no limit, though sin at powers of ten alone
+        // would suggest one.
+        assert_eq!(value("\\lim_{x\\to\\infty}\\sin x"), None);
+        assert_eq!(value("\\lim_{x\\to\\infty}x\\sin x"), None);
+        near("\\lim_{x\\to\\infty}\\frac{\\sin x}{x}", 0.0);
+        assert_eq!(value("\\lim_{x\\to\\infty}\\ln x"), Some(f64::INFINITY));
+        // Infinite sums and products are numbers too.
+        near(
+            "\\sum_{n=1}^{\\infty}\\frac{1}{n^2}",
+            std::f64::consts::PI.powi(2) / 6.0,
+        );
+        near("\\prod_{n=2}^{\\infty}\\left(1-\\frac{1}{n^2}\\right)", 0.5);
+        near("\\sum_{n=-\\infty}^{\\infty}e^{-n^2}", 1.7726372048266521);
+        near("\\sum_{n=1}^{\\infty}\\frac{1}{n(n+1)}", 1.0);
+        assert_eq!(
+            value("\\sum_{n=1}^{\\infty}\\frac{1}{n}"),
+            Some(f64::INFINITY)
+        );
+        assert_eq!(value("\\sum_{n=0}^{\\infty}(-1)^n"), None);
         near("\\lim_{x\\to0^+}\\sqrt{x}", 0.0);
         near("\\lim_{x\\to0^{+}}x\\ln x", 0.0);
         near("\\lim_{x\\to2}x^2+1", 5.0);

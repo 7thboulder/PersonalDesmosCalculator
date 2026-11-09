@@ -122,7 +122,12 @@ impl Program {
         Some(out)
     }
 
-    fn run(&self, ops: &[Op], slots: &mut [Scalar], stack: &mut Vec<Scalar>) -> Option<Scalar> {
+    pub(crate) fn run(
+        &self,
+        ops: &[Op],
+        slots: &mut [Scalar],
+        stack: &mut Vec<Scalar>,
+    ) -> Option<Scalar> {
         let base = stack.len();
         for op in ops {
             match op {

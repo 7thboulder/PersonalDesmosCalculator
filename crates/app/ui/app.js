@@ -98,8 +98,8 @@
     // Every Greek letter Desmos spells out, so typing omega gives ω, and
     // matrix for a matrix in place.
     // Typing abs makes |x| bars, as in Desmos, and floor and ceil make ⌊x⌋
-    // and ⌈x⌉.
-    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs floor ceil ' + GREEK_LETTERS,
+    // and ⌈x⌉; partial gives ∂ and nabla ∇.
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs floor ceil partial nabla ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp min max round sign mod mean median total length ' +
@@ -2103,7 +2103,7 @@
     ['HYPERBOLIC', named('sinh cosh tanh csch sech coth')],
     ['STATISTICS', named('mean median min max total length')],
     ['LIST OPERATIONS', named('join sort unique').concat([['for', 't: for ']])],
-    ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
+    ['CALCULUS', [['d/dx', 'w:\\frac{d}{dx}'], ['\u2202/\u2202x', 'w:\\frac{\\partial}{\\partial x}'], ['\u2207', 'c:\\nabla'], ['f\u2032', "t:'"], ['\u03a3', 'c:\\sum'], ['\u220f', 'c:\\prod'],
       ['\u222b', 'c:\\int'], ['\u221e', 'c:\\infty'], ['exp', 'f:exp'], ['ln', 'f:ln'], ['log', 'f:log']]],
     ['NUMBER THEORY', named('gcd lcm mod').concat([['floor', 'c:\\floor'], ['ceil', 'c:\\ceil']], named('round'), [['abs', 'c:|']], named('sign nCr nPr'), [['n!', 't:!']])],
     ['GEOMETRY', named('polygon distance midpoint')],
@@ -2348,9 +2348,14 @@
       ['\\operatorname{unique}\\left(L\\right)', 'Drop repeats']]],
     ['CALCULUS', [
       ['\\frac{d}{dx}\\sin\\left(x^2\\right)', 'Derivative (exact)'], ["f'\\left(x\\right)", "Also f''"],
+      ['\\frac{d^2}{dx^2}x^4', 'Higher derivatives'],
+      ['\\frac{\\partial}{\\partial y}x^2y^3', 'Partial derivative (type partial for \u2202); other letters are held constant'],
+      ['\\frac{\\partial^2}{\\partial x\\partial y}x^2y^3', 'Mixed partials'],
+      ['\\nabla\\left(x^2+y^2\\right)', 'Gradient (type nabla for \u2207)'],
       ['\\sum_{n=1}^{10}n^2', 'Sum (type sum); prod for products'],
       ['\\int_0^1x^2dx', 'Integral (type int)'],
       ['\\int_0^{\\infty}e^{-x}dx', 'Type infinity (or infty) for \u221e, as in improper integrals and bounds'],
+      ['\\sum_{n=1}^{\\infty}\\frac{1}{n^2}', 'Infinite sums and products; divergent ones show \u221e or undefined'],
       ['\\lim_{x\\to0}\\frac{\\sin x}{x}', 'Limit (type lim_, or ;lim+ / ;lim- for one side); Solve finds it exactly'],
       ['\\lim_{x\\to0^+}\\frac{1}{x}', 'One side: ^ then + or \u2212 after the point']]],
     ['POINTS AND GEOMETRY', [
