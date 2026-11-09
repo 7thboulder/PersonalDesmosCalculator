@@ -6,15 +6,21 @@ use serde_json::{json, Value};
 
 /// The panel's reply for row `id`, whose LaTeX is `latex`. The other rows
 /// supply functions the row may use.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
+    reply_in(rows, id, latex, op, false)
+}
+
+/// As `reply`, with angles in degrees when `degrees` is set, as the graph's
+/// degree mode has them.
+pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: bool) -> Value {
     let others: Vec<String> = rows
         .as_array()
         .into_iter()
         .flatten()
         .filter(|r| r["id"].as_u64() != Some(id))
-        .filter_map(|r| r["latex"].as_str())
+        .filter_map(row_latex)
         .filter(|l| !l.is_empty())
-        .map(str::to_owned)
         .collect();
     // A differential equation's initial point and derivatives.
     let row = rows
@@ -31,7 +37,14 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
             .map(|d| d.as_str().unwrap_or("").to_owned())
             .collect(),
     };
-    let report = solve(latex, &others, op, &initial, crate::giac::available());
+    let report = solve_in(
+        latex,
+        &others,
+        op,
+        &initial,
+        crate::giac::available(),
+        degrees,
+    );
     json!({
         "id": id,
         "op": report.op,
@@ -41,6 +54,65 @@ pub fn reply(rows: &Value, id: u64, latex: &str, op: Option<&str>) -> Value {
         "answer": report.answer,
         "error": report.error,
     })
+}
+
+/// A row as LaTeX: a matrix row's grid becomes `A = [matrix]`, so Solve
+/// can work with it.
+fn row_latex(r: &Value) -> Option<String> {
+    let latex = r["latex"].as_str()?;
+    let Some(grid) = r["matrix"].as_array() else {
+        return Some(latex.to_owned());
+    };
+    let rows: Vec<String> = grid
+        .iter()
+        .map(|cells| {
+            cells
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|c| match c.as_str().unwrap_or("").trim() {
+                    "" => "0".to_owned(),
+                    t => t.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        })
+        .collect();
+    Some(format!(
+        "{latex}=\\begin{{bmatrix}}{}\\end{{bmatrix}}",
+        rows.join("\\\\")
+    ))
+}
+
+/// As `solve`, in degree mode when `degrees` is set. Solve's own algebra
+/// works in radians, so a problem with trig in it goes to Giac, which
+/// works in degrees, and its answer is checked in degrees.
+fn solve_in(
+    latex: &str,
+    others: &[String],
+    op: Option<&str>,
+    initial: &symbolic::Initial,
+    giac: bool,
+    degrees: bool,
+) -> symbolic::Report {
+    let angles = cas::uses_angles(latex) || others.iter().any(|o| cas::uses_angles(o));
+    if !degrees || !angles {
+        return solve(latex, others, op, initial, giac);
+    }
+    if !giac {
+        return symbolic::Report {
+            error: Some(
+                "Solving trig in degree mode needs Giac, which isn't part of this build".into(),
+            ),
+            ..Default::default()
+        };
+    }
+    let op = op.filter(|o| o.starts_with("giac:"));
+    let mut report = cas::in_degrees(true, || with_giac(latex, others, op, giac));
+    if let Some(first) = report.steps.first_mut() {
+        first.note = format!("{} (angles in degrees)", first.note);
+    }
+    report
 }
 
 /// Rust's own algebra first, then Giac (when `giac` is there) for what it
@@ -81,11 +153,84 @@ fn solve(
         }
         return ours;
     }
+    let mut ours = ours;
+    // Solve's own answer is only numeric: Giac may know an exact one.
+    if ours.error.is_none() && op.is_none() && only_numeric(&ours) {
+        let theirs = with_giac(latex, others, None, giac);
+        if theirs.error.is_none() && exact(&theirs) {
+            return merge_choices(theirs, &ours.choices);
+        }
+    }
+    if ours.error.is_none() && ours.op == "simplify" {
+        ours = tidier(ours, latex, others);
+    }
     // Giac's other ways of working on the row, after Solve's own.
     match cas::plan(latex, others, None) {
         Ok(plan) => merge_choices(ours, &plan.choices),
         Err(_) => ours,
     }
+}
+
+/// Whether a step (not the final check) says the answer was found
+/// numerically.
+fn only_numeric(r: &symbolic::Report) -> bool {
+    let n = r.steps.len().saturating_sub(1);
+    r.steps.iter().enumerate().any(|(k, s)| {
+        s.note.contains("numerically") && !(k == n && s.note.contains("hecked numerically"))
+    })
+}
+
+/// A Giac answer that is exact and passed its check.
+fn exact(r: &symbolic::Report) -> bool {
+    r.result.is_some()
+        && !only_numeric(r)
+        && r.steps
+            .last()
+            .is_some_and(|s| s.note.starts_with("Checked numerically"))
+}
+
+/// Simplify's answer, replaced by a tidier equivalent from Giac when there
+/// is one, as one more step.
+fn tidier(mut ours: symbolic::Report, latex: &str, others: &[String]) -> symbolic::Report {
+    let Some(current) = ours.result.clone() else {
+        return ours;
+    };
+    // `y = …` and `f(x) = …` are simplified on the right.
+    let body = match crate_parse_is_relation(latex) {
+        true => latex.split_once('=').map_or(latex, |(_, r)| r),
+        false => latex,
+    };
+    let Ok(plan) = cas::plan(body, others, Some("giac:nicest")) else {
+        return ours;
+    };
+    let answer = crate::giac::run(&plan);
+    let Ok(theirs) = std::panic::catch_unwind(|| cas::finish(&plan, answer)) else {
+        return ours;
+    };
+    let (Some(form), None) = (theirs.result, theirs.error) else {
+        return ours;
+    };
+    if form.len() + 2 < current.len() {
+        ours.steps.push(symbolic::Step {
+            note: "Giac finds a tidier form, checked numerically".into(),
+            latex: format!("={form}"),
+        });
+        ours.result = Some(form.clone());
+        if ours.answer.is_some() {
+            ours.answer = Some(match latex.split_once('=') {
+                Some((lhs, _)) if crate_parse_is_relation(latex) => format!("{lhs}={form}"),
+                _ => form,
+            });
+        }
+    }
+    ours
+}
+
+fn crate_parse_is_relation(latex: &str) -> bool {
+    matches!(
+        graph_expr::parse(latex),
+        Ok(graph_expr::ast::Statement::Relation(..))
+    )
 }
 
 fn with_giac(latex: &str, others: &[String], op: Option<&str>, giac: bool) -> symbolic::Report {
@@ -205,6 +350,77 @@ mod tests {
         assert_eq!(r["error"], Value::Null);
     }
 
+    /// New kinds of problem: systems, inequalities, recurrences, matrices,
+    /// Fourier transforms and assumptions. Needs the Giac worker.
+    #[test]
+    fn giac_problem_types() {
+        if !crate::giac::available() {
+            eprintln!("GRAPHCALC_GIAC isn't set; skipping");
+            return;
+        }
+        let none = symbolic::Initial::default();
+        let a = "A=\\begin{bmatrix}2&1\\\\1&2\\end{bmatrix}";
+        let fact = "f\\left(n\\right)=\\left\\{n=0:1,2f\\left(n-1\\right)+1\\right\\}";
+        let cases: &[(&str, &[&str], Option<&str>, &str)] = &[
+            // Systems, in one row and with another row.
+            ("x+y=3,x-y=1", &[], None, "x=2,\\ y=1"),
+            ("x^{2}+y^{2}=25", &["y=x+1"], Some("giac:system"), "y=4"),
+            // Inequalities Solve's own algebra can't do.
+            ("-1<2x+1<5", &[], None, "-1<x<2"),
+            (
+                "\\sin\\left(x\\right)>2",
+                &[],
+                Some("giac:solve"),
+                "No solutions",
+            ),
+            // Recurrences: a recursive function, and a subscript one.
+            (fact, &[], None, "2^{n"),
+            ("a_{n+1}=3a_{n}", &["a_{0}=2"], None, "3^{n}"),
+            // Matrices.
+            ("A", &[a], Some("giac:eigenvals"), "\\lambda="),
+            ("A", &[a], Some("giac:eigenvects"), "P="),
+            ("A", &[a], Some("giac:inv"), "\\frac{2}{3}"),
+            ("A", &[a], Some("giac:det"), "3"),
+            ("A", &[a], Some("giac:charpoly"), "\\lambda"),
+            // Fourier.
+            (
+                "e^{-\\left|x\\right|}",
+                &[],
+                Some("giac:fourier"),
+                "\\omega",
+            ),
+            // Exact where Solve's own answer was only numeric.
+            ("e^{x}+x=5", &[], None, "W\\left(e^{5}\\right)"),
+            // The tidiest form, from several of Giac's.
+            ("\\frac{1}{x}+\\frac{1}{x+1}", &[], None, "\\frac{2x+1}"),
+            (
+                "\\frac{\\sin\\left(2x\\right)}{2\\cos\\left(x\\right)}",
+                &[],
+                None,
+                "\\sin\\left(x\\right)",
+            ),
+            // Assumptions as a restriction.
+            ("\\sqrt{x^{2}}\\left\\{x>0\\right\\}", &[], None, "x"),
+            ("x^{2}=4\\left\\{x>0\\right\\}", &[], None, "x=2"),
+        ];
+        for (latex, others, op, want) in cases {
+            let others: Vec<String> = others.iter().map(|s| s.to_string()).collect();
+            let r = solve(latex, &others, *op, &none, true);
+            let result = r.result.clone().unwrap_or_default();
+            eprintln!(
+                "{latex} -> {result:?} / {:?}",
+                r.steps.last().map(|s| &s.note)
+            );
+            for st in &r.steps {
+                eprintln!("    {} | {}", st.note, st.latex);
+            }
+            assert!(r.error.is_none(), "{latex}: {r:?}");
+            assert!(result.contains(want), "{latex}: {result}");
+            let last = &r.steps.last().unwrap().note;
+            assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
+        }
+    }
+
     /// Runs with the real Giac worker when `GRAPHCALC_GIAC` names it (the
     /// Windows CI build does); skipped otherwise.
     #[test]
@@ -263,6 +479,25 @@ mod tests {
             let last = &r.steps.last().unwrap().note;
             assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
         }
+        // Degree mode: trig in degrees, checked in degrees.
+        let deg: &[(&str, Option<&str>, &str)] = &[
+            ("\\sin\\left(x\\right)=\\frac{1}{2}", None, "30"),
+            ("\\frac{d}{dx}\\sin\\left(x\\right)", None, "180"),
+            ("\\cos\\left(60\\right)", None, "\\frac{1}{2}"),
+            ("\\arctan\\left(1\\right)", None, "45"),
+        ];
+        for (latex, op, want) in deg {
+            let r = solve_in(latex, &[], *op, &none, true, true);
+            let result = r.result.clone().unwrap_or_default();
+            eprintln!("deg {latex} -> {result:?}");
+            assert!(r.error.is_none(), "{latex}: {r:?}");
+            assert!(result.contains(want), "{latex}: {result}");
+            let last = &r.steps.last().unwrap().note;
+            assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
+        }
+        // No trig: Solve's own algebra, as in radians.
+        let r = solve_in("x^{2}=4", &[], None, &none, true, true);
+        assert_eq!(r.result.as_deref(), Some("x=-2\\quad\\text{or}\\quad x=2"));
         // Something Rust can't do falls through to Giac by itself.
         let r = solve("\\lim_{x\\to0^{+}}x\\ln x", &[], None, &none, true);
         assert!(r.error.is_none(), "{r:?}");

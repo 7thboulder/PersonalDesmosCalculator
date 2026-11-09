@@ -53,6 +53,7 @@ USAGE:
     graphcalc --graph-block            draw a document's graph block, read as JSON
                                        on stdin, and print it as a PNG data URL
     graphcalc --solve LATEX [OP [SEEDS [DERIVS...]]]
+    graphcalc --solve-degrees LATEX [OP]   (as in degree mode)
                                        run the Solve button on one row and print
                                        the working as JSON (OP as in its choices,
                                        such as factor or solve:x)";
@@ -116,7 +117,8 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", headless::block_image(&gpu, &mut text, &ask)?);
             Ok(())
         }
-        Some("--solve") => {
+        Some(flag @ ("--solve" | "--solve-degrees")) => {
+            let degrees = flag == "--solve-degrees";
             let latex = args.get(1).ok_or("--solve needs a row's LaTeX")?;
             // A differential equation's initial point and derivatives may follow.
             let row = serde_json::json!([{
@@ -125,7 +127,8 @@ fn run(args: &[String]) -> Result<(), String> {
                 "seeds": args.get(3),
                 "derivs": args.get(4..).unwrap_or_default(),
             }]);
-            let reply = solve::reply(&row, 0, latex, args.get(2).map(String::as_str));
+            let op = args.get(2).map(String::as_str).filter(|o| !o.is_empty());
+            let reply = solve::reply_in(&row, 0, latex, op, degrees);
             println!("{reply:#}");
             Ok(())
         }

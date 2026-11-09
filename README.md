@@ -138,6 +138,39 @@ on the right. What you type is graphed as you type it:
   Giac answer is checked numerically at several points before it is
   shown, and the last step says whether it passed. Giac runs in its own
   process: Esc stops it, and it gives up after 30 seconds.
+- More problems Solve takes to Giac, each checked numerically too:
+  - Systems: `x+y=3, x-y=1` in one row, or **Solve with the other
+    equations** on a row like `x^2+y^2=25` with `y=x+1` elsewhere. In x
+    and y, **Add to graph** marks the solutions as points where the graphs
+    cross.
+  - Inequalities, including chains (`-1<2x+1<5`) and ones Solve's own
+    algebra can't do, with the answer also in interval notation, such as
+    `x ∈ (-∞, -2) ∪ [1, ∞)`.
+  - Recurrences: a recursive function `f(n) = {n=0: 1, 2f(n-1)+1}` or a
+    sequence `a_{n+1} = 3a_n` (with `a_0 = 2` in another row) gets a
+    closed form, checked against the recursion itself.
+  - Matrices: Solve on a row such as `A` (a matrix row) offers exact
+    eigenvalues, eigenvectors (`A = PDP⁻¹`), inverse, determinant, row
+    reduction and the characteristic polynomial, also with letters in
+    the entries.
+  - Fourier transforms `F(ω) = ∫ f(x) e^{-iωx} dx`.
+  - Assumptions, written as a Desmos restriction: `\sqrt{x^2} {x > 0}`
+    simplifies to x, and `x^2 = 4 {x > 0}` gives only x = 2.
+- Exact answers where they exist, decimals marked ≈ where they don't:
+  cubics with no rational root get Cardano's formula or, with three real
+  roots, the trigonometric form (`x^3-3x+1=0` gives `2cos(2π/9)` and
+  friends); when Solve's own answer is only numeric, Giac is asked for an
+  exact one (`e^x+x=5` gives `5-W(e^5)`); and integrals with no closed
+  form are worked out numerically. **Simplify** also asks Giac for
+  several equivalent forms and shows the tidiest one that checks out
+  numerically (`1/x+1/(x+1)` becomes `(2x+1)/(x^2+x)`).
+- Limits with working: Solve puts the point in where the function is
+  continuous, factors and cancels or uses L'Hôpital's rule for 0/0 and
+  ∞/∞, divides by the highest power at ∞, and says which way a c/0
+  limit runs off. Each answer is checked against the numeric limit;
+  limits it can't do with steps (or whose sides disagree) go to Giac.
+- In degree mode, Solve works with trig in degrees (sin x = 1/2 gives
+  x = 30 or 150), through Giac.
 - `...` (or `\ldots`, `\cdots`) for repetition outside lists, as on paper.
   The terms before the dots set the pattern and the one after ends it:
   `1+2+...+10` and `x_1x_2...x_3` are written out, and `1+2+...+n` or

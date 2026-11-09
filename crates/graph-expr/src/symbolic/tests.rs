@@ -266,3 +266,32 @@ fn letter_special_functions_are_functions() {
     let r = run("K\\left(2\\right)", &["K=3".to_string()], None);
     assert_eq!(r.result.as_deref(), Some("2K"), "{:?}", r.error);
 }
+
+#[test]
+fn limits_with_working() {
+    let cases = [
+        ("\\lim_{x\\to0}\\frac{\\sin x}{x}", "1", "L'Hôpital"),
+        ("\\lim_{x\\to2}\\frac{x^{2}-4}{x-2}", "4", "cancel"),
+        (
+            "\\lim_{x\\to\\infty}\\frac{3x^{2}+1}{2x^{2}-x}",
+            "\\frac{3}{2}",
+            "highest power",
+        ),
+        (
+            "\\lim_{x\\to0}\\frac{1-\\cos\\left(x\\right)}{x^{2}}",
+            "\\frac{1}{2}",
+            "L'Hôpital",
+        ),
+        ("\\lim_{x\\to\\infty}\\frac{x}{e^{x}}", "0", "L'Hôpital"),
+        ("\\lim_{x\\to0^{+}}\\frac{1}{x}", "\\infty", "without bound"),
+    ];
+    for (src, want, how) in cases {
+        let r = super::run(src, &[], None);
+        assert_eq!(r.result.as_deref(), Some(want), "{src}: {r:?}");
+        assert!(r.steps.iter().any(|s| s.note.contains(how)), "{src}: {r:?}");
+    }
+    // Two sides that disagree are left to Giac.
+    assert!(super::run("\\lim_{x\\to0}\\frac{1}{x}", &[], None)
+        .error
+        .is_some());
+}

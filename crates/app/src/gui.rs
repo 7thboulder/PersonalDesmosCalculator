@@ -796,8 +796,9 @@ impl Running {
                 let latex = value["latex"].as_str().unwrap_or_default().to_owned();
                 let op = value["op"].as_str().map(str::to_owned);
                 let rows = self.rows.clone();
+                let degrees = self.engine.grid.degrees;
                 self.in_background(move || {
-                    let reply = crate::solve::reply(&rows, id, &latex, op.as_deref());
+                    let reply = crate::solve::reply_in(&rows, id, &latex, op.as_deref(), degrees);
                     format!("window.engine.solved({reply})")
                 });
             }
