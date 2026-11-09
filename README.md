@@ -156,6 +156,14 @@ on the right. What you type is graphed as you type it:
   - Fourier transforms `F(ω) = ∫ f(x) e^{-iωx} dx`.
   - Assumptions, written as a Desmos restriction: `\sqrt{x^2} {x > 0}`
     simplifies to x, and `x^2 = 4 {x > 0}` gives only x = 2.
+- Exact answers where they exist, decimals marked ≈ where they don't:
+  cubics with no rational root get Cardano's formula or, with three real
+  roots, the trigonometric form (`x^3-3x+1=0` gives `2cos(2π/9)` and
+  friends); when Solve's own answer is only numeric, Giac is asked for an
+  exact one (`e^x+x=5` gives `5-W(e^5)`); and integrals with no closed
+  form are worked out numerically. **Simplify** also asks Giac for
+  several equivalent forms and shows the tidiest one that checks out
+  numerically (`1/x+1/(x+1)` becomes `(2x+1)/(x^2+x)`).
 - In degree mode, Solve works with trig in degrees (sin x = 1/2 gives
   x = 30 or 150), through Giac.
 - `...` (or `\ldots`, `\cdots`) for repetition outside lists, as on paper.

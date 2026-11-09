@@ -886,7 +886,126 @@ fn higher(c: Vec<Sym>, v: &str, st: &mut Steps) -> Outcome {
             return Outcome::Roots(roots);
         }
     }
+    if poly::deg(&p) == 3 {
+        if let Some(roots) = cubic(&p, v, st) {
+            return Outcome::Roots(roots);
+        }
+    }
     numeric_poly(&p, v, st)
+}
+
+/// A cubic with no rational root, exactly: Cardano's formula when it has
+/// one real root, and the trigonometric form when it has three (where
+/// Cardano's cube roots would need complex numbers). None when the exact
+/// roots don't agree with the numeric ones.
+fn cubic(p: &[Q], v: &str, st: &mut Steps) -> Option<Vec<Sym>> {
+    // p is lowest power first: d + c x + b x² + a x³.
+    let q = |k: usize| Sym::Num(p[k]);
+    let (a, b, c, d) = (q(3), q(2), q(1), q(0));
+    // x = t - b/(3a) leaves t³ + P t + R = 0.
+    let shift = nice(&div(b.clone(), mul2(n(3), a.clone())));
+    let big_p = nice(&div(
+        sub(mul2(n(3), mul2(a.clone(), c.clone())), powi(b.clone(), 2)),
+        mul2(n(3), powi(a.clone(), 2)),
+    ));
+    let big_r = nice(&div(
+        add(vec![
+            mul2(n(2), powi(b.clone(), 3)),
+            neg(mul(vec![n(9), a.clone(), b.clone(), c.clone()])),
+            mul(vec![n(27), powi(a.clone(), 2), d]),
+        ]),
+        mul2(n(27), powi(a, 3)),
+    ));
+    let (pv, rv) = (big_p.value(), big_r.value());
+    let t = if v == "t" { "u" } else { "t" };
+    let depressed = add(vec![
+        powi(var(t), 3),
+        mul2(big_p.clone(), var(t)),
+        big_r.clone(),
+    ]);
+    if shift.is_zero() {
+        st.push(
+            "There's no rational root, and no squared term",
+            eq(&depressed.subs_var(t, &var(v)), &n(0)),
+        );
+    } else {
+        st.push(
+            format!(
+                "There's no rational root. Put ${}$ to remove the squared term",
+                eq(&var(v), &sub(var(t), shift.clone()))
+            ),
+            eq(&depressed, &n(0)),
+        );
+    }
+    let t = if shift.is_zero() { v } else { t };
+    let disc = 4.0 * pv * pv * pv + 27.0 * rv * rv;
+    let roots: Vec<Sym> = if disc < 0.0 {
+        // Three real roots: t = 2√(-P/3) cos(⅓ arccos(3R/(2P)·√(-3/P)) - 2πk/3).
+        let m = nice(&mul2(n(2), sqrt(div(neg(big_p.clone()), n(3)))));
+        let angle = nice(&div(
+            func(
+                Func::Acos,
+                mul2(
+                    div(mul2(n(3), big_r.clone()), mul2(n(2), big_p.clone())),
+                    sqrt(div(n(-3), big_p.clone())),
+                ),
+            ),
+            n(3),
+        ));
+        st.push(
+            "It has three real roots, so use the trigonometric form of the cubic formula",
+            format!(
+                r"{}={}\cos\left({}-\frac{{2\pi k}}{{3}}\right),\quad k=0,1,2",
+                name(t),
+                paren(&m),
+                latex(&angle)
+            ),
+        );
+        (0..3)
+            .map(|k| {
+                let turn = mul2(frac(2 * k, 3), pi());
+                nice(&sub(
+                    mul2(m.clone(), func(Func::Cos, sub(angle.clone(), turn))),
+                    shift.clone(),
+                ))
+            })
+            .collect()
+    } else {
+        // One real root: Cardano.
+        let half = nice(&div(neg(big_r.clone()), n(2)));
+        let root = nice(&sqrt(add2(
+            div(powi(big_r.clone(), 2), n(4)),
+            div(powi(big_p.clone(), 3), n(27)),
+        )));
+        let cbrt = |x: Sym| -> Sym {
+            // A real cube root, odd for negative numbers.
+            if x.is_constant() && x.value() < 0.0 {
+                neg(pow(neg(x), frac(1, 3)))
+            } else {
+                pow(x, frac(1, 3))
+            }
+        };
+        let r = nice(&sub(
+            add2(
+                cbrt(add2(half.clone(), root.clone())),
+                cbrt(sub(half, root)),
+            ),
+            shift.clone(),
+        ));
+        st.push(
+            "It has one real root, which Cardano's formula gives",
+            eq(&var(v), &r),
+        );
+        vec![r]
+    };
+    // Each must be a root of the original.
+    let f = |x: f64| p.iter().rev().fold(0.0, |acc, k| acc * x + k.to_f64());
+    let scale: f64 = p.iter().map(|k| k.to_f64().abs()).sum();
+    let ok = roots.iter().all(|r| {
+        let x = r.value();
+        x.is_finite() && f(x).abs() <= 1e-8 * (1.0 + scale) * (1.0 + x.abs().powi(3))
+    });
+    ok.then_some(roots)
 }
 
 fn numeric_poly(p: &[Q], v: &str, st: &mut Steps) -> Outcome {

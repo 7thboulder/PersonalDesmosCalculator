@@ -153,11 +153,84 @@ fn solve(
         }
         return ours;
     }
+    let mut ours = ours;
+    // Solve's own answer is only numeric: Giac may know an exact one.
+    if ours.error.is_none() && op.is_none() && only_numeric(&ours) {
+        let theirs = with_giac(latex, others, None, giac);
+        if theirs.error.is_none() && exact(&theirs) {
+            return merge_choices(theirs, &ours.choices);
+        }
+    }
+    if ours.error.is_none() && ours.op == "simplify" {
+        ours = tidier(ours, latex, others);
+    }
     // Giac's other ways of working on the row, after Solve's own.
     match cas::plan(latex, others, None) {
         Ok(plan) => merge_choices(ours, &plan.choices),
         Err(_) => ours,
     }
+}
+
+/// Whether a step (not the final check) says the answer was found
+/// numerically.
+fn only_numeric(r: &symbolic::Report) -> bool {
+    let n = r.steps.len().saturating_sub(1);
+    r.steps.iter().enumerate().any(|(k, s)| {
+        s.note.contains("numerically") && !(k == n && s.note.contains("hecked numerically"))
+    })
+}
+
+/// A Giac answer that is exact and passed its check.
+fn exact(r: &symbolic::Report) -> bool {
+    r.result.is_some()
+        && !only_numeric(r)
+        && r.steps
+            .last()
+            .is_some_and(|s| s.note.starts_with("Checked numerically"))
+}
+
+/// Simplify's answer, replaced by a tidier equivalent from Giac when there
+/// is one, as one more step.
+fn tidier(mut ours: symbolic::Report, latex: &str, others: &[String]) -> symbolic::Report {
+    let Some(current) = ours.result.clone() else {
+        return ours;
+    };
+    // `y = …` and `f(x) = …` are simplified on the right.
+    let body = match crate_parse_is_relation(latex) {
+        true => latex.split_once('=').map_or(latex, |(_, r)| r),
+        false => latex,
+    };
+    let Ok(plan) = cas::plan(body, others, Some("giac:nicest")) else {
+        return ours;
+    };
+    let answer = crate::giac::run(&plan);
+    let Ok(theirs) = std::panic::catch_unwind(|| cas::finish(&plan, answer)) else {
+        return ours;
+    };
+    let (Some(form), None) = (theirs.result, theirs.error) else {
+        return ours;
+    };
+    if form.len() + 2 < current.len() {
+        ours.steps.push(symbolic::Step {
+            note: "Giac finds a tidier form, checked numerically".into(),
+            latex: format!("={form}"),
+        });
+        ours.result = Some(form.clone());
+        if ours.answer.is_some() {
+            ours.answer = Some(match latex.split_once('=') {
+                Some((lhs, _)) if crate_parse_is_relation(latex) => format!("{lhs}={form}"),
+                _ => form,
+            });
+        }
+    }
+    ours
+}
+
+fn crate_parse_is_relation(latex: &str) -> bool {
+    matches!(
+        graph_expr::parse(latex),
+        Ok(graph_expr::ast::Statement::Relation(..))
+    )
 }
 
 fn with_giac(latex: &str, others: &[String], op: Option<&str>, giac: bool) -> symbolic::Report {
@@ -315,6 +388,16 @@ mod tests {
                 &[],
                 Some("giac:fourier"),
                 "\\omega",
+            ),
+            // Exact where Solve's own answer was only numeric.
+            ("e^{x}+x=5", &[], None, "W\\left(e^{5}\\right)"),
+            // The tidiest form, from several of Giac's.
+            ("\\frac{1}{x}+\\frac{1}{x+1}", &[], None, "\\frac{2x+1}"),
+            (
+                "\\frac{\\sin\\left(2x\\right)}{2\\cos\\left(x\\right)}",
+                &[],
+                None,
+                "\\sin\\left(x\\right)",
             ),
             // Assumptions as a restriction.
             ("\\sqrt{x^{2}}\\left\\{x>0\\right\\}", &[], None, "x"),

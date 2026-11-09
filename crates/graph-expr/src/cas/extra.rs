@@ -1534,6 +1534,44 @@ pub(super) fn finish(
                 Check::NotDone
             })
         }
+        Kind::Nicest { .. } => {
+            let Some((form, check)) = nicest(plan, text) else {
+                report.error = Some("Giac found no other form that checks out".into());
+                return None;
+            };
+            report.steps.push(step(
+                "Giac tries several forms and keeps the tidiest",
+                format!("{q}={form}"),
+            ));
+            report.result = Some(form.clone());
+            report.answer = Some(form);
+            Some(check)
+        }
         _ => Some(Check::NotDone),
     }
+}
+
+/// The tidiest of Giac's equivalent forms that passes the numeric check:
+/// its LaTeX, or None when none does.
+pub(super) fn nicest(plan: &Plan, text: &str) -> Option<(String, Check)> {
+    let Kind::Nicest { var, original } = &plan.kind else {
+        return None;
+    };
+    let p = Printer { names: &plan.names };
+    let Ok(G::List(items)) = read_giac(text) else {
+        return None;
+    };
+    let mut forms: Vec<String> = items.iter().filter_map(|g| p.latex(g).ok()).collect();
+    forms.sort_by_key(|f| f.len());
+    forms.dedup();
+    for f in forms {
+        let check = match var {
+            Some(v) => same_function(original, &f, v, &plan.others),
+            None => value_check(original, &f, &plan.others, 1e-9),
+        };
+        if matches!(check, Check::Passed(_)) {
+            return Some((f, check));
+        }
+    }
+    None
 }

@@ -163,6 +163,11 @@ enum Kind {
         var: String,
         original: String,
     },
+    /// Several equivalent forms, of which the tidiest is the answer.
+    Nicest {
+        var: Option<String>,
+        original: String,
+    },
 }
 
 /// What to ask Giac for one problem.
@@ -664,6 +669,9 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             "laplace" => format!("laplace(subst({g},{v}=t),t,s)"),
                             "ilaplace" => format!("ilaplace(subst({g},{v}=s),s,t)"),
                             "integrate" => format!("integrate({g},{v})"),
+                            "nicest" => format!(
+                                "[simplify({g}),factor({g}),normal({g}),partfrac({g},{v}),expand({g}),tcollect({g}),simplify(texpand({g}))]"
+                            ),
                             "diff" => format!("diff({g},{v})"),
                             _ => format!("simplify({g})"),
                         };
@@ -675,6 +683,10 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                             "laplace" | "ilaplace" => Kind::Laplace {
                                 inverse: what == "ilaplace",
                                 var: var.clone(),
+                                original: latex.into(),
+                            },
+                            "nicest" => Kind::Nicest {
+                                var: (!used.is_empty()).then(|| var.clone()),
                                 original: latex.into(),
                             },
                             "integrate" => Kind::Antiderivative {
@@ -1574,6 +1586,40 @@ fn decimal(latex: &str, others: &[String]) -> Option<String> {
     (shown != latex).then_some(shown)
 }
 
+/// Whether LaTeX is a plain decimal number, as Giac's numeric answers are.
+fn is_decimal(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('-');
+    t.contains('.')
+        && t.chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == 'e' || c == '-')
+}
+
+/// A definite integral or sum with no closed form: its value from the
+/// engine's own numeric work, marked as approximate.
+fn numeric_only(
+    mut report: Report,
+    q: &str,
+    question: &str,
+    others: &[String],
+    what: &str,
+) -> Report {
+    match number_of(question, others).filter(|v| v.is_finite()) {
+        Some(v) => {
+            let shown = crate::format::value_latex(v);
+            report.steps.push(Step {
+                note: format!(
+                    "There's no closed form for this {what}, so it is worked out numerically"
+                ),
+                latex: format!("{q}\\approx {shown}"),
+            });
+            report.result = Some(format!("\\approx {shown}"));
+            report.answer = Some(shown);
+        }
+        None => report.error = Some(format!("Giac couldn't find this {what} exactly")),
+    }
+    report
+}
+
 /// The Report for `plan`, given Giac's answer: its own syntax and its
 /// LaTeX, or what went wrong.
 pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
@@ -1611,7 +1657,8 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
         | Kind::Inequality { .. }
         | Kind::Recurrence { .. }
         | Kind::Matrix { .. }
-        | Kind::Fourier { .. } => match extra::finish(plan, &text, &shown, readable, &mut report) {
+        | Kind::Fourier { .. }
+        | Kind::Nicest { .. } => match extra::finish(plan, &text, &shown, readable, &mut report) {
             Some(c) => more = Some(c),
             None => return report,
         },
@@ -1633,8 +1680,8 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
         }
         Kind::Definite { question } => {
             if text.contains("integrate(") {
-                report.error = Some("Giac couldn't find this integral exactly".into());
-                return report;
+                // No closed form: the engine's own numeric value.
+                return numeric_only(report, q, question, others, "integral");
             }
             let mut result = shown.clone();
             if readable {
@@ -1648,6 +1695,9 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 latex: format!("{q}={shown}"),
             });
             report.result = Some(result);
+        }
+        Kind::Sum { question } if text.contains("sum(") && !question.contains("\\infty") => {
+            return numeric_only(report, q, question, others, "sum");
         }
         Kind::Sum { question } => {
             let mut result = shown.clone();
@@ -1749,9 +1799,23 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
                 report.result = Some(format!("\\text{{No solutions for }}{v}"));
                 return report;
             }
+            // Decimals mean Giac found no exact form and solved numerically.
+            let numeric = sols.iter().all(|s| is_decimal(s));
+            if numeric && readable {
+                report.steps.push(Step {
+                    note: "There's no exact form for these, so Giac finds them numerically".into(),
+                    latex: String::new(),
+                });
+            }
             let joined = if readable {
                 sols.iter()
-                    .map(|s| format!("{v}={s}"))
+                    .map(|s| {
+                        if is_decimal(s) {
+                            format!("{v}\\approx {s}")
+                        } else {
+                            format!("{v}={s}")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join("\\quad\\text{or}\\quad ")
             } else {

@@ -1107,7 +1107,11 @@ fn equation(l: Sym, r: Sym, v: &str, st: &mut Steps) -> Done {
     }
     let shown: Vec<String> = roots
         .iter()
-        .map(|r| format!("{xs}={}", with_approx(r)))
+        // A root found numerically is only close: ≈, not =.
+        .map(|r| match r {
+            Sym::Real(_) => format!("{xs}\\approx {}", latex(r)),
+            _ => format!("{xs}={}", with_approx(r)),
+        })
         .collect();
     let result = shown.join("\\quad\\text{or}\\quad ");
     let general = roots.iter().any(|r| r.has(k));
