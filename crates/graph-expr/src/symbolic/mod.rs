@@ -6,6 +6,7 @@ mod convert;
 pub mod diff;
 pub mod integrate;
 pub mod latex;
+pub mod limits;
 mod nfold;
 pub mod ode;
 pub mod poly;
@@ -543,7 +544,20 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
     }
     // The engine works limits out numerically; Giac finds them exactly.
     if source.contains("\\lim") {
-        report.error = Some("Limits are worked out by Giac".into());
+        report.op = "limit".into();
+        report.choices = vec![Choice {
+            op: "limit".into(),
+            label: "Take the limit".into(),
+        }];
+        let mut st = Steps::new();
+        st.push("Take the limit", source.to_owned());
+        match limits::solve(source, others, &defs, &mut st) {
+            Ok(result) => {
+                report.steps = st.list;
+                report.result = Some(result);
+            }
+            Err(e) => report.error = Some(e),
+        }
         return report;
     }
     if crate::dots::is_symbolic(source) {

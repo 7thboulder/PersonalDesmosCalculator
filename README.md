@@ -164,6 +164,11 @@ on the right. What you type is graphed as you type it:
   form are worked out numerically. **Simplify** also asks Giac for
   several equivalent forms and shows the tidiest one that checks out
   numerically (`1/x+1/(x+1)` becomes `(2x+1)/(x^2+x)`).
+- Limits with working: Solve puts the point in where the function is
+  continuous, factors and cancels or uses L'Hôpital's rule for 0/0 and
+  ∞/∞, divides by the highest power at ∞, and says which way a c/0
+  limit runs off. Each answer is checked against the numeric limit;
+  limits it can't do with steps (or whose sides disagree) go to Giac.
 - In degree mode, Solve works with trig in degrees (sin x = 1/2 gives
   x = 30 or 150), through Giac.
 - `...` (or `\ldots`, `\cdots`) for repetition outside lists, as on paper.

@@ -455,7 +455,7 @@ fn main_var(names: &[String]) -> String {
 
 /// `\lim_{x\to a}` at the start of `latex`: the variable, the point (with
 /// ^{+} or ^{-} for one side) and the rest.
-fn split_limit(latex: &str) -> Option<(String, String, i8, String)> {
+pub(crate) fn split_limit(latex: &str) -> Option<(String, String, i8, String)> {
     let rest = latex.trim_start().strip_prefix("\\lim_")?;
     let inner = rest.strip_prefix('{')?;
     let (sub, body) = {
