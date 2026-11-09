@@ -126,6 +126,27 @@ pub fn derivative(e: &Low, v: &Low) -> Low {
         }
         Low::Select(cond, a, b) => Low::Select(cond.clone(), Box::new(d(a)), Box::new(d(b))),
         Low::Call(f, args) => call_derivative(e, *f, args, v),
+        // A recursive function has no formula to differentiate, so each
+        // argument's slope is a central difference.
+        Low::Recur(r, f, args) => {
+            let mut total = c(0.0);
+            for (k, a) in args.iter().enumerate() {
+                let da = d(a);
+                if matches!(da, Low::Const(z) if z == 0.0) {
+                    continue;
+                }
+                let h = 1e-5;
+                let at = |shift: f64| {
+                    let mut moved = args.clone();
+                    moved[k] = add(a.clone(), c(shift));
+                    Low::Recur(std::sync::Arc::clone(r), *f, moved)
+                };
+                let slope = div(sub(at(h), at(-h)), c(2.0 * h));
+                total = add(total, mul(slope, da));
+            }
+            total
+        }
+        Low::SelfCall(..) => c(f64::NAN),
         Low::Integral { hole, body, lo, hi } => {
             // Leibniz: f(hi) hi' - f(lo) lo' + the integral of ∂f/∂v.
             let at = |bound: &Low| body.fill(*hole, bound);

@@ -4,7 +4,7 @@
 //! row is worked out, so graphs run exactly as before; this module checks
 //! that the units agree and picks the unit each answer is shown in.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Condition, Expr, Repeat, Statement};
 use crate::builtins::Builtin;
@@ -715,37 +715,43 @@ fn split_target(e: &Expr) -> (&Expr, Option<&Quantity>) {
 
 /// Whether an expression has a unit in it, directly or through the names
 /// it reads.
-fn uses_units(e: &Expr, defs: &Defs, depth: usize) -> bool {
-    if depth > MAX_DEPTH {
-        return false;
-    }
+fn uses_units(e: &Expr, defs: &Defs, _depth: usize) -> bool {
+    uses_units_in(e, defs, &mut HashSet::new())
+}
+
+/// Each name is looked into once, so a function that calls itself (or
+/// twice, as Fibonacci does) is read in one pass.
+fn uses_units_in(e: &Expr, defs: &Defs, seen: &mut HashSet<String>) -> bool {
     let mut found = false;
+    let mut names: Vec<String> = Vec::new();
     e.walk(&mut |x| match x {
         Expr::Unit(_) | Expr::Convert(..) => found = true,
-        Expr::Var(n) => {
-            if let Some(v) = defs.vars.get(n.as_str()) {
-                found |= uses_units(v, defs, depth + 1);
-            }
-        }
-        Expr::Apply(n, _) => {
-            if let Some((_, body)) = defs.funcs.get(n.as_str()) {
-                found |= uses_units(body, defs, depth + 1);
-            } else if let Some(v) = defs.vars.get(n.as_str()) {
-                found |= uses_units(v, defs, depth + 1);
-            }
-        }
+        Expr::Var(n) | Expr::Apply(n, _) => names.push(n.clone()),
         _ => {}
     });
+    for n in names {
+        if found || seen.len() > MAX_DEPTH * 64 || !seen.insert(n.clone()) {
+            continue;
+        }
+        if let Some((_, body)) = defs.funcs.get(n.as_str()) {
+            found |= uses_units_in(body, defs, seen);
+        }
+        if let Some(v) = defs.vars.get(n.as_str()) {
+            found |= uses_units_in(v, defs, seen);
+        }
+    }
     found
 }
 
 /// Units written in an expression and the rows it reads, in order: each
 /// whole unit, then the units it is made of. Constants are left out, since
 /// `3c` is better shown in m/s.
-fn collect(e: &Expr, defs: &Defs, out: &mut Vec<Quantity>, depth: usize) {
-    if depth > MAX_DEPTH {
-        return;
-    }
+fn collect(e: &Expr, defs: &Defs, out: &mut Vec<Quantity>, _depth: usize) {
+    collect_in(e, defs, out, &mut HashSet::new())
+}
+
+fn collect_in(e: &Expr, defs: &Defs, out: &mut Vec<Quantity>, seen: &mut HashSet<String>) {
+    let mut names: Vec<(String, bool)> = Vec::new();
     e.walk(&mut |x| match x {
         Expr::Unit(q) if !q.has_constant() => {
             out.push((**q).clone());
@@ -760,18 +766,22 @@ fn collect(e: &Expr, defs: &Defs, out: &mut Vec<Quantity>, depth: usize) {
                 });
             }
         }
-        Expr::Var(n) => {
-            if let Some(v) = defs.vars.get(n.as_str()) {
-                collect(v, defs, out, depth + 1);
-            }
-        }
-        Expr::Apply(n, _) => {
-            if let Some((_, body)) = defs.funcs.get(n.as_str()) {
-                collect(body, defs, out, depth + 1);
-            }
-        }
+        Expr::Var(n) => names.push((n.clone(), false)),
+        Expr::Apply(n, _) => names.push((n.clone(), true)),
         _ => {}
     });
+    for (n, applied) in names {
+        if seen.len() > MAX_DEPTH * 64 || !seen.insert(n.clone()) {
+            continue;
+        }
+        if applied {
+            if let Some((_, body)) = defs.funcs.get(n.as_str()) {
+                collect_in(body, defs, out, seen);
+            }
+        } else if let Some(v) = defs.vars.get(n.as_str()) {
+            collect_in(v, defs, out, seen);
+        }
+    }
 }
 
 /// Works out the dimension of an expression. None means unknown, which

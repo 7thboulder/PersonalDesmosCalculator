@@ -37,6 +37,12 @@ on the right. What you type is graphed as you type it:
   `x' = f, y' = g` (or `(x', y') = (f, g)`, or with `dx/dt`) in x, y and t
   draw a direction field and the trajectory through each point from t = 0.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
+- Recursive functions, as in Desmos: `f(n) = {n = 0: 1, n f(n-1)}` or
+  Fibonacci `F(n) = {n ≤ 1: n, F(n-1) + F(n-2)}`, and functions that call
+  each other. A piecewise takes only the branch its condition picks, so a
+  base case stops the calls; results are remembered, so `F(80)` is
+  instant. Calls may go 10,000 deep; a function with no base case says so.
+  `y = F(x)` graphs too, worked out on the CPU.
 - Calculus: `d/dx sin(x^2)`, `f'(x)` and `f''(x)`, sums and products
   (type `sum` or `prod`, as in Desmos), and integrals such as
   `∫ from 0 to x of sin(t^2) dt`, including infinite bounds. Type `infinity`

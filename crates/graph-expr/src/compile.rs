@@ -4,6 +4,8 @@
 use crate::builtins::{self, Builtin};
 use crate::calculus::integrate;
 use crate::interval::Interval;
+use crate::recursion::Recursion;
+use std::sync::Arc;
 
 /// Which variable a leaf reads. Curves of one variable use only `Arg::X`,
 /// whichever axis they run along; implicit relations use both. `Local`
@@ -51,6 +53,12 @@ pub enum Low {
         lo: Box<Low>,
         hi: Box<Low>,
     },
+    /// A call to function `.1` of a group of functions that call
+    /// themselves, worked out when the program runs.
+    Recur(Arc<Recursion>, u16, Vec<Low>),
+    /// Inside a recursive function's body: a call to function `.0` of its
+    /// own group.
+    SelfCall(u16, Vec<Low>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +152,7 @@ impl Low {
             Low::Call(_, args) => args.iter().any(|a| a.any(test)),
             Low::Select(c, a, b) => c.any(test) || a.any(test) || b.any(test),
             Low::Integral { body, lo, hi, .. } => body.any(test) || lo.any(test) || hi.any(test),
+            Low::Recur(_, _, args) | Low::SelfCall(_, args) => args.iter().any(|a| a.any(test)),
         }
     }
 
@@ -165,6 +174,9 @@ impl Low {
                 inner.push(*hole);
                 lo.reads_outside(bound) || hi.reads_outside(bound) || body.reads_outside(&inner)
             }
+            Low::Recur(_, _, args) | Low::SelfCall(_, args) => {
+                args.iter().any(|a| a.reads_outside(bound))
+            }
         }
     }
 
@@ -183,6 +195,14 @@ impl Low {
                 lo: b(lo),
                 hi: b(hi),
             },
+            Low::Recur(r, i, args) => Low::Recur(
+                Arc::clone(r),
+                *i,
+                args.iter().map(|a| a.map_leaves(f)).collect(),
+            ),
+            Low::SelfCall(i, args) => {
+                Low::SelfCall(*i, args.iter().map(|a| a.map_leaves(f)).collect())
+            }
         }
     }
 
@@ -253,9 +273,27 @@ impl Low {
                     hi: Box::new(hi),
                 }
             }
+            Low::Recur(r, i, args) => {
+                let args: Vec<Low> = args.into_iter().map(Low::fold).collect();
+                match constants(&args) {
+                    Some(values) => Low::Const(r.call(i, &values)),
+                    None => Low::Recur(r, i, args),
+                }
+            }
+            Low::SelfCall(i, args) => Low::SelfCall(i, args.into_iter().map(Low::fold).collect()),
             other => other,
         }
     }
+}
+
+/// The values of arguments that are all numbers.
+pub(crate) fn constants(args: &[Low]) -> Option<Vec<f64>> {
+    args.iter()
+        .map(|a| match a {
+            Low::Const(v) => Some(*v),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -273,6 +311,12 @@ pub enum Op {
         sub: u16,
         slot: u8,
     },
+    /// Pops `n` arguments and calls function `f` of recursive group `rec`.
+    Recur {
+        rec: u16,
+        f: u16,
+        n: u8,
+    },
 }
 
 /// Deepest evaluation stack a program may need.
@@ -286,6 +330,8 @@ pub struct Program {
     ops: Vec<Op>,
     /// The bodies of integrals, evaluated by `Op::Integral`.
     subs: Vec<Program>,
+    /// The groups of recursive functions `Op::Recur` calls.
+    recs: Vec<Arc<Recursion>>,
     /// Deepest the stack gets, so most programs run on a small one.
     depth: usize,
 }
@@ -301,6 +347,7 @@ impl Program {
         let mut program = Program {
             ops: Vec::new(),
             subs: Vec::new(),
+            recs: Vec::new(),
             depth: 0,
         };
         let depth = program.emit(expr, slot)?;
@@ -395,6 +442,11 @@ impl Program {
                     top -= 1;
                     stack[top - 1] = Interval::ANY;
                 }
+                Op::Recur { n, .. } => {
+                    top -= n as usize;
+                    stack[top] = Interval::ANY;
+                    top += 1;
+                }
             }
         }
         stack[0]
@@ -488,6 +540,13 @@ impl Program {
                     locals[slot] = saved;
                     stack[top - 1] = value;
                 }
+                Op::Recur { rec, f, n } => {
+                    let n = n as usize;
+                    let value = self.recs[rec as usize].call(f, &stack[top - n..top]);
+                    top -= n;
+                    stack[top] = value;
+                    top += 1;
+                }
             }
         }
         stack[0]
@@ -550,6 +609,31 @@ impl Program {
                     slot,
                 });
                 dl.max(dh + 1)
+            }
+            Low::Recur(r, f, args) => {
+                let mut depth = 1;
+                for (i, a) in args.iter().enumerate() {
+                    depth = depth.max(self.emit(a, slot)? + i);
+                }
+                let rec = match self.recs.iter().position(|x| Arc::ptr_eq(x, r)) {
+                    Some(k) => k,
+                    None => {
+                        self.recs.push(Arc::clone(r));
+                        self.recs.len() - 1
+                    }
+                };
+                self.ops.push(Op::Recur {
+                    rec: rec as u16,
+                    f: *f,
+                    n: u8::try_from(args.len()).map_err(|_| "Too many arguments")?,
+                });
+                depth
+            }
+            Low::SelfCall(..) => {
+                // Only a recursive function's own body calls itself this
+                // way, and bodies are run by `Recursion`, not compiled.
+                self.ops.push(Op::Const(f64::NAN));
+                1
             }
         })
     }
