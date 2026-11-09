@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 libm = "0.2"
+stacker = "0.1"

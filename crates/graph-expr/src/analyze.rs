@@ -13,9 +13,11 @@ use crate::calculus::derivative;
 use crate::compile::{Arg, BinOp, Low, Program};
 use crate::matrix::{self, Matrix, Stroke};
 use crate::parser::parse;
+use crate::recursion::{Body, Recursion};
 use crate::units;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 mod fractal;
 pub use fractal::Fractal;
@@ -1422,6 +1424,9 @@ pub fn analyze_angles(
         recording: Vec::new(),
         mode,
         degrees,
+        recursive: HashSet::new(),
+        recursions: FastMap::default(),
+        building: Vec::new(),
     };
     for table in tables.iter().flatten() {
         for column in &table.columns {
@@ -1467,6 +1472,7 @@ pub fn analyze_angles(
         };
         env.funcs.insert(name, def);
     }
+    env.recursive = recursive_functions(&env.funcs);
 
     // Matrices are worked out first, and every row that mentions one is
     // rewritten without it, or finished here when its value is a matrix.
@@ -1574,6 +1580,8 @@ pub fn analyze_angles(
             fits.insert(row.id, fit.map(|(fit, _)| fit));
         }
     }
+    // Recursive functions lowered while fitting read the old parameters.
+    env.recursions.clear();
 
     let names = env.names();
     if env.old.names != names {
@@ -1905,6 +1913,59 @@ fn special_expr(e: Expr, skip: &dyn Fn(&str) -> bool) -> Expr {
     })
 }
 
+/// The functions `body` calls by name.
+fn callees(body: &Expr, funcs: &FastMap<String, Rc<FuncDef>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    body.walk(&mut |e| {
+        if let Expr::Apply(n, _) | Expr::Prime(n, ..) = e {
+            if funcs.contains_key(n) && !out.contains(n) {
+                out.push(n.clone());
+            }
+        }
+    });
+    out
+}
+
+/// Every function reachable from `start`'s calls (not `start` itself,
+/// unless it calls itself back).
+fn reachable(start: &str, funcs: &FastMap<String, Rc<FuncDef>>) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut todo: Vec<String> = funcs
+        .get(start)
+        .map(|f| callees(&f.body, funcs))
+        .unwrap_or_default();
+    while let Some(n) = todo.pop() {
+        if seen.insert(n.clone()) {
+            if let Some(f) = funcs.get(&n) {
+                todo.extend(callees(&f.body, funcs));
+            }
+        }
+    }
+    seen
+}
+
+/// The functions that call themselves, directly or through others.
+fn recursive_functions(funcs: &FastMap<String, Rc<FuncDef>>) -> HashSet<String> {
+    funcs
+        .keys()
+        .filter(|n| reachable(n, funcs).contains(*n))
+        .cloned()
+        .collect()
+}
+
+/// `name` and the functions that call it back: the group lowered together.
+fn recursive_group(name: &str, funcs: &FastMap<String, Rc<FuncDef>>) -> Vec<String> {
+    let mut group: Vec<String> = reachable(name, funcs)
+        .into_iter()
+        .filter(|g| g == name || reachable(g, funcs).contains(name))
+        .collect();
+    if !group.iter().any(|g| g == name) {
+        group.push(name.to_owned());
+    }
+    group.sort();
+    group
+}
+
 fn def_name(def: &Def) -> &str {
     match def {
         Def::Var(n, _) | Def::Func(n, _) => n,
@@ -2101,7 +2162,19 @@ struct Env {
     mode: Mode,
     /// Angles in degrees: θ in polar rows is in degrees.
     degrees: bool,
+    /// Functions that call themselves, directly or through others.
+    recursive: HashSet<String>,
+    /// Recursive functions lowered so far: each one's group, its place in
+    /// it, and what lowering the group read.
+    recursions: FastMap<String, Lowered>,
+    /// The groups of recursive functions whose bodies are being lowered,
+    /// innermost last.
+    building: Vec<Vec<String>>,
 }
+
+/// A recursive function's group, its place in it, and what lowering the
+/// group read.
+type Lowered = (Arc<Recursion>, u16, Rc<Vec<Read>>);
 
 /// A value's constants as bits, to key remembered function calls; None
 /// when it depends on a graph variable.
@@ -2191,6 +2264,7 @@ impl matrix::Scalars for Env {
 
     fn define(&mut self, name: &str, e: Option<Expr>) {
         self.values.remove(name);
+        self.recursions.clear();
         match e {
             Some(e) => self.vars.insert(name.to_owned(), e),
             None => self.vars.remove(name),
@@ -2205,6 +2279,8 @@ impl matrix::Scalars for Env {
                 body,
             }),
         );
+        self.recursive = recursive_functions(&self.funcs);
+        self.recursions.clear();
     }
 }
 
@@ -3781,7 +3857,10 @@ impl Env {
                 }
             }
             Expr::Apply(name, args) => {
-                if scope.iter().any(|(n, _)| n == name) || depth >= MAX_INLINE_DEPTH {
+                if scope.iter().any(|(n, _)| n == name)
+                    || depth >= MAX_INLINE_DEPTH
+                    || self.recursive.contains(name)
+                {
                     return None;
                 }
                 let f = Rc::clone(self.funcs.get(name)?);
@@ -4012,10 +4091,12 @@ impl Env {
         let mut visit = |e: &Expr| match e {
             Expr::Call(f, _) => found |= f.takes_list(),
             Expr::Apply(name, _) | Expr::Prime(name, ..) => {
-                found |= self
-                    .funcs
-                    .get(name)
-                    .is_some_and(|f| self.reads_whole_lists(&f.body, depth + 1))
+                // A recursive function's calls are worked out one at a time.
+                found |= !self.recursive.contains(name)
+                    && self
+                        .funcs
+                        .get(name)
+                        .is_some_and(|f| self.reads_whole_lists(&f.body, depth + 1))
             }
             _ => {}
         };
@@ -4159,7 +4240,10 @@ impl Env {
                 m
             }
             Expr::Apply(name, args) => {
-                if names.iter().any(|(n, _)| n == name) || depth >= MAX_INLINE_DEPTH {
+                if names.iter().any(|(n, _)| n == name)
+                    || depth >= MAX_INLINE_DEPTH
+                    || self.recursive.contains(name)
+                {
                     return None;
                 }
                 let f = Rc::clone(self.funcs.get(name)?);
@@ -4807,6 +4891,11 @@ impl Env {
                         ));
                         return Val::nan();
                     }
+                    if let Some(v) =
+                        self.recursive_call(name, args, bindings, free, depth, problems, visiting)
+                    {
+                        return v;
+                    }
                     if depth >= MAX_INLINE_DEPTH {
                         problems.error(format!("'{name}' is defined in terms of itself"));
                         return Val::nan();
@@ -4883,6 +4972,122 @@ impl Env {
                 }
             }
         }
+    }
+
+    /// A call to a function that calls itself, which can't be inlined:
+    /// None for any other function.
+    #[allow(clippy::too_many_arguments)]
+    fn recursive_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        bindings: &HashMap<String, Val>,
+        free: Free,
+        depth: usize,
+        problems: &mut Problems,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Val> {
+        let own = self
+            .building
+            .last()
+            .and_then(|g| g.iter().position(|n| n == name));
+        if own.is_none() && !self.recursive.contains(name) {
+            return None;
+        }
+        let vals: Vec<Val> = args
+            .iter()
+            .map(|a| self.lower_with(a, bindings, free, depth, problems, visiting))
+            .collect();
+        let numbers = |items: &[&Item]| -> Result<Vec<Low>, String> {
+            items
+                .iter()
+                .map(|i| match i {
+                    Item::Num(l) => Ok(l.clone()),
+                    _ => Err(format!("'{name}' calls itself, so it takes numbers only")),
+                })
+                .collect()
+        };
+        // Inside its own group's bodies, a call is left for the group to
+        // work out when it runs.
+        if let Some(i) = own {
+            return Some(self.broadcast(&vals, problems, |items| {
+                Ok(Item::Num(Low::SelfCall(i as u16, numbers(items)?)))
+            }));
+        }
+        let (rec, i) = match self.recursion(name, depth, visiting) {
+            Ok(found) => found,
+            Err(e) => {
+                problems.error(e);
+                return Some(Val::nan());
+            }
+        };
+        Some(self.broadcast(&vals, problems, |items| {
+            let args = numbers(items)?;
+            match crate::compile::constants(&args) {
+                Some(values) => match rec.call_checked(i, &values) {
+                    Ok(v) => Ok(Item::Num(Low::Const(v))),
+                    Err(limit) => Err(limit.message(name)),
+                },
+                None => Ok(Item::Num(Low::Recur(Arc::clone(&rec), i, args))),
+            }
+        }))
+    }
+
+    /// The group of recursive functions `name` belongs to, lowered once,
+    /// and its place in the group.
+    fn recursion(
+        &mut self,
+        name: &str,
+        depth: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Result<(Arc<Recursion>, u16), String> {
+        if let Some((rec, i, reads)) = self.recursions.get(name) {
+            let (rec, i, reads) = (Arc::clone(rec), *i, Rc::clone(reads));
+            self.record_all(&reads);
+            return Ok((rec, i));
+        }
+        let group = recursive_group(name, &self.funcs);
+        self.building.push(group.clone());
+        self.recording.push(Vec::new());
+        let mut problems = Problems::default();
+        let mut bodies = Vec::new();
+        let mut failed = None;
+        for g in &group {
+            let f = Rc::clone(&self.funcs[g]);
+            self.record(Read::Func(g.clone(), Rc::clone(&f)));
+            let holes: Vec<u32> = f.params.iter().map(|_| self.hole()).collect();
+            let inner: HashMap<String, Val> = f
+                .params
+                .iter()
+                .zip(&holes)
+                .map(|(p, h)| (p.clone(), Val::num(Low::Hole(*h))))
+                .collect();
+            let v = self.lower_with(&f.body, &inner, NO_FREE, depth + 1, &mut problems, visiting);
+            match (v.list, v.items.as_slice()) {
+                (false, [Item::Num(low)]) => bodies.push(Body {
+                    holes,
+                    low: low.clone().fold(),
+                }),
+                _ => {
+                    failed.get_or_insert(format!(
+                        "'{g}' calls itself, so it must give a number, not a list or point"
+                    ));
+                }
+            }
+        }
+        self.building.pop();
+        let reads = Rc::new(self.recording.pop().unwrap_or_default());
+        self.record_all(&reads);
+        if let Some(e) = problems.first_message().or(failed) {
+            return Err(e);
+        }
+        let rec = Arc::new(Recursion::new(group.clone(), bodies));
+        for (i, g) in group.iter().enumerate() {
+            self.recursions
+                .insert(g.clone(), (Arc::clone(&rec), i as u16, Rc::clone(&reads)));
+        }
+        let i = group.iter().position(|g| g == name).unwrap_or(0) as u16;
+        Ok((rec, i))
     }
 
     /// `base[index]`: elements of a list, or a product when `base` is not
@@ -6010,6 +6215,8 @@ impl Env {
                 }
                 self.trace_call(*f, traced)
             }
+            // A recursive function's calls aren't followed.
+            Expr::Apply(name, _) if self.recursive.contains(name) => return None,
             Expr::Apply(name, args) => {
                 if let Some(f) = self.funcs.get(name).cloned() {
                     if f.params.len() != args.len() {
