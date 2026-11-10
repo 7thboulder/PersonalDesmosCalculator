@@ -322,7 +322,7 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
             vars.reverse();
             Form::Derivative {
                 vars,
-                body: to_sym(&body, defs)?,
+                body: to_sym(&convert::bare_function(&body, defs)?, defs)?,
             }
         }
         Statement::Expr(ref e @ (Expr::Point(..) | Expr::Point3(..))) => {

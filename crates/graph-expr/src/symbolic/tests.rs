@@ -340,6 +340,24 @@ fn partial_derivatives() {
         None,
     );
     assert_eq!(r.result.as_deref(), Some("3x^{2}y"), "{r:?}");
+    // Leibniz form: ∂f/∂x of a defined f is f at its own variables.
+    let f = ["f\\left(x,y\\right)=x^{3}y^{2}".to_string()];
+    let r = run("\\frac{\\partial f}{\\partial x}", &f, None);
+    assert_eq!(r.result.as_deref(), Some("3x^{2}y^{2}"), "{r:?}");
+    let r = run("\\frac{\\partial^{2}f}{\\partial x\\partial y}", &f, None);
+    assert_eq!(r.result.as_deref(), Some("6x^{2}y"), "{r:?}");
+    // An unknown function is a PDE, not a constant.
+    let r = run(
+        "\\frac{\\partial u}{\\partial t}=\\frac{\\partial^{2}u}{\\partial x^{2}}",
+        &[],
+        None,
+    );
+    assert!(
+        r.error
+            .as_deref()
+            .is_some_and(|e| e.contains("partial differential equation")),
+        "{r:?}"
+    );
 }
 
 #[test]

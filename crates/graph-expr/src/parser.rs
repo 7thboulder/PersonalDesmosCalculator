@@ -548,6 +548,16 @@ impl Parser {
                 self.expect(&Tok::LBrace)?;
                 let den = self.expr()?;
                 self.expect(&Tok::RBrace)?;
+                // `\frac{\partial f}{\partial x}`: what to differentiate is on
+                // top, after the ∂.
+                if let Some((d, body)) = leading_d(&num) {
+                    if let Some(vars) = derivative_vars(&d, &den)? {
+                        return Ok(vars
+                            .into_iter()
+                            .rev()
+                            .fold(body, |b, v| Expr::Derivative(v, Box::new(b))));
+                    }
+                }
                 if let Some(vars) = derivative_vars(&num, &den)? {
                     if self.peek().is_none()
                         || !(self.starts_factor() || self.peek() == Some(&Tok::Minus))
@@ -1096,6 +1106,32 @@ fn indexable(e: &Expr) -> bool {
 /// `\frac{\partial^2}{\partial x\partial y}` gives x, y. None when the
 /// fraction isn't a derivative; Err when it looks like one whose orders
 /// don't add up.
+/// `∂f`, `∂²u` or `d f`: the d (with its power) and what follows it.
+fn leading_d(num: &Expr) -> Option<(Expr, Expr)> {
+    fn factors(e: &Expr, out: &mut Vec<Expr>) {
+        match e {
+            Expr::Mul(a, b) => {
+                factors(a, out);
+                factors(b, out);
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    let mut fs = Vec::new();
+    factors(num, &mut fs);
+    let is_d = |e: &Expr| matches!(e, Expr::Var(d) if d == "d" || d == "partial");
+    let d = fs.first()?.clone();
+    let ok = is_d(&d) || matches!(&d, Expr::Pow(b, _) if is_d(b));
+    if !ok || fs.len() < 2 {
+        return None;
+    }
+    let body = fs[1..]
+        .iter()
+        .cloned()
+        .reduce(|a, b| Expr::bin(Expr::Mul, a, b))?;
+    Some((d, body))
+}
+
 fn derivative_vars(num: &Expr, den: &Expr) -> Result<Option<Vec<String>>, String> {
     let is_d = |e: &Expr| matches!(e, Expr::Var(d) if d == "d" || d == "partial");
     let whole = |e: &Expr| match e {
@@ -1262,6 +1298,17 @@ mod tests {
         assert!(parse("\\frac{d^2}{dx}x").is_err());
         assert!(parse("\\frac{d^2}{dxdy}x").is_err());
         assert!(parse("\\partial x").is_err());
+        // Leibniz form, with what is differentiated on top.
+        assert_eq!(e("\\frac{\\partial f}{\\partial x}"), d("x", v("f")));
+        assert_eq!(
+            e("\\frac{\\partial^{2}u}{\\partial x^{2}}"),
+            d("x", d("x", v("u")))
+        );
+        assert_eq!(
+            e("\\frac{\\partial^2f}{\\partial x\\partial y}"),
+            d("x", d("y", v("f")))
+        );
+        assert_eq!(e("\\frac{df}{dt}"), d("t", v("f")));
         // Systems, either way round.
         let point = |a: Expr, b: Expr| Expr::bin(Expr::Point, a, b);
         let system = (

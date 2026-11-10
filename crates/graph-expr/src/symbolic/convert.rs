@@ -54,7 +54,7 @@ impl Defs {
         self.funcs.get(name)
     }
 
-    fn is_var(&self, name: &str) -> bool {
+    pub(crate) fn is_var(&self, name: &str) -> bool {
         self.vars.iter().any(|v| v == name)
     }
 }
@@ -100,6 +100,31 @@ pub fn no_antiderivative(body: &Sym, v: &str) -> String {
     } else {
         "Couldn't find an antiderivative for this; give the integral bounds to work it out numerically".into()
     }
+}
+
+/// What `∂f/∂x` differentiates: `f` alone means f at its own variables
+/// when a row defines f as a function. A letter nothing defines (as `u`
+/// in `∂u/∂t = ∂²u/∂x²`) makes a partial differential equation.
+pub fn bare_function(body: &Expr, defs: &Defs) -> Result<Expr, String> {
+    let Expr::Var(name) = body else {
+        return Ok(body.clone());
+    };
+    if let Some((params, _)) = defs.function(name) {
+        return Ok(Expr::Apply(
+            name.clone(),
+            params.iter().map(|p| Expr::Var(p.clone())).collect(),
+        ));
+    }
+    let independent = matches!(
+        name.as_str(),
+        "x" | "y" | "z" | "t" | "r" | "theta" | "s" | "n"
+    );
+    if !independent && !defs.is_var(name) {
+        return Err(format!(
+            "{name} isn't defined: define it, as in {name}(x,y) = …, to take its partial derivatives. An equation in an unknown {name} and its partial derivatives is a partial differential equation, which Solve can't solve yet"
+        ));
+    }
+    Ok(body.clone())
 }
 
 /// Whether an expression is ∞ or -∞, for integral bounds.
@@ -169,7 +194,10 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
                 _ => return Err("Solve only takes factorials of whole numbers up to 30".into()),
             }
         }
-        Expr::Derivative(v, body) => super::diff::derivative(&c(body)?, v),
+        Expr::Derivative(v, body) => {
+            let body = bare_function(body, defs)?;
+            super::diff::derivative(&c(&body)?, v)
+        }
         Expr::Prime(name, k, args) => {
             let Some((params, body)) = defs.function(name) else {
                 return Err(format!("{name} isn't defined as a function"));

@@ -4801,6 +4801,17 @@ impl Env {
                 result
             }
             Expr::Derivative(var, body) => {
+                // `∂f/∂x` with f a function: f at its own variables.
+                let called;
+                let body = match &**body {
+                    Expr::Var(n) if !bindings.contains_key(n) && self.funcs.contains_key(n) => {
+                        let params = self.funcs[n].params.clone();
+                        called =
+                            Expr::Apply(n.clone(), params.into_iter().map(Expr::Var).collect());
+                        &called
+                    }
+                    other => other,
+                };
                 // Differentiate with the variable as a placeholder, then
                 // put the variable's own value back in.
                 let hole = self.hole();
