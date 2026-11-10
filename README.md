@@ -52,6 +52,17 @@ on the right. What you type is graphed as you type it:
   An integral without bounds, such as `y = ∫ x e^x dx` or
   `f(x) = ∫ sec^3 x dx`, graphs its antiderivative (with the constant
   taken as 0), found exactly the same way the Solve button finds it.
+- Partial derivatives: type `partial` for ∂, as in `∂/∂y x^2y^3` (other
+  letters are held constant), `∂²/∂x∂y` for mixed partials and `d²/dx²`
+  for higher derivatives. `nabla` gives ∇, so `∇(x^2+y^2)` is the
+  gradient, a point. They graph and evaluate like `d/dx`.
+- Infinite sums and products: `Σ from n=1 to ∞ of 1/n^2`, `∏ from n=2
+  to ∞`, and bounds from -∞. Up to a million terms are added (compiled,
+  so it takes moments) and the rest estimated from how the partial sums
+  settle; a series whose terms don't shrink, or whose partial sums keep
+  growing (1/n), is ∞ or undefined rather than a wrong number.
+  `y = Σ from n=0 to ∞ of x^n/n!` graphs too. Limits at ∞ that keep
+  oscillating, such as `sin x`, are undefined.
 - 3D graphs: the **2D / 3D** switch at the top of the list turns the graph
   into Desmos 3D's box. `z = f(x, y)` (or a bare expression in x and y) is
   drawn as a lit surface, trimmed to the box, with r and θ measured around
@@ -169,6 +180,20 @@ on the right. What you type is graphed as you type it:
   ∞/∞, divides by the highest power at ∞, and says which way a c/0
   limit runs off. Each answer is checked against the numeric limit;
   limits it can't do with steps (or whose sides disagree) go to Giac.
+- Partial derivatives in Solve show the working with ∂ and say what is
+  held constant; a row in several variables also offers ∂/∂ for each,
+  **Gradient ∇** and **Total differential** (`df = 2xy dx + x^2 dy`).
+- Infinite sums and products in Solve: Giac's exact value when it has one
+  (`Σ 1/n! = e`), or the partial sum or product up to N and its limit as
+  N → ∞ (`∏ (1 - 1/n^2) = (N+1)/(2N) → 1/2`); a numeric value otherwise.
+  Divergent series say so and why (the terms don't approach 0, or the
+  partial sums grow without bound). Every answer is checked against the
+  numeric value.
+- Improper integrals in Solve take the antiderivative's limit at each
+  infinite bound or point where the integrand blows up: `∫ 1/x^2` from 1
+  to ∞ is 1, `∫ 1/x` from -1 to 1 diverges, and `∫ sin x` from 0 to ∞
+  diverges because -cos x keeps oscillating. A limit that oscillates for
+  ever, such as `sin x` at ∞, does not exist.
 - In degree mode, Solve works with trig in degrees (sin x = 1/2 gives
   x = 30 or 150), through Giac.
 - `...` (or `\ldots`, `\cdots`) for repetition outside lists, as on paper.

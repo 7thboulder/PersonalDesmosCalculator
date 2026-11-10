@@ -104,6 +104,10 @@ enum Kind {
     },
     Sum {
         question: String,
+        /// For a bound at ∞: whether it's a product, its variable, and the
+        /// name of the partial sum's last index when the command also asks
+        /// for the partial sum up to it and its limit.
+        infinite: Option<(bool, String, Option<String>)>,
     },
     Limit {
         var: String,
@@ -649,11 +653,47 @@ pub fn plan(latex: &str, others: &[String], op: Option<&str>) -> Result<Plan, St
                         command = format!("simplify({g})");
                         chosen = Some("diff".into());
                     }
-                    (Expr::Repeat(..), None) => {
-                        kind = Kind::Sum {
-                            question: latex.into(),
-                        };
-                        command = format!("simplify({g})");
+                    (Expr::Repeat(rk, rv, lo, hi, body), None) => {
+                        let inf = |e: &Expr| crate::symbolic::convert::infinity(e);
+                        let product = *rk == Repeat::Product;
+                        if inf(lo).is_some() || inf(hi).is_some() {
+                            // To ∞ from a finite start: also the partial sum
+                            // up to N, and its limit, for when Giac can't do
+                            // the infinite one at once (as for products).
+                            let partial = (inf(hi) == Some(f64::INFINITY) && inf(lo).is_none())
+                                .then(|| {
+                                    let n = ["N", "M", "K"]
+                                        .into_iter()
+                                        .find(|n| !used.iter().any(|u| u == n))
+                                        .unwrap_or("N");
+                                    let gn = w.names.var(n);
+                                    let op = if product { "product" } else { "sum" };
+                                    let (b, gv, a) = (w.expr(body), w.names.var(rv), w.expr(lo));
+                                    match (b, a) {
+                                        (Ok(b), Ok(a)) => Some((n.to_owned(), b, gv, a, op, gn)),
+                                        _ => None,
+                                    }
+                                })
+                                .flatten();
+                            command = match &partial {
+                                // Each part on its own, so one that fails
+                                // leaves the others.
+                                Some((_, b, gv, a, op, gn)) => format!(
+                                    "[try{{simplify({g})}}catch(e){{undef}},try{{simplify({op}({b},{gv},{a},{gn}))}}catch(e){{undef}},try{{limit(simplify({op}({b},{gv},{a},{gn})),{gn},inf)}}catch(e){{undef}}]"
+                                ),
+                                None => format!("[try{{simplify({g})}}catch(e){{undef}}]"),
+                            };
+                            kind = Kind::Sum {
+                                question: latex.into(),
+                                infinite: Some((product, rv.clone(), partial.map(|p| p.0))),
+                            };
+                        } else {
+                            kind = Kind::Sum {
+                                question: latex.into(),
+                                infinite: None,
+                            };
+                            command = format!("simplify({g})");
+                        }
                         chosen = Some("sum".into());
                     }
                     (_, what) => {
@@ -1274,7 +1314,10 @@ impl Printer<'_> {
         };
         Ok(match f {
             "sqrt" => format!("\\sqrt{{{}}}", arg(0)?),
-            "exp" => format!("e^{{{}}}", arg(0)?),
+            "exp" => match arg(0)?.as_str() {
+                "1" => "e".to_owned(),
+                a => format!("e^{{{a}}}"),
+            },
             "abs" => format!("\\left|{}\\right|", arg(0)?),
             "sin" | "cos" | "tan" | "sinh" | "cosh" | "tanh" | "ln" | "sec" | "csc" | "cot" => {
                 wrap(&format!("\\{f}"))?
@@ -1441,6 +1484,16 @@ fn values(rows: &[String]) -> Vec<Option<(f64, f64)>> {
         .collect()
 }
 
+/// `question` with its upper bound ∞ replaced by `n`, when it has one.
+pub(crate) fn with_upper(question: &str, n: u32) -> Option<String> {
+    let q = question.replacen("^{\\infty}", &format!("^{{{n}}}"), 1);
+    (q != question).then_some(q)
+}
+
+pub(crate) fn number_of_public(latex: &str, others: &[String]) -> Option<f64> {
+    number_of(latex, others)
+}
+
 fn number_of(latex: &str, others: &[String]) -> Option<f64> {
     let t = latex.trim();
     if t == "\\infty" || t == "+\\infty" {
@@ -1548,8 +1601,8 @@ fn value_check(question: &str, result: &str, others: &[String], tol: f64) -> Che
 /// as close to the second as the two are to each other, so slowly
 /// converging sums such as 1/n² still check.
 fn infinite_sum_check(question: &str, result: &str, others: &[String]) -> Check {
-    let upto = |n: u32| question.replacen("^{\\infty}", &format!("^{{{n}}}"), 1);
-    if upto(1) == question {
+    let upto = |n: u32| with_upper(question, n).unwrap_or_default();
+    if with_upper(question, 1).is_none() {
         return Check::NotDone;
     }
     // Fewer terms when many overflow, as n! does.
@@ -1574,6 +1627,171 @@ fn infinite_sum_check(question: &str, result: &str, others: &[String]) -> Check 
 
 // ---------------------------------------------------------------------------
 // The report
+
+/// An infinite sum or product from Giac's `[S, S_N, lim S_N]` (or `[S]`):
+/// the exact value at once, or by the partial sum's limit, checked against
+/// the engine's numeric value; or why it diverges.
+fn infinite_series(
+    mut report: Report,
+    plan: &Plan,
+    text: &str,
+    question: &str,
+    product: bool,
+    var: &str,
+    partial: Option<&str>,
+) -> Report {
+    let what = if product { "product" } else { "sum" };
+    let others = &plan.others;
+    let p = Printer { names: &plan.names };
+    let items: Vec<G> = match read_giac(text) {
+        Ok(G::List(items)) => items,
+        Ok(g) => vec![g],
+        Err(e) => {
+            report.error = Some(format!("Giac's answer couldn't be read: {e}"));
+            return report;
+        }
+    };
+    let outcome = crate::series::outcome_of(question, others);
+    // Whether Giac's answer is a value: not unevaluated, undefined or a
+    // bounded oscillation.
+    let closed = |g: &G| -> Option<String> {
+        let l = p.latex(g).ok()?;
+        let bad = ["sum", "product", "undef", "bounded", "limit", "?"];
+        (!bad.iter().any(|b| l.contains(b))).then_some(l)
+    };
+    let infinite = |l: &str| match l.trim() {
+        "\\infty" | "+\\infty" => Some(1i8),
+        "-\\infty" => Some(-1),
+        _ => None,
+    };
+    let mut found: Option<String> = items.first().and_then(closed);
+    if found.is_some() {
+        report.steps.push(Step {
+            note: format!("Giac finds the {what}"),
+            latex: format!("{question}={}", found.as_deref().unwrap_or_default()),
+        });
+    } else if let (Some(n), Some(sn), Some(lim)) = (
+        partial,
+        items.get(1).and_then(closed),
+        items.get(2).and_then(closed),
+    ) {
+        let nl = name_latex(n);
+        let upto = question.replacen("^{\\infty}", &format!("^{{{nl}}}"), 1);
+        report.steps.push(Step {
+            note: format!("Work out the partial {what} up to ${nl}$"),
+            latex: format!("{upto}={sn}"),
+        });
+        report.steps.push(Step {
+            note: format!("Let ${nl}\\to\\infty$"),
+            latex: format!("\\lim_{{{nl}\\to\\infty}}{}={lim}", paren_latex(&sn)),
+        });
+        found = Some(lim);
+    }
+    let Some(exact) = found else {
+        // No exact form: the numeric value, or the reason it diverges.
+        return match outcome {
+            Some(o @ crate::series::Outcome::Converges { value, error }) => {
+                let _ = o;
+                let shown = crate::symbolic::infinite::shown(value, error);
+                report.steps.push(Step {
+                    note: format!(
+                        "Giac has no closed form for this {what}, so it is worked out numerically: up to a million terms, with the rest estimated from how the partial {what}s settle"
+                    ),
+                    latex: format!("{question}\\approx {shown}"),
+                });
+                report.result = Some(format!("\\approx {shown}"));
+                report.answer = Some(shown);
+                report
+            }
+            Some(o) => match crate::symbolic::infinite::divergence(&o, product, var) {
+                Some((note, result)) if !result.is_empty() => {
+                    report.steps.push(Step {
+                        note,
+                        latex: String::new(),
+                    });
+                    report.result = Some(result);
+                    report
+                }
+                Some((note, _)) => {
+                    report.error = Some(note);
+                    report
+                }
+                None => unreachable!(),
+            },
+            None => {
+                report.error = Some(format!("Giac couldn't find this {what}"));
+                report
+            }
+        };
+    };
+    // ±∞: it diverges, and the numbers must say so too.
+    if let Some(sign) = infinite(&exact) {
+        let inf = if sign > 0 { "\\infty" } else { "-\\infty" };
+        report.steps.push(Step {
+            note: format!("So the partial {what}s grow without bound: the {what} diverges"),
+            latex: String::new(),
+        });
+        report.result = Some(format!("\\text{{diverges to }}{inf}"));
+        let agrees = matches!(outcome, Some(crate::series::Outcome::Infinite(s)) if s == sign);
+        report.steps.push(Step {
+            note: if agrees {
+                "Checked numerically".into()
+            } else {
+                "This answer couldn't be checked numerically".into()
+            },
+            latex: String::new(),
+        });
+        return report;
+    }
+    let value = number_of(&exact, others).filter(|v| v.is_finite());
+    let mut result = exact.clone();
+    if let Some(v) = value {
+        if !is_decimal(&exact) && crate::format::value_latex(v) != exact {
+            result = format!("{exact}\\approx {}", crate::format::value_latex(v));
+        }
+    }
+    report.result = Some(result);
+    report.answer = Some(exact.clone());
+    let note = match (value, outcome) {
+        (Some(v), Some(crate::series::Outcome::Converges { value: n, error })) => {
+            if (v - n).abs() <= (10.0 * error).max(1e-9 * (1.0 + v.abs())) {
+                "Checked numerically".to_owned()
+            } else {
+                "The numeric check doesn't agree with this answer, so treat it with care".to_owned()
+            }
+        }
+        (Some(_), Some(o))
+            if crate::symbolic::infinite::divergence(&o, product, var)
+                .is_some_and(|d| !d.1.is_empty()) =>
+        {
+            // Giac gave a value, but the terms say it diverges.
+            let (note, result) = crate::symbolic::infinite::divergence(&o, product, var).unwrap();
+            report.steps.push(Step {
+                note: format!("Giac gives ${exact}$, but numerically: {note}"),
+                latex: String::new(),
+            });
+            report.result = Some(result);
+            report.answer = None;
+            "The numeric check doesn't agree with Giac's answer, so the numeric verdict is shown"
+                .to_owned()
+        }
+        _ => "This answer couldn't be checked numerically".to_owned(),
+    };
+    report.steps.push(Step {
+        note,
+        latex: String::new(),
+    });
+    report
+}
+
+/// LaTeX in brackets when it is more than one term.
+fn paren_latex(l: &str) -> String {
+    if l.contains('+') || l.contains('-') {
+        format!("\\left({l}\\right)")
+    } else {
+        l.to_owned()
+    }
+}
 
 fn decimal(latex: &str, others: &[String]) -> Option<String> {
     let mut rows = others.to_vec();
@@ -1696,10 +1914,24 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
             });
             report.result = Some(result);
         }
-        Kind::Sum { question } if text.contains("sum(") && !question.contains("\\infty") => {
+        Kind::Sum {
+            question,
+            infinite: Some((product, var, partial)),
+        } => {
+            return infinite_series(
+                report,
+                plan,
+                &text,
+                question,
+                *product,
+                var,
+                partial.as_deref(),
+            );
+        }
+        Kind::Sum { question, .. } if text.contains("sum(") || text.contains("product(") => {
             return numeric_only(report, q, question, others, "sum");
         }
-        Kind::Sum { question } => {
+        Kind::Sum { question, .. } => {
             let mut result = shown.clone();
             if readable {
                 if let Some(d) = decimal(&shown, others) {
@@ -1772,6 +2004,30 @@ pub fn finish(plan: &Plan, answer: Result<(String, String), String>) -> Report {
             dir,
             both: None,
         } => {
+            // Bounded but never settling, as sin x does at ∞; or undefined.
+            if text.contains("bounded_function") || text.trim() == "undef" {
+                let v = name_latex(var);
+                let gone = number_of(q, others).is_none_or(|n| n.is_nan());
+                report.steps.push(Step {
+                    note: if text.contains("bounded_function") {
+                        format!("Giac finds the function stays bounded but keeps oscillating as ${v}$ goes there, so it never settles on a value")
+                    } else {
+                        "Giac finds no single value it approaches".into()
+                    },
+                    latex: format!("{q}\\ \\text{{does not exist}}"),
+                });
+                report.result = Some("\\text{does not exist}".into());
+                report.steps.push(Step {
+                    note: if gone {
+                        "Checked numerically".into()
+                    } else {
+                        "The numeric check doesn't agree with this answer, so treat it with care"
+                            .into()
+                    },
+                    latex: String::new(),
+                });
+                return report;
+            }
             note = "Giac takes the limit".into();
             report.steps.push(Step {
                 note: note.clone(),
@@ -2180,7 +2436,7 @@ mod tests {
         );
         assert_eq!(
             giac_of("\\sum_{n=1}^{\\infty}\\frac{1}{n^2}"),
-            "simplify(sum((1/(QQn^2)),QQn,1,inf))"
+            "[try{simplify(sum((1/(QQn^2)),QQn,1,inf))}catch(e){undef},try{simplify(sum((1/(QQn^2)),QQn,1,QQN))}catch(e){undef},try{limit(simplify(sum((1/(QQn^2)),QQn,1,QQN)),QQN,inf)}catch(e){undef}]"
         );
         assert_eq!(giac_of("0.25x"), "simplify(((25/100)*QQx))");
         assert_eq!(giac_of("\\Gamma\\left(x\\right)"), "simplify(Gamma(QQx))");

@@ -3,6 +3,38 @@
 
 use crate::builtins::{self, Builtin};
 use crate::calculus::integrate;
+
+/// What a `Low::Integral` node adds up over its hole: the integral, or
+/// (with an infinite bound) the sum or product of the values at whole
+/// numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accum {
+    Integral,
+    Sum,
+    Product,
+}
+
+/// Most terms an infinite sum looks at for each point of a graph.
+const GRAPH_TERMS: usize = 1 << 12;
+
+/// `f` integrated from `lo` to `hi`, or summed or multiplied over the
+/// whole numbers between them, numerically.
+pub fn accumulate(
+    how: Accum,
+    f: &mut dyn FnMut(f64) -> f64,
+    lo: f64,
+    hi: f64,
+    terms: usize,
+) -> f64 {
+    let mut term = |k: f64| Some(f(k));
+    match how {
+        Accum::Integral => integrate(f, lo, hi),
+        Accum::Sum => crate::series::sum(&mut term, lo, hi, terms).map_or(f64::NAN, |o| o.number()),
+        Accum::Product => {
+            crate::series::product(&mut term, lo, hi, terms).map_or(f64::NAN, |o| o.number())
+        }
+    }
+}
 use crate::interval::Interval;
 use crate::recursion::Recursion;
 use std::sync::Arc;
@@ -46,8 +78,10 @@ pub enum Low {
     /// integrated over it. Replaced before compiling, except as the variable
     /// of an integral.
     Hole(u32),
-    /// The integral of `body` over `Hole(hole)` from `lo` to `hi`.
+    /// The integral of `body` over `Hole(hole)` from `lo` to `hi`, or its
+    /// infinite sum or product, as `how` says.
     Integral {
+        how: Accum,
         hole: u32,
         body: Box<Low>,
         lo: Box<Low>,
@@ -169,7 +203,9 @@ impl Low {
             Low::Select(c, a, b) => {
                 c.reads_outside(bound) || a.reads_outside(bound) || b.reads_outside(bound)
             }
-            Low::Integral { hole, body, lo, hi } => {
+            Low::Integral {
+                hole, body, lo, hi, ..
+            } => {
                 let mut inner = bound.to_vec();
                 inner.push(*hole);
                 lo.reads_outside(bound) || hi.reads_outside(bound) || body.reads_outside(&inner)
@@ -189,7 +225,14 @@ impl Low {
             Low::Bin(op, x, y) => Low::Bin(*op, b(x), b(y)),
             Low::Call(g, args) => Low::Call(*g, args.iter().map(|a| a.map_leaves(f)).collect()),
             Low::Select(c, x, y) => Low::Select(b(c), b(x), b(y)),
-            Low::Integral { hole, body, lo, hi } => Low::Integral {
+            Low::Integral {
+                how,
+                hole,
+                body,
+                lo,
+                hi,
+            } => Low::Integral {
+                how: *how,
                 hole: *hole,
                 body: b(body),
                 lo: b(lo),
@@ -246,7 +289,13 @@ impl Low {
                 Low::Const(_) => b.fold(),
                 c => Low::Select(Box::new(c), Box::new(a.fold()), Box::new(b.fold())),
             },
-            Low::Integral { hole, body, lo, hi } => {
+            Low::Integral {
+                how,
+                hole,
+                body,
+                lo,
+                hi,
+            } => {
                 let (body, lo, hi) = (body.fold(), lo.fold(), hi.fold());
                 // A definite integral of numbers alone is a number.
                 let open = body.reads_outside(&[hole]);
@@ -256,17 +305,20 @@ impl Low {
                     // inside it start at slot 1.
                     if let Ok(p) = Program::compile_at(&inner, 1) {
                         let mut locals = [f64::NAN; SLOTS];
-                        return Low::Const(integrate(
+                        return Low::Const(accumulate(
+                            how,
                             &mut |t| {
                                 locals[0] = t;
                                 p.run(f64::NAN, f64::NAN, f64::NAN, &mut locals)
                             },
                             *a,
                             *b,
+                            crate::series::MAX_TERMS,
                         ));
                     }
                 }
                 Low::Integral {
+                    how,
                     hole,
                     body: Box::new(body),
                     lo: Box::new(lo),
@@ -308,6 +360,7 @@ pub enum Op {
     /// Pops the upper and lower bounds and integrates sub-program `sub`
     /// between them, its variable held in local slot `slot`.
     Integral {
+        how: Accum,
         sub: u16,
         slot: u8,
     },
@@ -523,19 +576,21 @@ impl Program {
                     top -= 2;
                     stack[top - 1] = select(stack[top - 1], stack[top], stack[top + 1]);
                 }
-                Op::Integral { sub, slot } => {
+                Op::Integral { how, sub, slot } => {
                     top -= 1;
                     let (lo, hi) = (stack[top - 1], stack[top]);
                     let body = &self.subs[sub as usize];
                     let slot = slot as usize;
                     let saved = locals[slot];
-                    let value = integrate(
+                    let value = accumulate(
+                        how,
                         &mut |t| {
                             locals[slot] = t;
                             body.run(x, y, z, locals)
                         },
                         lo,
                         hi,
+                        GRAPH_TERMS,
                     );
                     locals[slot] = saved;
                     stack[top - 1] = value;
@@ -596,7 +651,13 @@ impl Program {
                 self.ops.push(Op::Select);
                 dc.max(da + 1).max(db + 2)
             }
-            Low::Integral { hole, body, lo, hi } => {
+            Low::Integral {
+                how,
+                hole,
+                body,
+                lo,
+                hi,
+            } => {
                 if slot as usize >= MAX_LOCALS {
                     return Err("Integrals can nest at most 4 deep".into());
                 }
@@ -605,6 +666,7 @@ impl Program {
                 let inner = body.fill(*hole, &Low::Arg(Arg::Local(slot)));
                 self.subs.push(Program::compile_at(&inner, slot + 1)?);
                 self.ops.push(Op::Integral {
+                    how: *how,
                     sub: (self.subs.len() - 1) as u16,
                     slot,
                 });

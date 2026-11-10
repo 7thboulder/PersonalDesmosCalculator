@@ -295,3 +295,95 @@ fn limits_with_working() {
         .error
         .is_some());
 }
+
+#[test]
+fn partial_derivatives() {
+    let r = solved("\\frac{\\partial}{\\partial x}x^{2}y", None);
+    assert_eq!(r.result.as_deref(), Some("2xy"));
+    assert!(
+        r.steps.iter().any(|s| s.note.contains("hold $y$ constant")),
+        "{r:?}"
+    );
+    assert!(
+        r.steps.iter().any(|s| s.latex.contains("\\partial")),
+        "{r:?}"
+    );
+    assert_eq!(
+        result(
+            "\\frac{\\partial^{2}}{\\partial x\\partial y}x^{2}y^{3}",
+            None
+        ),
+        "6xy^{2}"
+    );
+    assert_eq!(
+        result("\\frac{\\partial^2}{\\partial y^2}x^{2}y^{3}", None),
+        "6x^{2}y"
+    );
+    assert_eq!(result("\\frac{d^{2}}{dx^{2}}x^{4}", None), "12x^{2}");
+    assert_eq!(
+        result("\\nabla\\left(x^{2}+y^{2}z\\right)", None),
+        "\\left(2x,2yz,y^{2}\\right)"
+    );
+    assert_eq!(
+        result("x^{2}y+\\sin y", Some("grad")),
+        "\\left(2xy,x^{2}+\\cos\\left(y\\right)\\right)"
+    );
+    assert_eq!(
+        result("x^{2}y", Some("differential")),
+        "df=2xy\\ dx+x^{2}\\ dy"
+    );
+    assert_eq!(result("x^{2}y^{3}", Some("diff:y")), "3x^{2}y^{2}");
+    // A function from another row.
+    let r = run(
+        "\\frac{\\partial}{\\partial x}f\\left(x,y\\right)",
+        &["f\\left(x,y\\right)=x^{3}y".to_string()],
+        None,
+    );
+    assert_eq!(r.result.as_deref(), Some("3x^{2}y"), "{r:?}");
+}
+
+#[test]
+fn infinite_series_numerically() {
+    let r = result("\\sum_{n=1}^{\\infty}\\frac{1}{n^{2}}", None);
+    assert_eq!(r, "\\approx 1.64493406685");
+    let r = result(
+        "\\prod_{n=2}^{\\infty}\\left(1-\\frac{1}{n^{2}}\\right)",
+        None,
+    );
+    assert_eq!(r, "\\approx 0.5");
+    assert_eq!(
+        result("\\sum_{n=1}^{\\infty}\\frac{1}{\\sqrt{n}}", None),
+        "\\text{diverges to }\\infty"
+    );
+    let r = solved("\\sum_{n=1}^{\\infty}\\sin\\left(n\\right)", None);
+    assert_eq!(r.result.as_deref(), Some("\\text{diverges}"));
+    assert!(
+        r.steps.iter().any(|s| s.note.contains("don't approach 0")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn improper_integrals() {
+    assert_eq!(result("\\int_{1}^{\\infty}\\frac{1}{x^{2}}dx", None), "1");
+    assert_eq!(result("\\int_{0}^{1}\\frac{1}{\\sqrt{x}}dx", None), "2");
+    assert_eq!(
+        result("\\int_{1}^{\\infty}\\frac{1}{x}dx", None),
+        "\\text{diverges to }\\infty"
+    );
+    assert_eq!(
+        result("\\int_{0}^{2}\\frac{1}{\\left(x-1\\right)^{2}}dx", None),
+        "\\text{diverges to }\\infty"
+    );
+    let r = solved("\\int_{0}^{\\infty}\\sin xdx", None);
+    assert_eq!(r.result.as_deref(), Some("\\text{diverges}"));
+    assert!(
+        r.steps.iter().any(|s| s.note.contains("oscillating")),
+        "{r:?}"
+    );
+    // No antiderivative and no settled area: left to Giac, not called
+    // divergent.
+    assert!(run("\\int_{0}^{\\infty}\\frac{\\sin x}{x}dx", &[], None)
+        .result
+        .is_none_or(|r| !r.contains("diverges")));
+}

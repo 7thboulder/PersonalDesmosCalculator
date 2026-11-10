@@ -103,6 +103,9 @@ const GREEK: &[&str] = &[
     "Psi",
     "Omega",
     "infty",
+    // ∂ in partial derivatives, and ∇ for a gradient.
+    "partial",
+    "nabla",
 ];
 
 /// Greek letters typed or pasted as characters, and the names their
@@ -147,6 +150,8 @@ const GREEK_CHARS: &[(char, &str)] = &[
     ('Ψ', "Psi"),
     ('Ω', "Omega"),
     ('∞', "infty"),
+    ('∂', "partial"),
+    ('∇', "nabla"),
 ];
 
 /// The name of a Greek letter typed as a character, such as `ω` for omega.

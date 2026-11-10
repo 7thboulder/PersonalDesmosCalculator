@@ -2,8 +2,9 @@
 //! differentiate and integrate one row exactly, writing out each step.
 //! Nothing here runs while graphing; it only runs when asked.
 
-mod convert;
+pub(crate) mod convert;
 pub mod diff;
+pub(crate) mod infinite;
 pub mod integrate;
 pub mod latex;
 pub mod limits;
@@ -237,8 +238,11 @@ enum Form {
     Function { body: Sym, var: String },
     /// An equation or inequality to solve.
     Relation(Sym, Relation, Sym),
-    /// `d/dx ...` as the whole row.
-    Derivative { var: String, body: Sym, times: u32 },
+    /// `d/dx ...` as the whole row: `vars` in the order they are applied,
+    /// so ∂²/∂x∂y gives y then x.
+    Derivative { vars: Vec<String>, body: Sym },
+    /// `∇f`: the partial derivatives of `body` in each of `vars`.
+    Gradient { vars: Vec<String>, body: Sym },
     /// A differential equation `eq` = 0 in y(x).
     Ode { order: usize, eq: Sym },
     /// A system x' = f, y' = g in t.
@@ -307,20 +311,47 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
     }
     Ok(match statement {
         Statement::Expr(Expr::Derivative(v, body)) => {
-            // d/dx d/dx f counts as a second derivative.
-            let mut times = 1;
+            // d/dx d/dx f counts as a second derivative, and ∂/∂x ∂/∂y f
+            // as a mixed one.
+            let mut vars = vec![v];
             let mut body = *body;
             while let Expr::Derivative(w, inner) = &body {
-                if *w != v {
-                    break;
-                }
-                times += 1;
+                vars.push(w.clone());
                 body = (**inner).clone();
             }
+            vars.reverse();
             Form::Derivative {
-                var: v,
+                vars,
                 body: to_sym(&body, defs)?,
-                times,
+            }
+        }
+        Statement::Expr(ref e @ (Expr::Point(..) | Expr::Point3(..))) => {
+            // ∇f, as the parser writes it: one partial derivative of the same
+            // body in each slot.
+            let slots: Vec<&Expr> = match e {
+                Expr::Point(a, b) => vec![&**a, &**b],
+                Expr::Point3(a, b, c) => vec![&**a, &**b, &**c],
+                _ => unreachable!(),
+            };
+            let mut vars = Vec::new();
+            let mut body = None;
+            for slot in slots {
+                match slot {
+                    Expr::Derivative(v, b) if body.is_none_or(|f| f == &**b) => {
+                        vars.push(v.clone());
+                        body = Some(&**b);
+                    }
+                    _ => {
+                        return Err(
+                            "Solve works on single expressions and equations, not on lists, points or piecewise definitions"
+                                .into(),
+                        )
+                    }
+                }
+            }
+            Form::Gradient {
+                vars,
+                body: to_sym(body.unwrap(), defs)?,
             }
         }
         Statement::Expr(Expr::Prime(f, k, args)) => {
@@ -340,9 +371,8 @@ fn read(latex: &str, defs: &Defs) -> Result<Form, String> {
             };
             let v = arg.names().first().cloned().unwrap_or(p);
             Form::Derivative {
-                var: v,
+                vars: vec![v; k as usize],
                 body,
-                times: k,
             }
         }
         Statement::Expr(Expr::Integral(v, lo, _, body)) if convert::is_indefinite(&lo) => {
@@ -441,7 +471,21 @@ fn choices(form: &Form) -> Vec<Choice> {
             let x = name(v);
             let x = x.trim_start_matches('\\').trim();
             let x = if x == "theta" { "θ" } else { x };
-            out.push(choice(&format!("diff:{v}"), &format!("d/d{x}")));
+            let names = ordered_names(s);
+            if names.len() > 1 {
+                // Several variables: a partial derivative in each, the
+                // gradient and the total differential.
+                for w in &names {
+                    let y = name(w);
+                    let y = y.trim_start_matches('\\').trim();
+                    let y = if y == "theta" { "θ" } else { y };
+                    out.push(choice(&format!("diff:{w}"), &format!("∂/∂{y}")));
+                }
+                out.push(choice("grad", "Gradient ∇"));
+                out.push(choice("differential", "Total differential"));
+            } else {
+                out.push(choice(&format!("diff:{v}"), &format!("d/d{x}")));
+            }
             out.push(choice(&format!("int:{v}"), &format!("∫ d{x}")));
         }
     };
@@ -485,6 +529,7 @@ fn choices(form: &Form) -> Vec<Choice> {
             out.push(choice("ode:general", "General solution"));
         }
         Form::Derivative { .. } => out.push(choice("calc", "Differentiate")),
+        Form::Gradient { .. } => out.push(choice("calc", "Find the gradient")),
         Form::Integral { .. } => out.push(choice("calc", "Integrate")),
     }
     out
@@ -579,6 +624,22 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
         }
         return report;
     }
+    // Sums and products out to ∞: numerically here, exactly by Giac.
+    if let Some(series) = infinite::read(source) {
+        let what = if series.product { "product" } else { "sum" };
+        report.op = "calc".into();
+        report.choices = vec![choice("calc", &format!("Work out the {what}"))];
+        let mut st = Steps::new();
+        match infinite::solve(source, others, &series, &mut st) {
+            Ok((result, answer)) => {
+                report.result = Some(result);
+                report.answer = answer;
+            }
+            Err(e) => report.error = Some(e),
+        }
+        report.steps = st.list;
+        return report;
+    }
     let form = match read(source, &defs) {
         Ok(f) => f,
         Err(e) => {
@@ -629,7 +690,9 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
                 "simplify" => simplify(body, original, &mut st),
                 "expand" => expand_op(body, &mut st),
                 "factor" => factor_op(body, &v, &mut st),
-                "diff" => derivative_op(body, &v, 1, &mut st),
+                "diff" => derivative_op(body, std::slice::from_ref(&v), &mut st),
+                "grad" => gradient_op(body, &ordered_names(body), &mut st),
+                "differential" => differential_op(body, &ordered_names(body), &mut st),
                 "int" => integral_op(body, &v, None, &mut st),
                 _ => Err("Unknown operation".into()),
             }
@@ -650,14 +713,8 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
                 .map(|(x0, v)| (x0, v[0].clone()));
             ode::solve_system(f, g, start, &mut st)
         }
-        (
-            Form::Derivative {
-                var: v,
-                body,
-                times,
-            },
-            _,
-        ) => derivative_op(body, v, *times, &mut st),
+        (Form::Derivative { vars, body }, _) => derivative_op(body, vars, &mut st),
+        (Form::Gradient { vars, body }, _) => gradient_op(body, vars, &mut st),
         (
             Form::Integral {
                 var: v,
@@ -847,11 +904,47 @@ fn factor_op(s: &Sym, v: &str, st: &mut Steps) -> Done {
     Err("Solve can't find anything to factor out".into())
 }
 
-fn derivative_op(s: &Sym, v: &str, times: u32, st: &mut Steps) -> Done {
+/// Differentiates `s` in each of `vars` in turn. With other variables
+/// about, these are partial derivatives: each of the others is held
+/// constant, and the working is written with ∂.
+fn derivative_op(s: &Sym, vars: &[String], st: &mut Steps) -> Done {
+    let d = partial_derivative(s, vars, st)?;
+    Ok((latex(&d), Some(latex(&d))))
+}
+
+fn partial_derivative(s: &Sym, vars: &[String], st: &mut Steps) -> Result<Sym, String> {
+    let mut others: Vec<String> = s.names();
+    others.retain(|n| !vars.contains(n));
+    let mut distinct: Vec<&String> = Vec::new();
+    for v in vars {
+        if !distinct.contains(&v) {
+            distinct.push(v);
+        }
+    }
+    let partial = !others.is_empty() || distinct.len() > 1;
     let mut cur = s.clone();
-    for k in 1..=times {
+    let times = vars.len();
+    for (k, v) in vars.iter().enumerate() {
+        let start = st.mark();
+        if partial {
+            let mut held: Vec<String> = ordered_names(s);
+            held.retain(|n| n != v);
+            if held.is_empty() {
+                st.push(format!("Differentiate in ${}$", name(v)), "");
+            } else {
+                let held: Vec<String> = held.iter().map(|n| format!("${}$", name(n))).collect();
+                st.push(
+                    format!(
+                        "Partial derivative in ${}$: hold {} constant",
+                        name(v),
+                        held.join(" and ")
+                    ),
+                    "",
+                );
+            }
+        }
         if times > 1 {
-            st.push(format!("Derivative number {k}"), diff::dd(&cur, v));
+            st.push(format!("Derivative number {}", k + 1), diff::dd(&cur, v));
         }
         let d = diff::derivative_steps(&cur, v, st);
         let shown = nice(&d);
@@ -862,9 +955,92 @@ fn derivative_op(s: &Sym, v: &str, times: u32, st: &mut Steps) -> Done {
         if shown != d {
             st.push("Simplify", latex(&shown));
         }
+        if partial {
+            for step in &mut st.list[start..] {
+                step.latex = to_partial(&step.latex);
+            }
+        }
         cur = shown;
     }
-    Ok((latex(&cur), Some(latex(&cur))))
+    if out_of_time() {
+        return Err("This took too long, so Solve stopped".into());
+    }
+    Ok(cur)
+}
+
+/// The variables `s` reads, x, y and z first.
+fn ordered_names(s: &Sym) -> Vec<String> {
+    let mut names = s.names();
+    names.sort_by_key(|n| match n.as_str() {
+        "x" => 0,
+        "y" => 1,
+        "z" => 2,
+        _ => 3,
+    });
+    names
+}
+
+/// `\frac{d}{dx}` written as `\frac{\partial}{\partial x}`.
+fn to_partial(latex: &str) -> String {
+    latex.replace("\\frac{d}{d", "\\frac{\\partial}{\\partial ")
+}
+
+/// ∇f: each partial derivative, then the vector of them.
+fn gradient_op(s: &Sym, vars: &[String], st: &mut Steps) -> Done {
+    if vars.len() < 2 {
+        return Err("The gradient needs a function of two or three variables".into());
+    }
+    let mut parts = Vec::new();
+    for v in vars {
+        parts.push(partial_derivative(s, std::slice::from_ref(v), st)?);
+    }
+    let shown: Vec<String> = parts.iter().map(latex).collect();
+    let names: Vec<String> = vars
+        .iter()
+        .map(|v| format!("\\frac{{\\partial f}}{{\\partial {}}}", name(v)))
+        .collect();
+    let vector = format!("\\left({}\\right)", shown.join(","));
+    st.push(
+        "The gradient is the vector of the partial derivatives",
+        format!("\\nabla f=\\left({}\\right)={vector}", names.join(",")),
+    );
+    Ok((vector.clone(), Some(vector)))
+}
+
+/// df = f_x dx + f_y dy + …: how much f changes for small changes in each
+/// variable.
+fn differential_op(s: &Sym, vars: &[String], st: &mut Steps) -> Done {
+    if vars.is_empty() {
+        return Err("A differential needs a variable".into());
+    }
+    let mut terms = Vec::new();
+    for v in vars {
+        let d = partial_derivative(s, std::slice::from_ref(v), st)?;
+        if d.is_zero() {
+            continue;
+        }
+        let dv = format!("d{}", name(v));
+        terms.push(if matches!(d, Sym::Add(_)) {
+            format!("\\left({}\\right){dv}", latex(&d))
+        } else if d == n(1) {
+            dv
+        } else if d == n(-1) {
+            format!("-{dv}")
+        } else {
+            format!("{}\\ {dv}", latex(&d))
+        });
+    }
+    let sum = if terms.is_empty() {
+        "0".to_owned()
+    } else {
+        terms.join("+").replace("+-", "-")
+    };
+    st.push(
+        "The total differential adds each partial derivative times a small change in its variable",
+        format!("df={sum}"),
+    );
+    let result = format!("df={sum}");
+    Ok((result.clone(), Some(sum)))
 }
 
 fn integral_op(s: &Sym, v: &str, bounds: Option<(Bound, Bound)>, st: &mut Steps) -> Done {
@@ -896,23 +1072,13 @@ fn integral_op(s: &Sym, v: &str, bounds: Option<(Bound, Bound)>, st: &mut Steps)
         Bound::At(x) => Some(x.clone()),
         Bound::Infinite(_) => None,
     };
-    let bound_latex = |b: &Bound| match b {
-        Bound::At(x) => latex(x),
-        Bound::Infinite(i) if *i > 0.0 => "\\infty".into(),
-        Bound::Infinite(_) => "-\\infty".into(),
+    let infinite_bound = matches!(lo, Bound::Infinite(_)) || matches!(hi, Bound::Infinite(_));
+    let singular = match (numeric_bounds(&lo), numeric_bounds(&hi), only_v) {
+        (Some(a), Some(b), true) => singularity(s, v, a, b),
+        _ => None,
     };
-    if let (Some(a), Some(b), true) = (numeric_bounds(&lo), numeric_bounds(&hi), only_v) {
-        if let Some(bad) = singularity(s, v, a, b) {
-            st.push(
-                format!(
-                    "The integrand is undefined at ${}={}$, in the interval, so this is an improper integral and the antiderivative can't just be evaluated at the ends",
-                    name(v),
-                    latex(&bad)
-                ),
-                "",
-            );
-            return finish_numeric(numeric.unwrap_or(f64::NAN), st);
-        }
+    if infinite_bound || singular.is_some() {
+        return improper(v, f, &lo, &hi, singular, numeric, st);
     }
     match (f, finite(&lo), finite(&hi)) {
         (Some(f), Some(a), Some(b)) => {
@@ -948,31 +1114,215 @@ fn integral_op(s: &Sym, v: &str, bounds: Option<(Bound, Bound)>, st: &mut Steps)
             st.push("So", result.clone());
             Ok((result, Some(latex(&value))))
         }
-        (f, _, _) => {
+        (_, _, _) => {
             let num = numeric.ok_or("Solve couldn't find an antiderivative for this")?;
-            match &f {
-                Some(f) => st.push(
-                    "A bound is infinite, so take the limit of the antiderivative there",
-                    format!(
-                        "\\left[{}\\right]_{{{}}}^{{{}}}",
-                        latex(&nice(f)),
-                        bound_latex(&lo),
-                        bound_latex(&hi)
-                    ),
-                ),
-                None => st.push(
-                    "Solve couldn't find an antiderivative, so it adds up the area numerically",
-                    "",
-                ),
-            }
+            st.push(
+                "Solve couldn't find an antiderivative, so it adds up the area numerically",
+                "",
+            );
             finish_numeric(num, st)
         }
+    }
+}
+
+/// Where an improper integral's pieces start and end.
+#[derive(Clone)]
+enum At {
+    Point(Sym),
+    Infinity(i8),
+}
+
+/// An integral over an infinite range, or across a point where the
+/// integrand is undefined: the antiderivative's limits at those ends, each
+/// piece on its own. It diverges when one of them is infinite, or doesn't
+/// exist because the antiderivative keeps oscillating.
+fn improper(
+    v: &str,
+    f: Option<Sym>,
+    lo: &Bound,
+    hi: &Bound,
+    singular: Option<Sym>,
+    numeric: Option<f64>,
+    st: &mut Steps,
+) -> Done {
+    let x = name(v);
+    let at = |b: &Bound| match b {
+        Bound::At(s) => At::Point(s.clone()),
+        Bound::Infinite(i) => At::Infinity(if *i > 0.0 { 1 } else { -1 }),
+    };
+    let shown = |p: &At| match p {
+        At::Point(s) => latex(s),
+        At::Infinity(1) => "\\infty".into(),
+        At::Infinity(_) => "-\\infty".into(),
+    };
+    match &singular {
+        Some(c) => st.push(
+            format!(
+                "The integrand is undefined at ${x}={}$, so this is an improper integral: split it there and take limits of the antiderivative",
+                latex(c)
+            ),
+            "",
+        ),
+        None => st.push(
+            "A bound is infinite, so this is an improper integral: take the limit of the antiderivative there",
+            "",
+        ),
+    }
+    let Some(f) = f.map(|f| nice(&f)) else {
+        let num = numeric.filter(|n| n.is_finite()).ok_or(
+            "Solve couldn't find an antiderivative, and the area doesn't settle when added up numerically",
+        )?;
+        st.push(
+            "Solve couldn't find an antiderivative, so it adds up the area numerically",
+            "",
+        );
+        return finish_numeric(num, st);
+    };
+    let fl = latex(&f);
+    let mut points = vec![at(lo)];
+    // A bad point strictly inside splits the range; at an end it is
+    // approached from inside.
+    let same = |p: &At, c: &Sym| matches!(p, At::Point(a) if (a.value() - c.value()).abs() < 1e-12);
+    if let Some(c) = &singular {
+        if !same(&at(lo), c) && !same(&at(hi), c) {
+            points.push(At::Point(c.clone()));
+        }
+    }
+    points.push(at(hi));
+    // Reversed bounds are worked out the right way round, then negated.
+    let flip = match (&points[0], &points[points.len() - 1]) {
+        (At::Point(a), At::Point(b)) => a.value() > b.value(),
+        (At::Infinity(1), _) | (_, At::Infinity(-1)) => true,
+        _ => false,
+    };
+    if flip {
+        points.reverse();
+    }
+    // Each piece's top end from below, minus its bottom end from above.
+    let mut exact: Option<Sym> = Some(n(0));
+    let mut total = 0.0;
+    let mut runaway: Vec<i8> = Vec::new();
+    for pair in points.windows(2) {
+        for (p, side, sign) in [(&pair[1], -1i8, 1i8), (&pair[0], 1, -1)] {
+            let is_singular = singular.as_ref().is_some_and(|c| same(p, c));
+            let end = match p {
+                At::Point(a) if !is_singular => {
+                    let val = nice(&f.subs_var(v, a));
+                    if val.value().is_finite() {
+                        limits::End::Exact(val)
+                    } else {
+                        limits::end_value(&f, v, Some(a), 0, side)
+                    }
+                }
+                At::Point(a) => limits::end_value(&f, v, Some(a), 0, side),
+                At::Infinity(s) => limits::end_value(&f, v, None, *s, 0),
+            };
+            let limit_latex = match p {
+                At::Point(a) if is_singular => format!(
+                    "\\lim_{{{x}\\to {}^{{{}}}}}\\left({fl}\\right)",
+                    latex(a),
+                    if side > 0 { "+" } else { "-" }
+                ),
+                At::Infinity(_) => {
+                    format!("\\lim_{{{x}\\to {}}}\\left({fl}\\right)", shown(p))
+                }
+                At::Point(_) => String::new(),
+            };
+            match end {
+                limits::End::Exact(val) => {
+                    if !matches!(p, At::Point(_)) || is_singular {
+                        st.push(
+                            format!("Take the limit of the antiderivative ${fl}$"),
+                            format!("{limit_latex}={}", latex(&val)),
+                        );
+                    }
+                    total += sign as f64 * val.value();
+                    exact = exact.map(|e| add2(e, mul2(n(sign as i128), val)));
+                }
+                limits::End::Number(num) => {
+                    st.push(
+                        format!("Take the limit of the antiderivative ${fl}$ numerically"),
+                        format!("{limit_latex}\\approx {}", crate::format::value_latex(num)),
+                    );
+                    total += sign as f64 * num;
+                    exact = None;
+                }
+                limits::End::Infinite(s) => {
+                    st.push(
+                        format!("The antiderivative ${fl}$ grows without bound there"),
+                        format!(
+                            "{limit_latex}={}",
+                            if s > 0 { "\\infty" } else { "-\\infty" }
+                        ),
+                    );
+                    runaway.push(s * sign);
+                }
+                limits::End::None => {
+                    st.push(
+                        format!(
+                            "The antiderivative ${fl}$ keeps oscillating as ${x}\\to {}$ and never settles, so the integral diverges",
+                            shown(p)
+                        ),
+                        format!("{limit_latex}\\ \\text{{does not exist}}"),
+                    );
+                    return Ok(("\\text{diverges}".into(), None));
+                }
+            }
+        }
+    }
+    if !runaway.is_empty() {
+        let all = runaway[0];
+        let flip_sign = if flip { -1 } else { 1 };
+        if runaway.iter().all(|s| *s == all) {
+            let inf = if all * flip_sign > 0 {
+                "\\infty"
+            } else {
+                "-\\infty"
+            };
+            st.push(
+                format!("So the area grows without bound: the integral diverges to ${inf}$"),
+                "",
+            );
+            return Ok((format!("\\text{{diverges to }}{inf}"), None));
+        }
+        st.push(
+            "The pieces run off to ∞ and -∞, and each must converge on its own, so the integral diverges",
+            "",
+        );
+        return Ok(("\\text{diverges}".into(), None));
+    }
+    if flip {
+        total = -total;
+        exact = exact.map(|e| mul2(n(-1), e));
+    }
+    // The antiderivative must not jump in between: compare with the area
+    // added up numerically.
+    if let Some(num) = numeric.filter(|n| n.is_finite()) {
+        if (num - total).abs() > 1e-6 * num.abs().max(1.0) {
+            st.push(
+                "That doesn't match adding up the area numerically, so the antiderivative must jump inside the interval (the integrand isn't continuous there). The numerical value is",
+                crate::format::value_latex(num),
+            );
+            let shown = crate::format::value_latex(num);
+            return Ok((format!("\\approx {shown}"), Some(shown)));
+        }
+    }
+    match exact.map(|e| nice(&e)) {
+        Some(value) => {
+            let result = with_approx(&value);
+            st.push("So", result.clone());
+            Ok((result, Some(latex(&value))))
+        }
+        None => finish_numeric(total, st),
     }
 }
 
 /// A numerical value of an integral, recognized as a simple exact number
 /// when it is one, or reported as diverging when it runs away.
 fn finish_numeric(num: f64, st: &mut Steps) -> Done {
+    if num.is_nan() {
+        return Err("The area doesn't settle when added up numerically".into());
+    }
     if !num.is_finite() || num.abs() > 1e9 {
         st.push("The area grows without bound, so the integral diverges", "");
         return Ok(("\\text{diverges}".into(), None));

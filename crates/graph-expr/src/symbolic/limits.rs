@@ -309,3 +309,67 @@ fn at_infinity(body: &Sym, v: &str, sign: i8, st: &mut Steps) -> Option<Answer> 
 fn n_zero() -> Sym {
     n(0)
 }
+
+/// What an antiderivative does at one end of an improper integral.
+pub(crate) enum End {
+    /// An exact value, from the working.
+    Exact(Sym),
+    /// Only a numeric value.
+    Number(f64),
+    /// ±∞.
+    Infinite(i8),
+    /// No limit at all: it keeps oscillating.
+    None,
+}
+
+/// The limit of `f` as `v` goes to `at` (or to ±∞ by `sign` when `at` is
+/// None) from `side`: exactly when the working finds it and the engine's
+/// numeric limit agrees, else the engine's number.
+pub(crate) fn end_value(f: &Sym, v: &str, at: Option<&Sym>, sign: i8, side: i8) -> End {
+    let point = match at {
+        Some(a) => format!("{}^{{{}}}", latex(a), if side > 0 { "+" } else { "-" }),
+        None if sign > 0 => "\\infty".into(),
+        None => "-\\infty".into(),
+    };
+    let source = format!(
+        "\\lim_{{{}\\to {point}}}\\left({}\\right)",
+        name(v),
+        latex(f)
+    );
+    let rows = [crate::RowInput {
+        id: 0,
+        latex: source,
+        ..Default::default()
+    }];
+    let numeric = std::panic::catch_unwind(|| crate::analyze(&rows))
+        .ok()
+        .and_then(|out| match out.last().and_then(|r| r.value.clone()) {
+            Some(crate::Value::Number(n)) => Some(n),
+            _ => None,
+        })
+        .unwrap_or(f64::NAN);
+    let mut quiet = Steps::quiet();
+    let exact = match at {
+        Some(a) => at_point(f, v, a, side, &mut quiet),
+        None => at_infinity(f, v, sign, &mut quiet),
+    };
+    match exact {
+        Some(Answer::Value(s))
+            if numeric.is_finite()
+                && (s.value() - numeric).abs() <= 1e-6 * (1.0 + numeric.abs()) =>
+        {
+            End::Exact(s)
+        }
+        Some(Answer::Infinite(s)) if numeric.is_infinite() && (numeric > 0.0) == (s > 0) => {
+            End::Infinite(s)
+        }
+        _ if numeric.is_infinite() => End::Infinite(if numeric > 0.0 { 1 } else { -1 }),
+        // A simple number within rounding, as √x gives 10⁻²⁰ for 0.
+        _ if numeric.abs() < 1e-12 => End::Exact(n(0)),
+        _ if numeric.is_finite() => match super::recognize(numeric) {
+            Some(r) => End::Exact(r),
+            None => End::Number(numeric),
+        },
+        _ => End::None,
+    }
+}

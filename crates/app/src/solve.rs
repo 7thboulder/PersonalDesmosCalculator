@@ -495,6 +495,59 @@ mod tests {
             let last = &r.steps.last().unwrap().note;
             assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
         }
+        // Infinite bounds and partial derivatives.
+        let inf: &[(&str, &[&str], &str)] = &[
+            (
+                "\\prod_{n=2}^{\\infty}\\left(1-\\frac{1}{n^{2}}\\right)",
+                &[],
+                "\\frac{1}{2}",
+            ),
+            (
+                "\\prod_{n=1}^{\\infty}\\frac{4n^{2}}{4n^{2}-1}",
+                &[],
+                "\\pi",
+            ),
+            ("\\sum_{n=0}^{\\infty}\\frac{1}{n!}", &[], "e"),
+            (
+                "\\sum_{n=1}^{\\infty}\\frac{1}{n}",
+                &[],
+                "\\text{diverges to }\\infty",
+            ),
+            (
+                "\\sum_{n=0}^{\\infty}\\left(-1\\right)^{n}",
+                &[],
+                "\\text{diverges}",
+            ),
+            ("\\sum_{n=-\\infty}^{\\infty}e^{-n^{2}}", &[], "1.7726372"),
+            (
+                "\\prod_{n=1}^{\\infty}\\left(1+\\frac{1}{n}\\right)",
+                &[],
+                "\\text{diverges to }\\infty",
+            ),
+            (
+                "\\int_{0}^{\\infty}\\frac{\\sin x}{x}dx",
+                &[],
+                "\\frac{\\pi}{2}",
+            ),
+            ("\\int_{0}^{\\infty}\\sin xdx", &[], "\\text{diverges}"),
+            ("\\int_{-1}^{1}\\frac{1}{x}dx", &[], "\\text{diverges}"),
+            ("\\lim_{x\\to\\infty}\\sin x", &[], "\\text{does not exist}"),
+            (
+                "\\frac{\\partial}{\\partial y}f\\left(x,y\\right)",
+                &["f\\left(x,y\\right)=x^{2}y^{3}"],
+                "3x^{2}y^{2}",
+            ),
+        ];
+        for (latex, others, want) in inf {
+            let others: Vec<String> = others.iter().map(|s| s.to_string()).collect();
+            let r = solve(latex, &others, None, &none, true);
+            let result = r.result.clone().unwrap_or_default();
+            eprintln!("{latex} -> {result:?}");
+            assert!(r.error.is_none(), "{latex}: {r:?}");
+            assert!(result.contains(want), "{latex}: {result}");
+            let last = &r.steps.last().unwrap().note;
+            assert!(!last.contains("doesn't agree"), "{latex}: {r:?}");
+        }
         // No trig: Solve's own algebra, as in radians.
         let r = solve_in("x^{2}=4", &[], None, &none, true, true);
         assert_eq!(r.result.as_deref(), Some("x=-2\\quad\\text{or}\\quad x=2"));
