@@ -339,6 +339,17 @@ impl Writer<'_> {
                 }
             }
             Expr::Derivative(v, body) => {
+                // ∂f/∂x of a bare letter: Solve's own algebra reads it (or
+                // says it is a PDE); Giac would take f as a constant.
+                if let Expr::Var(n) = &**body {
+                    let independent = matches!(
+                        n.as_str(),
+                        "x" | "y" | "z" | "t" | "r" | "theta" | "s" | "n"
+                    );
+                    if self.funcs.contains(n) || (!independent && !self.vars.contains(n)) {
+                        return Err(format!("∂{n}/∂{v} is left to Solve's own algebra"));
+                    }
+                }
                 format!("diff({},{})", self.expr(body)?, self.names.var(v))
             }
             Expr::Repeat(kind, v, lo, hi, body) => format!(

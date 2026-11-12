@@ -288,6 +288,14 @@ mod tests {
             Some(f64::INFINITY)
         );
         assert_eq!(value("\\sum_{n=0}^{\\infty}(-1)^n"), None);
+        // ∂f/∂y of a defined function, through another function.
+        assert_eq!(
+            value_with(
+                "g(1,2)",
+                &["f(x,y)=x^2y^3", "g(x,y)=\\frac{\\partial f}{\\partial y}"]
+            ),
+            Some(12.0)
+        );
         near("\\lim_{x\\to0^+}\\sqrt{x}", 0.0);
         near("\\lim_{x\\to0^{+}}x\\ln x", 0.0);
         near("\\lim_{x\\to2}x^2+1", 5.0);
