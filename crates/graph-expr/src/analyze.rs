@@ -1589,6 +1589,19 @@ pub fn analyze_angles(
     }
     env.new.names = names;
 
+    // Partial differential equations and their conditions: Solve's.
+    let mut pde_notes = HashMap::new();
+    if rows
+        .iter()
+        .any(|r| r.latex.contains("partial") || r.latex.contains('_'))
+    {
+        let latex: Vec<String> = rows.iter().map(|r| r.latex.clone()).collect();
+        for (row, note) in rows.iter().zip(crate::symbolic::pde::graph_notes(&latex)) {
+            if let Some(note) = note {
+                pde_notes.insert(row.id, note);
+            }
+        }
+    }
     let results = rows
         .iter()
         .zip(parsed)
@@ -1599,6 +1612,12 @@ pub fn analyze_angles(
             let mut point = None;
             if let Some(done) = finished.remove(&row.id) {
                 return done;
+            }
+            if let Some(note) = pde_notes.remove(&row.id) {
+                return RowAnalysis {
+                    kind: RowKind::NotYet,
+                    ..RowAnalysis::error(row.id, note)
+                };
             }
             let mut out = match (parsed, def) {
                 _ if table.is_some() => env.table_row(row.id, &table.expect("checked")),

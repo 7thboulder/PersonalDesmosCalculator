@@ -121,7 +121,7 @@ pub fn bare_function(body: &Expr, defs: &Defs) -> Result<Expr, String> {
     );
     if !independent && !defs.is_var(name) {
         return Err(format!(
-            "{name} isn't defined: define it, as in {name}(x,y) = …, to take its partial derivatives. An equation in an unknown {name} and its partial derivatives is a partial differential equation, which Solve can't solve yet"
+            "{name} isn't defined: define it, as in {name}(x,y) = …, to take its partial derivatives. An equation in an unknown {name} of two variables and its partial derivatives is a partial differential equation, which Solve solves when its derivatives are in at least two variables"
         ));
     }
     Ok(body.clone())

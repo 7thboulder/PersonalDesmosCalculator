@@ -352,12 +352,137 @@ fn partial_derivatives() {
         &[],
         None,
     );
-    assert!(
-        r.error
-            .as_deref()
-            .is_some_and(|e| e.contains("partial differential equation")),
-        "{r:?}"
+    assert_eq!(r.op, "pde", "{r:?}");
+    assert!(r.error.is_none(), "{r:?}");
+}
+
+/// Solves `row` with conditions in `others`, expecting `want` exactly.
+fn pde(row: &str, others: &[&str], want: &str) {
+    let others: Vec<String> = others.iter().map(|s| s.to_string()).collect();
+    let r = run(row, &others, None);
+    assert_eq!(r.op, "pde", "{row}: {r:?}");
+    assert_eq!(r.result.as_deref(), Some(want), "{row}: {r:?}");
+}
+
+#[test]
+fn partial_differential_equations() {
+    let heat = "\\frac{\\partial u}{\\partial t}=\\alpha \\frac{\\partial ^2u}{\\partial x^2}";
+    pde(
+        heat,
+        &[],
+        "u(x,t)=e^{-\\alpha \\lambda t}\\left(A\\cos\\left(\\sqrt{\\lambda }x\\right)+B\\sin\\left(\\sqrt{\\lambda }x\\right)\\right)",
     );
+    let ends = ["u\\left(0,t\\right)=0", "u\\left(1,t\\right)=0"];
+    // A start that is already a sum of modes stays a finite sum.
+    pde(
+        heat,
+        &[ends[0], ends[1], "u\\left(x,0\\right)=\\sin\\left(\\pi x\\right)+3\\sin\\left(2\\pi x\\right)"],
+        "u(x,t)=e^{-\\alpha \\pi ^{2}t}\\sin\\left(\\pi x\\right)+3e^{-4\\alpha \\pi ^{2}t}\\sin\\left(2\\pi x\\right)",
+    );
+    pde(
+        heat,
+        &[ends[0], ends[1], "u\\left(x,0\\right)=x\\left(1-x\\right)"],
+        "u(x,t)=\\sum_{n=1}^{\\infty}\\frac{-4\\left(-1\\right)^{n}+4}{n^{3}\\pi ^{3}}e^{-\\alpha n^{2}\\pi ^{2}t}\\sin\\left(n\\pi x\\right)",
+    );
+    // Ends held at other values: the steady line comes off first.
+    pde(
+        "u_{t}=ku_{xx}",
+        &["u\\left(0,t\\right)=0", "u\\left(1,t\\right)=100", "u\\left(x,0\\right)=0"],
+        "u(x,t)=100x+\\sum_{n=1}^{\\infty}\\frac{200\\left(-1\\right)^{n}}{n\\pi }e^{-kn^{2}\\pi ^{2}t}\\sin\\left(n\\pi x\\right)",
+    );
+    // Insulated ends give a cosine series.
+    pde(
+        "u_{t}=u_{xx}",
+        &["u_{x}\\left(0,t\\right)=0", "u_{x}\\left(\\pi,t\\right)=0", "u\\left(x,0\\right)=x"],
+        "u(x,t)=\\frac{\\pi }{2}+\\sum_{n=1}^{\\infty}\\frac{2\\left(-1\\right)^{n}-2}{n^{2}\\pi }e^{-n^{2}t}\\cos\\left(nx\\right)",
+    );
+    let wave = "\\frac{\\partial^2u}{\\partial t^2}=c^2\\frac{\\partial^2u}{\\partial x^2}";
+    pde(
+        wave,
+        &[],
+        "u(x,t)=F\\left(x-ct\\right)+G\\left(x+ct\\right)",
+    );
+    pde(
+        "u_{tt}=4u_{xx}",
+        &[
+            "u\\left(x,0\\right)=\\sin x",
+            "u_{t}\\left(x,0\\right)=\\cos x",
+        ],
+        "u(x,t)=\\frac{\\sin\\left(x-2t\\right)}{4}+\\frac{3\\sin\\left(x+2t\\right)}{4}",
+    );
+    pde(
+        "u_{tt}=u_{xx}",
+        &[
+            "u\\left(0,t\\right)=0",
+            "u\\left(\\pi,t\\right)=0",
+            "u\\left(x,0\\right)=\\sin\\left(2x\\right)",
+        ],
+        "u(x,t)=\\cos\\left(2t\\right)\\sin\\left(2x\\right)",
+    );
+    pde(
+        "u_{xx}+u_{yy}=0",
+        &[],
+        "u(x,y)=\\left(A\\cos\\left(kx\\right)+B\\sin\\left(kx\\right)\\right)\\left(Ce^{ky}+De^{-ky}\\right)",
+    );
+    pde("u_{t}+3u_{x}=0", &[], "u(x,t)=F\\left(x-3t\\right)");
+    pde(
+        "u_{t}+3u_{x}=0",
+        &["u\\left(x,0\\right)=e^{-x^2}"],
+        "u(x,t)=e^{-\\left(x-3t\\right)^{2}}",
+    );
+    // The answer can be added to the graph, and conditions can be ignored.
+    let r = run(
+        heat,
+        &[
+            ends[0].into(),
+            ends[1].into(),
+            "u\\left(x,0\\right)=1".into(),
+        ],
+        None,
+    );
+    assert!(r.answer.is_some_and(|a| crate::parse(&a).is_ok()));
+    assert!(r.choices.iter().any(|c| c.op == "pde:general"));
+    let r = run(heat, &[ends[0].into(), ends[1].into()], Some("pde:general"));
+    assert!(r.result.is_some_and(|a| a.contains("\\lambda")));
+    // What Solve can't do says so.
+    for (row, says) in [
+        ("u_{t}=uu_{x}", "linear"),
+        ("u_{t}=u_{xx}+x", "homogeneous"),
+        ("u_{t}=xu_{xx}", "constants"),
+        ("u_{t}=u_{xx}+u_{x}", "beyond"),
+    ] {
+        let r = run(row, &[], None);
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains(says)),
+            "{row}: {r:?}"
+        );
+    }
+    // A derivative of a function a row defines is not a PDE.
+    let r = run(
+        "\\frac{\\partial f}{\\partial x}",
+        &["f\\left(x,y\\right)=x^{2}y".into()],
+        None,
+    );
+    assert_eq!(r.result.as_deref(), Some("2xy"));
+}
+
+#[test]
+fn pde_rows_in_the_graph() {
+    let rows: Vec<String> = [
+        "u_{t}=u_{xx}",
+        "u\\left(0,t\\right)=0",
+        "u\\left(x,0\\right)=x",
+        "a=1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let notes = super::pde::graph_notes(&rows);
+    assert!(notes[0]
+        .as_deref()
+        .is_some_and(|n| n.contains("press Solve")));
+    assert!(notes[1].is_some() && notes[2].is_some());
+    assert!(notes[3].is_none());
 }
 
 #[test]
