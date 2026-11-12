@@ -2352,6 +2352,8 @@
       ['\\frac{\\partial}{\\partial y}x^2y^3', 'Partial derivative (type partial for \u2202); other letters are held constant'],
       ['\\frac{\\partial^2}{\\partial x\\partial y}x^2y^3', 'Mixed partials'],
       ['\\nabla\\left(x^2+y^2\\right)', 'Gradient (type nabla for \u2207)'],
+      ['\\frac{\\partial u}{\\partial t}=\\alpha\\frac{\\partial^2u}{\\partial x^2}', 'A PDE (or u_{t}=u_{xx}): Solve solves heat, wave, Laplace and first-order ones'],
+      ['u\\left(0,t\\right)=0,\\ u\\left(x,0\\right)=f\\left(x\\right)', 'Conditions for a PDE, each in its own row: ends, start, and u_{t}(x,0) for waves'],
       ['\\sum_{n=1}^{10}n^2', 'Sum (type sum); prod for products'],
       ['\\int_0^1x^2dx', 'Integral (type int)'],
       ['\\int_0^{\\infty}e^{-x}dx', 'Type infinity (or infty) for \u221e, as in improper integrals and bounds'],

@@ -10,6 +10,7 @@ pub mod latex;
 pub mod limits;
 mod nfold;
 pub mod ode;
+pub mod pde;
 pub mod poly;
 pub mod solve;
 pub mod sym;
@@ -622,6 +623,38 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
             }
             Err(e) => report.error = Some(e),
         }
+        return report;
+    }
+    // Partial differential equations, with conditions from other rows.
+    if let Some(pde) = pde::read(source, others) {
+        report.op = "pde".into();
+        let general = op == Some("pde:general");
+        let pde = match pde {
+            Ok(p) => p,
+            Err(e) => {
+                report.error = Some(e);
+                return report;
+            }
+        };
+        report.choices = vec![choice("pde", "Solve the PDE")];
+        if pde::has_conditions(&pde, others) {
+            report
+                .choices
+                .push(choice("pde:general", "General solution"));
+            if general {
+                report.op = "pde:general".into();
+            }
+        }
+        let mut st = Steps::new();
+        st.push("Solve the partial differential equation", source.to_owned());
+        match pde::solve(&pde, others, general, &mut st) {
+            Ok((result, answer)) => {
+                report.result = Some(result);
+                report.answer = answer;
+            }
+            Err(e) => report.error = Some(e),
+        }
+        report.steps = st.list;
         return report;
     }
     // Sums and products out to ∞: numerically here, exactly by Giac.
@@ -1338,7 +1371,7 @@ fn finish_numeric(num: f64, st: &mut Steps) -> Done {
 }
 
 /// p/q or p/q·π for small q, when `v` is within rounding of one.
-fn recognize(v: f64) -> Option<Sym> {
+pub(crate) fn recognize(v: f64) -> Option<Sym> {
     for d in 1..=12i128 {
         for (unit, scale) in [(n(1), 1.0), (pi(), std::f64::consts::PI)] {
             let k = v * d as f64 / scale;

@@ -183,6 +183,20 @@ on the right. What you type is graphed as you type it:
 - Partial derivatives in Solve show the working with ∂ and say what is
   held constant; a row in several variables also offers ∂/∂ for each,
   **Gradient ∇** and **Total differential** (`df = 2xy dx + x^2 dy`).
+- Partial differential equations in Solve, typed with ∂ fractions or
+  subscripts (`u_t = α u_xx`), linear with constant coefficients:
+  first-order ones by characteristics (`u_t + 3u_x = 0` gives
+  `F(x - 3t)`), and the heat, wave and Laplace equations by separating
+  the variables. Conditions go in their own rows: `u(0,t)=0` and
+  `u(L,t)=0` for ends held at a value (or `u_x(0,t)=0` for insulated
+  ends), `u(x,0)=f(x)` for the start and `u_t(x,0)=g(x)` for a wave's
+  starting speed. With them Solve gives the Fourier series that meets
+  them (a steady line first when the ends aren't at 0), its coefficients
+  worked out exactly when it can; with only a start, d'Alembert's
+  formula for waves and the heat kernel for an infinite rod. **General
+  solution** ignores the rows. Every answer is put back into the PDE and
+  its conditions before it is shown, and the PDE and condition rows show
+  a grey note in the graph instead of an error.
 - Infinite sums and products in Solve: Giac's exact value when it has one
   (`Σ 1/n! = e`), or the partial sum or product up to N and its limit as
   N → ∞ (`∏ (1 - 1/n^2) = (N+1)/(2N) → 1/2`); a numeric value otherwise.
