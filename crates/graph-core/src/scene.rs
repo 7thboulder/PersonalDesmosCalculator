@@ -1,6 +1,6 @@
 use crate::grid::{grid_spacing, line_indices, GridSettings};
 use crate::implicit::{trace_implicit, Field};
-use crate::ode::{field_marks, solutions, Equation};
+use crate::ode::{phase_field_marks, phase_solutions, Axes, Equation};
 use crate::sample::{sample_curve, sample_parametric, Axis};
 use crate::tess::{
     disc, fill_polygon, fill_rect, stroke_polyline, stroke_styled, LineStyle, Vertex,
@@ -132,10 +132,14 @@ pub struct Polygon<'a> {
 }
 
 /// A differential equation: its slope or direction field over the view,
-/// and the solutions from each start ([x, y] then any initial
-/// derivatives).
+/// and the solutions from each start (a value for each of its quantities:
+/// x, y and any initial derivatives, or a system's t, x and y).
 pub struct SlopeField<'a> {
     pub equation: Equation<'a>,
+    /// Which quantities go across and up.
+    pub axes: Axes,
+    /// Whether the equation reads its independent variable not at all.
+    pub autonomous: bool,
     pub starts: &'a [Vec<f64>],
     pub color: [f32; 4],
     /// The solution curves' thickness in logical pixels.
@@ -594,7 +598,13 @@ fn draw_marks(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<Verte
         let s = vp.to_screen(p[0], p[1]);
         [s[0] as f32, s[1] as f32]
     };
-    for [p, q] in field_marks(&field.equation, vp, scale as f64) {
+    for [p, q] in phase_field_marks(
+        &field.equation,
+        field.axes,
+        field.autonomous,
+        vp,
+        scale as f64,
+    ) {
         stroke_polyline(&[to_f32(p), to_f32(q)], FIELD_WIDTH * scale, faint, out);
     }
 }
@@ -605,7 +615,11 @@ fn draw_solutions(vp: &Viewport, scale: f32, field: &SlopeField, out: &mut Vec<V
         let jobs: Vec<_> = field
             .starts
             .iter()
-            .map(|start| s.spawn(move || solutions(&field.equation, start, vp)))
+            .map(|start| {
+                s.spawn(move || {
+                    phase_solutions(&field.equation, field.axes, field.autonomous, start, vp)
+                })
+            })
             .collect();
         jobs.into_iter()
             .flat_map(|j| j.join().unwrap_or_default())
@@ -1312,6 +1326,8 @@ mod tests {
                 order: 1,
                 f: &slope,
             },
+            axes: [0, 1],
+            autonomous: false,
             starts: &[vec![0.0, 1.0]],
             color: DESMOS_COLORS[0],
             width: DEFAULT_CURVE_WIDTH,

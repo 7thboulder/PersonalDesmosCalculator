@@ -112,6 +112,7 @@ fn ode(latex: &str, seeds: Option<&str>, derivs: &[&str]) -> String {
     let initial = Initial {
         seeds: seeds.map(str::to_owned),
         derivs: derivs.iter().map(|d| d.to_string()).collect(),
+        ..Initial::default()
     };
     let op = if seeds.is_some() {
         "ode"
@@ -193,6 +194,7 @@ fn systems() {
         &Initial {
             seeds: Some("\\left(1,0\\right)".into()),
             derivs: Vec::new(),
+            ..Initial::default()
         },
     );
     assert_eq!(
@@ -529,4 +531,31 @@ fn improper_integrals() {
     assert!(run("\\int_{0}^{\\infty}\\frac{\\sin x}{x}dx", &[], None)
         .result
         .is_none_or(|r| !r.contains("diverges")));
+}
+
+#[test]
+fn phase_axes_and_greek_unknowns() {
+    // Plotted as y' against y, the point (1, 0) means y = 1, y' = 0 at x = 0.
+    let initial = Initial {
+        seeds: Some("\\left(1,0\\right)".into()),
+        axes: Some([1, 2]),
+        ..Initial::default()
+    };
+    let mut r = run_row("y''=-y", &[], Some("ode"), &initial);
+    assert_eq!(r.result.as_deref(), Some("y=\\cos\\left(x\\right)"));
+    // Typed in θ and t, the working is written in them too.
+    let latex = "\\theta''=-\\theta";
+    r = run_row(latex, &[], Some("ode"), &initial);
+    in_typed_letters(&mut r, latex);
+    assert_eq!(r.result.as_deref(), Some("\\theta =\\cos\\left(t\\right)"));
+    assert_eq!(r.answer.as_deref(), Some("y=\\cos\\left(x\\right)"));
+    assert!(
+        r.steps.iter().all(|s| !s.latex.contains('y')),
+        "{:#?}",
+        r.steps
+    );
+    assert_eq!(
+        rename_letters("\\text{xy} \\exp\\left(xy\\right)", "\\theta ", true),
+        "\\text{xy} \\exp\\left(t\\theta \\right)"
+    );
 }

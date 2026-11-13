@@ -547,7 +547,14 @@ pub fn run(latex_in: &str, others: &[String], op: Option<&str>) -> Report {
 #[derive(Clone, Debug, Default)]
 pub struct Initial {
     pub seeds: Option<String>,
+    /// The values of the third quantity on: y'(x₀), y''(x₀), … or a
+    /// system's y.
     pub derivs: Vec<String>,
+    /// Which quantities the point gives (x and y unless the row plots
+    /// others, as y' against y), and the starting values of the first two
+    /// when it does not give them.
+    pub axes: Option<[usize; 2]>,
+    pub start: [String; 2],
 }
 
 /// Like `run`, with the row's initial conditions for differential equations.
@@ -558,27 +565,40 @@ pub fn run_row(latex_in: &str, others: &[String], op: Option<&str>, initial: &In
     report
 }
 
-/// The single initial point of a differential equation, with y'(x₀), … from
-/// the derivative boxes (0 when empty, as the graph takes them).
-fn initial_point(initial: &Initial, defs: &Defs, order: usize) -> Option<(Sym, Vec<Sym>)> {
+/// The value of every quantity at a differential equation's single
+/// initial point (x, y, y', … or a system's t, x, y): the two the point
+/// gives, the rest from their boxes (0 when empty, as the graph takes them).
+fn initial_values(initial: &Initial, defs: &Defs, quantities: usize) -> Option<Vec<Sym>> {
     let seeds = initial.seeds.as_deref()?.trim();
     let Ok(Statement::Expr(Expr::Point(a, b))) = crate::parse(seeds) else {
         return None;
     };
-    let x0 = to_sym(&a, defs).ok()?;
-    let mut values = vec![to_sym(&b, defs).ok()?];
-    for k in 0..order.saturating_sub(1) {
-        let l = initial.derivs.get(k).map_or("", |s| s.trim());
-        values.push(if l.is_empty() {
-            n(0)
-        } else {
-            match crate::parse(l) {
-                Ok(Statement::Expr(e)) => to_sym(&e, defs).ok()?,
-                _ => return None,
+    let axes = initial
+        .axes
+        .filter(|[p, q]| p != q && *p < quantities && *q < quantities)
+        .unwrap_or([0, 1]);
+    let typed = |l: &str| -> Option<Sym> {
+        if l.trim().is_empty() {
+            return Some(n(0));
+        }
+        match crate::parse(l) {
+            Ok(Statement::Expr(e)) => to_sym(&e, defs).ok(),
+            _ => None,
+        }
+    };
+    (0..quantities)
+        .map(|k| {
+            if k == axes[0] {
+                to_sym(&a, defs).ok()
+            } else if k == axes[1] {
+                to_sym(&b, defs).ok()
+            } else if k < 2 {
+                typed(&initial.start[k])
+            } else {
+                typed(initial.derivs.get(k - 2).map_or("", String::as_str))
             }
-        });
-    }
-    Some((x0, values))
+        })
+        .collect()
 }
 
 fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initial) -> Report {
@@ -733,17 +753,28 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
         (Form::Ode { order, eq }, _) => {
             st.push("Solve the differential equation", source.to_owned());
             let conditions = (op == "ode")
-                .then(|| initial_point(initial, &defs, *order))
+                .then(|| initial_values(initial, &defs, order + 1))
                 .flatten()
-                .map(|(x0, values)| ode::Conditions { x0, values });
+                .map(|mut values| ode::Conditions {
+                    x0: values.remove(0),
+                    values,
+                });
             ode::solve_ode(eq, *order, conditions.as_ref(), &mut st)
         }
         (Form::System { f, g }, _) => {
             st.push("Solve the system", source.to_owned());
+            // Solutions start at t = 0.
             let start = (op == "ode")
-                .then(|| initial_point(initial, &defs, 1))
+                .then(|| {
+                    let system = Initial {
+                        axes: Some(initial.axes.unwrap_or([1, 2])),
+                        ..initial.clone()
+                    };
+                    initial_values(&system, &defs, 3)
+                })
                 .flatten()
-                .map(|(x0, v)| (x0, v[0].clone()));
+                .filter(|q| q[0] == n(0))
+                .map(|q| (q[1].clone(), q[2].clone()));
             ode::solve_system(f, g, start, &mut st)
         }
         (Form::Derivative { vars, body }, _) => derivative_op(body, vars, &mut st),
@@ -1556,3 +1587,90 @@ fn equation(l: Sym, r: Sym, v: &str, st: &mut Steps) -> Done {
 
 #[cfg(test)]
 mod tests;
+
+/// Writes Solve's working for an equation typed in a Greek letter, as
+/// θ'' = -sin θ in t, which is read as one in y and x, back in the letters
+/// that were typed.
+pub fn in_typed_letters(report: &mut Report, source: &str) {
+    let Some((g, var)) = crate::parser::greek_unknown_of(source) else {
+        return;
+    };
+    let unknown = format!("\\{g} ");
+    let to_t = var == "t";
+    let math = |s: &str| rename_letters(s, &unknown, to_t);
+    // Notes are words with maths between $ signs.
+    let note = |s: &str| {
+        s.split('$')
+            .enumerate()
+            .map(|(i, part)| {
+                if i % 2 == 1 {
+                    math(part)
+                } else {
+                    part.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("$")
+    };
+    for step in &mut report.steps {
+        step.latex = math(&step.latex);
+        step.note = note(&step.note);
+    }
+    // The answer stays in y and x: added to the graph, it is drawn over
+    // the solution curves, which go across in t and up in θ.
+    if let Some(r) = &mut report.result {
+        *r = math(r);
+    }
+}
+
+/// `latex` with every y written `unknown`, and every x written t when
+/// `to_t`, leaving command names and text alone.
+fn rename_letters(latex: &str, unknown: &str, to_t: bool) -> String {
+    let chars: Vec<char> = latex.chars().collect();
+    let mut out = String::with_capacity(latex.len() + 8);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i == start + 1 && i < chars.len() {
+                i += 1; // \{ or \, and the like
+            }
+            let name: String = chars[start + 1..i].iter().collect();
+            out.extend(&chars[start..i]);
+            // Words stay as they are.
+            if matches!(name.as_str(), "text" | "operatorname" | "mathrm" | "textrm")
+                && chars.get(i) == Some(&'{')
+            {
+                let mut depth = 0;
+                while i < chars.len() {
+                    out.push(chars[i]);
+                    match chars[i] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        match c {
+            'y' => out.push_str(unknown),
+            'x' if to_t => out.push('t'),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}

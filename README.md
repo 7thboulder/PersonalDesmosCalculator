@@ -36,6 +36,16 @@ on the right. What you type is graphed as you type it:
   solved for it numerically, drawing every branch. Systems
   `x' = f, y' = g` (or `(x', y') = (f, g)`, or with `dx/dt`) in x, y and t
   draw a direction field and the trajectory through each point from t = 0.
+- Phase space: the **horizontal** and **vertical** menus under a
+  differential equation pick what each axis shows, from the independent
+  variable, y and its derivatives up to y⁽ⁿ⁻¹⁾ (or a system's t, x and y).
+  The pendulum `θ'' = -\frac{g}{L} \sin θ` (a Greek letter and its
+  derivatives in t work as y does in x) with θ across and θ' up draws its
+  phase portrait: closed swings, the separatrix and runaway spins, with
+  arrows wherever the two axes fix the whole state (an autonomous
+  second-order equation, or a system without t). The **through** points
+  are then (θ, θ') pairs, and a box under the row holds each starting value
+  the axes leave off. Changing the axes keeps where each solution starts.
 - Piecewise definitions `{x < 0: -x, x}` and restrictions `y = x^2 {x > 0}`.
 - Recursive functions, as in Desmos: `f(n) = {n = 0: 1, n f(n-1)}` or
   Fibonacci `F(n) = {n ≤ 1: n, F(n-1) + F(n-2)}`, and functions that call

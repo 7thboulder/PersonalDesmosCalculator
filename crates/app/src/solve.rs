@@ -36,8 +36,10 @@ pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: b
             .flatten()
             .map(|d| d.as_str().unwrap_or("").to_owned())
             .collect(),
+        axes: row.and_then(|r| ode_axes(&r["axes"])),
+        start: row.map_or_else(Default::default, |r| ode_start(&r["start"])),
     };
-    let report = solve_in(
+    let mut report = solve_in(
         latex,
         &others,
         op,
@@ -45,6 +47,7 @@ pub fn reply_in(rows: &Value, id: u64, latex: &str, op: Option<&str>, degrees: b
         crate::giac::available(),
         degrees,
     );
+    symbolic::in_typed_letters(&mut report, latex);
     json!({
         "id": id,
         "op": report.op,
@@ -321,6 +324,20 @@ pub fn doc_rows(lines: &Value) -> Value {
             .map(|(i, latex)| json!({ "id": i + 1, "latex": latex }))
             .collect(),
     )
+}
+
+/// Which quantities a differential equation row plots, as the panel sends
+/// them: `[across, up]`.
+pub fn ode_axes(v: &serde_json::Value) -> Option<[usize; 2]> {
+    let a = v.as_array()?;
+    Some([a.first()?.as_u64()? as usize, a.get(1)?.as_u64()? as usize])
+}
+
+/// The starting values of a differential equation row's first two
+/// quantities, when its axes leave them off.
+pub fn ode_start(v: &serde_json::Value) -> [String; 2] {
+    let at = |i: usize| v.get(i).and_then(|s| s.as_str()).unwrap_or("").to_owned();
+    [at(0), at(1)]
 }
 
 #[cfg(test)]

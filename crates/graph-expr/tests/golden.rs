@@ -1286,6 +1286,86 @@ fn differential_equations_draw_slope_fields_through_initial_points() {
 }
 
 #[test]
+fn phase_portraits_put_any_quantity_on_either_axis() {
+    // The pendulum, in θ and t, plotted as θ' against θ.
+    let mut input = vec![
+        RowInput {
+            id: 0,
+            latex: "g=9.8".into(),
+            ..Default::default()
+        },
+        RowInput {
+            id: 1,
+            latex: "\\frac{d^2\\theta}{dt^2}=-\\frac{g}{L}\\sin\\theta".into(),
+            seeds: Some("\\left[\\left(1,0\\right),\\left(0,3\\right)\\right]".into()),
+            axes: Some([1, 2]),
+            ..Default::default()
+        },
+    ];
+    let r = analyze(&input).pop().unwrap();
+    assert_eq!(
+        r.missing,
+        vec!["L".to_string()],
+        "g is defined, L is a slider"
+    );
+    assert_eq!(r.ode, Some(2));
+    assert_eq!(r.ode_names, ["t", "\\theta", "\\theta'"]);
+    assert_eq!(r.ode_axes, [1, 2]);
+    assert!(r.ode_autonomous);
+    // Each point is (θ, θ') at t = 0.
+    assert_eq!(r.seeds[1].at, [0.0, 3.0]);
+    assert_eq!(r.seeds[1].state, [0.0, 0.0, 3.0]);
+    input[0].latex = "L=9.8".into();
+    input.push(RowInput {
+        id: 2,
+        latex: "g=9.8".into(),
+        ..Default::default()
+    });
+    let r = analyze(&input).remove(1);
+    assert_eq!(r.error, None);
+    let Ode::Explicit { order: 2, f } = &r.odes[0] else {
+        panic!("{:?}", r.odes)
+    };
+    assert!(close(f.eval_n(0.0, &[1.0, 0.0]), -(1f64.sin())));
+    // Primes work as well as Leibniz's d/dt, and time can be x.
+    let r = ode(&["\\theta''=-\\sin\\theta"], "\\left(0,1\\right)");
+    assert_eq!(r.error, None);
+    assert_eq!(r.ode_names, ["t", "\\theta", "\\theta'"]);
+    let r = ode(&["\\omega'=x-\\omega"], "\\left(0,1\\right)");
+    assert_eq!(r.ode_names, ["x", "\\omega"]);
+    assert!(!r.ode_autonomous);
+
+    // The quantities the axes leave off come from their boxes: y'' = -y
+    // plotted as y' against x starts from y = 2.
+    let mut input = vec![RowInput {
+        id: 0,
+        latex: "y''=-y".into(),
+        seeds: Some("\\left(0,1\\right)".into()),
+        axes: Some([0, 2]),
+        start: [String::new(), "2".into()],
+        ..Default::default()
+    }];
+    let r = analyze(&input).pop().unwrap();
+    assert_eq!(r.ode_names, ["x", "y", "y'"]);
+    assert_eq!(r.seeds[0].state, [0.0, 2.0, 1.0]);
+    // A system's x against t, from y = 3 at t = 1.
+    input[0] = RowInput {
+        id: 0,
+        latex: "x'=-y,y'=x".into(),
+        seeds: Some("\\left(1,2\\right)".into()),
+        axes: Some([0, 1]),
+        derivs: vec!["3".into()],
+        ..Default::default()
+    };
+    let r = analyze(&input).pop().unwrap();
+    assert_eq!(r.ode_names, ["t", "x", "y"]);
+    assert_eq!(r.seeds[0].state, [1.0, 2.0, 3.0]);
+    // Axes that make no sense fall back to the usual ones.
+    input[0].axes = Some([1, 1]);
+    assert_eq!(analyze(&input).pop().unwrap().ode_axes, [1, 2]);
+}
+
+#[test]
 fn higher_order_implicit_and_system_equations() {
     // y'' = -k y' - y with y'(x₀) for each start from its own box.
     let r = ode_with(
@@ -1300,12 +1380,12 @@ fn higher_order_implicit_and_system_equations() {
     };
     // At y = 1, y' = 2: -0.5·2 - 1.
     assert!(close(f.eval_n(0.0, &[1.0, 2.0]), -2.0));
-    assert_eq!(r.seeds[0].derivs, vec![3.0]);
-    assert_eq!(r.seeds[1].derivs, vec![4.0]);
+    assert_eq!(r.seeds[0].state[2..], [3.0]);
+    assert_eq!(r.seeds[1].state[2..], [4.0]);
     // Left out, the initial slope is 0; one number serves every start.
     let r = ode_with(&["\\frac{d^3y}{dx^3}=y"], "\\left(0,1\\right)", &["", "2"]);
     assert_eq!(r.ode, Some(3));
-    assert_eq!(r.seeds[0].derivs, vec![0.0, 2.0]);
+    assert_eq!(r.seeds[0].state[2..], [0.0, 2.0]);
     let r = ode_with(&["y''=y"], "\\left(0,1\\right)", &["\\left(1,2\\right)"]);
     assert!(r.derivs_error.is_some());
 

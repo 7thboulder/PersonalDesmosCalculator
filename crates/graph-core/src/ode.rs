@@ -535,6 +535,312 @@ fn trajectory(rhs: &Rhs, seed: [f64; 2], vp: &Viewport, dir: f64) -> Vec<[f64; 2
     out
 }
 
+/// Which of an equation's quantities a plot puts across and up, as
+/// indices into them: for an equation of order n, x, y, y', …, y⁽ⁿ⁻¹⁾;
+/// for a system, t, x, y.
+pub type Axes = [usize; 2];
+
+impl Equation<'_> {
+    /// How many quantities describe a moment of a solution: the
+    /// independent variable, then the state.
+    pub fn quantities(&self) -> usize {
+        match *self {
+            Equation::Explicit { order, .. } | Equation::Implicit { order, .. } => order + 1,
+            Equation::System { .. } => 3,
+        }
+    }
+
+    /// The usual plot: y against x, or a system's y against x.
+    pub fn default_axes(&self) -> Axes {
+        match *self {
+            Equation::Explicit { .. } | Equation::Implicit { .. } => [0, 1],
+            Equation::System { .. } => [1, 2],
+        }
+    }
+
+    /// Every way the quantities `z` can be changing at once, as d/ds of
+    /// each where s is the independent variable: one for an explicit
+    /// equation or a system, one for each root of an implicit equation,
+    /// none where it is undefined.
+    fn flows_at(&self, z: &[f64]) -> Vec<Vec<f64>> {
+        let n = z.len();
+        match *self {
+            Equation::Explicit { f, .. } => {
+                let mut d = vec![1.0; n];
+                d[1..n - 1].copy_from_slice(&z[2..]);
+                d[n - 1] = f(z[0], &z[1..]);
+                if d[n - 1].is_finite() {
+                    vec![d]
+                } else {
+                    Vec::new()
+                }
+            }
+            Equation::Implicit { f, .. } => {
+                let mut all = z[1..].to_vec();
+                all.push(0.0);
+                roots(&|m| {
+                    let mut all = all.clone();
+                    *all.last_mut().expect("has a top") = m;
+                    f(z[0], &all)
+                })
+                .into_iter()
+                .map(|m| {
+                    let mut d = vec![1.0; n];
+                    d[1..n - 1].copy_from_slice(&z[2..]);
+                    d[n - 1] = m;
+                    d
+                })
+                .collect()
+            }
+            Equation::System { f, g, .. } => {
+                let d = vec![1.0, f(z[0], z[1], z[2]), g(z[0], z[1], z[2])];
+                if d.iter().all(|v| v.is_finite()) {
+                    vec![d]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
+/// The field of a plot whose axes are any two of the equation's
+/// quantities. There is one only where the two plotted quantities fix
+/// everything the equation reads, as y and y' do for an autonomous
+/// second-order equation such as the pendulum's y'' = -sin y: arrows show
+/// which way the state moves as time runs on, or (when the independent
+/// variable is itself on an axis) slope marks like a first-order field's.
+pub fn phase_field_marks(
+    eq: &Equation,
+    axes: Axes,
+    autonomous: bool,
+    vp: &Viewport,
+    scale: f64,
+) -> Vec<[[f64; 2]; 2]> {
+    if axes == eq.default_axes() && !matches!(eq, Equation::System { .. }) {
+        return field_marks(eq, vp, scale);
+    }
+    let m = eq.quantities();
+    let [a, b] = axes;
+    if a == b || a >= m || b >= m {
+        return Vec::new();
+    }
+    let needed = (if autonomous { 1 } else { 0 })..m;
+    if !needed.clone().all(|k| k == a || k == b) {
+        return Vec::new();
+    }
+    let arrows = a != 0 && b != 0;
+    let step = grid_spacing(vp.units_per_px, FIELD_SPACING_LOGICAL * scale.max(0.5)).major;
+    let half = step * MARK_LENGTH / 2.0;
+    let (x0, x1) = vp.x_range();
+    let (y0, y1) = vp.y_range();
+    let mut marks = Vec::new();
+    let mut z = vec![0.0; m];
+    for i in line_indices(x0, x1, step) {
+        for j in line_indices(y0, y1, step) {
+            let (x, y) = (i as f64 * step, j as f64 * step);
+            z[a] = x;
+            z[b] = y;
+            for d in eq.flows_at(&z) {
+                let (u, v) = (d[a], d[b]);
+                let len = u.hypot(v);
+                if !(len.is_finite() && len > 0.0) {
+                    continue;
+                }
+                let (dx, dy) = (half * u / len, half * v / len);
+                let tip = [x + dx, y + dy];
+                marks.push([[x - dx, y - dy], tip]);
+                if arrows {
+                    let (hx, hy) = (dx * 2.0 * HEAD_LENGTH, dy * 2.0 * HEAD_LENGTH);
+                    for side in [1.0, -1.0] {
+                        let back = [
+                            tip[0] - hx * 0.87 - side * hy * 0.5,
+                            tip[1] - hy * 0.87 + side * hx * 0.5,
+                        ];
+                        marks.push([tip, back]);
+                    }
+                }
+            }
+        }
+    }
+    marks
+}
+
+/// The solution curves through `start`, a value for every one of the
+/// equation's quantities, drawn with `axes` across and up: each followed
+/// backward and forward in its independent variable until it leaves the
+/// view, comes back round to its start, settles or runs out of steps.
+pub fn phase_solutions(
+    eq: &Equation,
+    axes: Axes,
+    autonomous: bool,
+    start: &[f64],
+    vp: &Viewport,
+) -> Vec<Vec<[f64; 2]>> {
+    let m = eq.quantities();
+    if start.len() != m || !start.iter().all(|v| v.is_finite()) || axes.iter().any(|&k| k >= m) {
+        return Vec::new();
+    }
+    if axes == eq.default_axes() {
+        match eq {
+            Equation::System { .. } if start[0] == 0.0 => {
+                return solutions(eq, &start[1..], vp);
+            }
+            Equation::System { .. } => {}
+            _ => return solutions(eq, start, vp),
+        }
+    }
+    let flows = eq.flows_at(start);
+    flows
+        .into_iter()
+        .filter_map(|d0| {
+            if d0[1..].iter().all(|v| *v == 0.0) {
+                return None; // A resting point stays put.
+            }
+            // An implicit equation's branch remembers its last root.
+            let guess = std::cell::Cell::new(*d0.last().expect("has a top"));
+            let rhs = |_s: f64, z: &[f64], out: &mut [f64]| -> bool {
+                match *eq {
+                    Equation::Implicit { f, .. } => {
+                        let n = z.len();
+                        let mut all = z[1..].to_vec();
+                        all.push(0.0);
+                        let top = newton(
+                            &|m| {
+                                let mut all = all.clone();
+                                all[n - 1] = m;
+                                f(z[0], &all)
+                            },
+                            guess.get(),
+                        );
+                        let Some(top) = top else {
+                            return false;
+                        };
+                        guess.set(top);
+                        out[0] = 1.0;
+                        out[1..n - 1].copy_from_slice(&z[2..]);
+                        out[n - 1] = top;
+                        true
+                    }
+                    _ => match eq.flows_at(z).into_iter().next() {
+                        Some(d) => {
+                            out.copy_from_slice(&d);
+                            true
+                        }
+                        None => false,
+                    },
+                }
+            };
+            let closes = autonomous && !axes.contains(&0);
+            let mut back = phase_path(&rhs, start, axes, vp, -1.0, closes);
+            guess.set(*d0.last().expect("has a top"));
+            let ahead = phase_path(&rhs, start, axes, vp, 1.0, closes);
+            back.reverse();
+            back.push([start[axes[0]], start[axes[1]]]);
+            back.extend(ahead);
+            Some(back)
+        })
+        .collect()
+}
+
+/// Steps the quantities from `seed` forward (`dir` 1) or backward (-1) in
+/// the independent variable, returning the plotted points after the
+/// start. Steps are about two pixels long on the plot. When `closes`, the
+/// path stops once every quantity is back where it started.
+fn phase_path(
+    rhs: &Rhs,
+    seed: &[f64],
+    axes: Axes,
+    vp: &Viewport,
+    dir: f64,
+    closes: bool,
+) -> Vec<[f64; 2]> {
+    let unit = vp.units_per_px;
+    let (vx0, vx1) = vp.x_range();
+    let (vy0, vy1) = vp.y_range();
+    let (wx, wy) = (vx1 - vx0, vy1 - vy0);
+    let [a, b] = axes;
+    let inside = |p: [f64; 2]| {
+        (vx0 - wx..=vx1 + wx).contains(&p[0]) && (vy0 - wy..=vy1 + wy).contains(&p[1])
+    };
+    let tol = 0.1 * unit;
+    let max_len = 2.0 * unit;
+    const MAX_S: f64 = 1e4;
+    let n = seed.len();
+    // How fast the plot moves, and the unplotted state with it, so a
+    // quantity off the plot cannot leap ahead between two drawn points.
+    let speed = |d: &[f64]| {
+        let shown = d[a].hypot(d[b]);
+        let hidden = (1..n)
+            .filter(|k| *k != a && *k != b)
+            .map(|k| d[k].abs())
+            .fold(0.0, f64::max);
+        shown.max(hidden)
+    };
+    let shown = |z: &[f64]| [z[a], z[b]];
+
+    let mut out = Vec::new();
+    let (mut s, mut z) = (0.0, seed.to_vec());
+    let mut k: [Vec<f64>; 7] = std::array::from_fn(|_| vec![0.0; n]);
+    if !rhs(s, &z, &mut k[0]) {
+        return out;
+    }
+    let mut h = max_len / speed(&k[0]).max(1e-12);
+    let mut travelled = 0.0;
+    let mut steps = 0;
+    while steps < MAX_STEPS && s.abs() < MAX_S {
+        steps += 1;
+        let v = speed(&k[0]);
+        if v.is_nan() || v <= 0.0 {
+            break; // Settled.
+        }
+        h = h.min(max_len / v).min(MAX_S);
+        let hs = h * dir;
+        let tol_h = tol * (h * v / max_len).min(1.0);
+        let result = step(rhs, s, &z, hs, &mut k);
+        let turn = {
+            let p = k[0][b].atan2(k[0][a]);
+            let q = k[6][b].atan2(k[6][a]);
+            let d = (q - p).abs();
+            d.min(std::f64::consts::TAU - d)
+        };
+        let err = match &result {
+            Some((_, err)) if turn <= MAX_TURN => *err,
+            _ => f64::INFINITY,
+        };
+        if err <= tol_h {
+            let (next, _) = result.expect("accepted");
+            let (p, q) = (shown(&z), shown(&next));
+            travelled += (q[0] - p[0]).hypot(q[1] - p[1]);
+            s += hs;
+            z = next;
+            let last = k[6].clone();
+            k[0] = last;
+            if !z.iter().all(|v| v.is_finite()) {
+                break;
+            }
+            out.push(q);
+            if !inside(q) {
+                break;
+            }
+            // A closed orbit: every quantity back within half a pixel.
+            if closes
+                && travelled > 20.0 * unit
+                && (1..n).all(|i| (z[i] - seed[i]).abs() < 0.5 * unit)
+            {
+                out.push(shown(seed));
+                break;
+            }
+            h = resize(h, err, tol_h);
+        } else if h * v <= 1e-9 * unit {
+            break;
+        } else {
+            h = resize(h, err, tol_h);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,5 +1069,92 @@ mod tests {
         // Higher orders have no field in the plane.
         let eq = Equation::Explicit { order: 2, f: &f };
         assert!(field_marks(&eq, &vp, 1.0).is_empty());
+    }
+
+    #[test]
+    fn pendulum_phase_portraits_close_and_conserve_energy() {
+        let vp = view();
+        // θ'' = -sin θ, plotted as θ' against θ.
+        let f = |_t: f64, s: &[f64]| -s[0].sin();
+        let eq = Equation::Explicit { order: 2, f: &f };
+        let lines = phase_solutions(&eq, [1, 2], true, &[0.0, 1.0, 0.0], &vp);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        let energy = |p: &[f64; 2]| p[1] * p[1] / 2.0 - p[0].cos();
+        let e0 = -1.0f64.cos();
+        for p in line {
+            assert!((energy(p) - e0).abs() < 1e-3, "{p:?}");
+        }
+        // One swing, closed up, swinging out to -1 as well.
+        assert!(line.len() < 4000, "{}", line.len());
+        assert!(line.iter().any(|p| p[0] < -0.99));
+        assert_eq!(line.first(), line.last());
+        // Spinning over the top never closes in the plane: it runs off
+        // the side.
+        let over = &phase_solutions(&eq, [1, 2], true, &[0.0, 0.0, 2.5], &vp)[0];
+        assert!(over.iter().any(|p| p[0] > vp.x_range().1));
+        // Arrows over the plane: at (0, 1) the state moves right.
+        let marks = phase_field_marks(&eq, [1, 2], true, &vp, 1.0);
+        assert!(marks.len() > 1000 && marks.len().is_multiple_of(3));
+        let shaft = marks
+            .iter()
+            .find(|[p, q]| {
+                ((p[0] + q[0]) / 2.0).abs() < 1e-9 && ((p[1] + q[1]) / 2.0 - 1.0).abs() < 1e-9
+            })
+            .expect("a mark at (0, 1)");
+        assert!(shaft[1][0] > shaft[0][0] && (shaft[1][1] - shaft[0][1]).abs() < 1e-9);
+        // Swapped axes work too, and a forced equation has no field.
+        assert!(!phase_field_marks(&eq, [2, 1], true, &vp, 1.0).is_empty());
+        assert!(phase_field_marks(&eq, [1, 2], false, &vp, 1.0).is_empty());
+        // Nor does a plot that leaves part of the state off it.
+        assert!(phase_field_marks(&eq, [0, 2], true, &vp, 1.0).is_empty());
+        // The resting point draws nothing.
+        assert!(phase_solutions(&eq, [1, 2], true, &[0.0, 0.0, 0.0], &vp).is_empty());
+    }
+
+    #[test]
+    fn any_quantity_can_go_on_either_axis() {
+        let vp = view();
+        // y'' = -y from y = 1, y' = 0: y' = -sin x against x.
+        let f = |_x: f64, s: &[f64]| -s[0];
+        let eq = Equation::Explicit { order: 2, f: &f };
+        let line = &phase_solutions(&eq, [0, 2], true, &[0.0, 1.0, 0.0], &vp)[0];
+        assert!(line.first().unwrap()[0] < vp.x_range().0);
+        assert!(line.last().unwrap()[0] > vp.x_range().1);
+        for p in line {
+            assert!((p[1] + p[0].sin()).abs() < 0.2 * vp.units_per_px, "{p:?}");
+        }
+        // A system's x against t: x' = -y, y' = x from (1, 0) is cos t.
+        let (f, g) = (|_t: f64, _x: f64, y: f64| -y, |_t: f64, x: f64, _y: f64| x);
+        let eq = Equation::System {
+            f: &f,
+            g: &g,
+            autonomous: true,
+        };
+        let line = &phase_solutions(&eq, [0, 1], true, &[0.0, 1.0, 0.0], &vp)[0];
+        assert!(line.last().unwrap()[0] > vp.x_range().1);
+        for p in line {
+            assert!((p[1] - p[0].cos()).abs() < 0.2 * vp.units_per_px, "{p:?}");
+        }
+        // And the usual plot of a system, from t = 0, is as before.
+        assert_eq!(
+            phase_solutions(&eq, [1, 2], true, &[0.0, 2.0, 0.0], &vp),
+            solutions(&eq, &[2.0, 0.0], &vp)
+        );
+        // An implicit equation follows each root: (y'')² = 1 is y'' = ±1,
+        // the parabolas y = 1 ± x²/2, seen as y' against y.
+        let h = |_x: f64, s: &[f64]| s[2] * s[2] - 1.0;
+        let eq = Equation::Implicit { order: 2, f: &h };
+        let lines = phase_solutions(&eq, [1, 2], true, &[0.0, 1.0, 0.0], &vp);
+        assert_eq!(lines.len(), 2);
+        for (line, sign) in lines.iter().zip([-1.0, 1.0]) {
+            for p in line {
+                // y - 1 = ±(y')²/2.
+                assert!(
+                    (p[0] - 1.0 - sign * p[1] * p[1] / 2.0).abs() < 1e-3,
+                    "{p:?}"
+                );
+            }
+        }
     }
 }
