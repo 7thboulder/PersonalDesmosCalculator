@@ -266,7 +266,9 @@
         return Object.assign(styleOf(r), {
           id: r.id, latex: r.field.latex(), domain: r.domain, slider: r.slider,
           transform: transformOf(r),
-          seeds: r.seeds, derivs: r.derivs
+          seeds: r.seeds, derivs: r.derivs,
+          axes: r.axes || undefined,
+          start: r.start[0] || r.start[1] ? r.start : undefined
         });
       });
     // The ticker goes first, as a hidden row the engine analyzes like any
@@ -930,7 +932,8 @@
       var seedsEl = el.querySelector('.seeds');
       seedsEl.classList.toggle('bad', !!ode.error);
       seedsEl.title = ode.error || '';
-      showDerivs(row, ode.order);
+      showAxes(row, ode);
+      showDerivs(row, ode);
       var derivsEl = el.querySelector('.derivs');
       derivsEl.classList.toggle('bad', !!ode.derivsError);
       derivsEl.title = ode.derivsError || '';
@@ -945,40 +948,137 @@
     if (missing.length > 1) row.missingButtons.appendChild(sliderButton(row, null, missing, 'all'));
   }
 
-  // An equation of order n starts from y'(x₀) to y⁽ⁿ⁻¹⁾(x₀) as well as
-  // its points: one box each, kept when the order drops so nothing typed
-  // is lost.
-  function showDerivs(row, order) {
-    var want = Math.max(0, order - 1);
-    if (row.derivFields.length === want) return;
+  // A differential equation's quantities as plain text for the axis
+  // menus: θ' for \theta'.
+  var GREEK_TEXT = {
+    alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ', eta: 'η',
+    theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ',
+    pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ', phi: 'φ', chi: 'χ',
+    psi: 'ψ', omega: 'ω', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ',
+    Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω'
+  };
+  function quantityText(latex) {
+    return latex.replace(/\\([A-Za-z]+) ?/g, function (m, n) { return GREEK_TEXT[n] || n; })
+      .replace(/'/g, '′');
+  }
+
+  // Which quantity goes on each axis: y against x unless the person
+  // picks others, such as y' against y for a phase portrait.
+  function showAxes(row, ode) {
+    var names = ode.names || [];
+    var box = row.el.querySelector('.phase');
+    box.style.display = names.length > 2 ? '' : 'none';
+    var key = names.join('|');
+    var selects = [box.querySelector('.ax-h'), box.querySelector('.ax-v')];
+    if (row.axesKey !== key) {
+      row.axesKey = key;
+      selects.forEach(function (sel, which) {
+        sel.innerHTML = '';
+        names.forEach(function (n, k) {
+          var o = document.createElement('option');
+          o.value = String(k);
+          o.textContent = quantityText(n);
+          sel.appendChild(o);
+        });
+        sel.onchange = function () {
+          // The latest analysis, and the axes as last picked (the analysis
+          // of that pick may still be on its way).
+          var before = row.result && row.result.ode ? row.result.ode : ode;
+          var old = (row.axes || before.axes || [0, 1]).slice();
+          var axes = old.slice();
+          var k = Number(sel.value);
+          // Picking the other axis's quantity swaps the two.
+          if (axes[1 - which] === k) axes[1 - which] = axes[which];
+          axes[which] = k;
+          setAxes(row, before, old, axes);
+        };
+      });
+    }
+    var axes = ode.axes || [0, 1];
+    selects[0].value = String(axes[0]);
+    selects[1].value = String(axes[1]);
+  }
+
+  // Moves the initial points onto new axes, keeping where each solution
+  // starts when the points are plain numbers: the quantities the axes
+  // leave off go into their boxes.
+  function setAxes(row, ode, old, axes) {
+    var states = ode.states;
+    var num = function (v) {
+      var s = String(+(+v).toPrecision(6));
+      return s.indexOf('e') >= 0 ? String(v) : s;
+    };
+    if (states && states.length) {
+      var pts = states.map(function (st) {
+        return '\\left(' + num(st[axes[0]]) + ',' + num(st[axes[1]]) + '\\right)';
+      });
+      row.seeds = pts.length === 1 ? pts[0] : '\\left[' + pts.join(',') + '\\right]';
+      row.settingSeeds = true;
+      row.seedsField.latex(row.seeds);
+      row.settingSeeds = false;
+      old.forEach(function (k) {
+        if (axes.indexOf(k) >= 0) return;
+        var vals = states.map(function (st) { return num(st[k]); });
+        var same = vals.every(function (v) { return v === vals[0]; });
+        var latex = same ? vals[0] : '\\left[' + vals.join(',') + '\\right]';
+        if (k < 2) row.start[k] = latex;
+        else {
+          while (row.derivs.length <= k - 2) row.derivs.push('');
+          row.derivs[k - 2] = latex;
+        }
+      });
+    }
+    row.axes = axes;
+    row.derivsKey = '';
+    sendRows();
+  }
+
+  // The starting values the initial points leave off: y'(x₀) to y⁽ⁿ⁻¹⁾(x₀)
+  // for an equation of order n, and any quantity the axes don't show
+  // (t₀ only when the equation reads t). One box each; what is typed in a
+  // box is kept when it goes away, so nothing is lost.
+  function showDerivs(row, ode) {
+    var names = ode.names || [];
+    var axes = ode.axes || [0, 1];
+    var shown = [];
+    names.forEach(function (n, k) {
+      if (axes.indexOf(k) >= 0) return;
+      if (k === 0 && ode.autonomous) return;
+      shown.push(k);
+    });
+    var key = names.join('|') + '/' + shown.join(',');
+    if (row.derivsKey === key) return;
+    row.derivsKey = key;
     var box = row.el.querySelector('.derivs');
     box.innerHTML = '';
     row.derivFields = [];
-    for (var i = 0; i < want; i++) {
+    var at = names[0] + '_0';
+    shown.forEach(function (k) {
       var label = document.createElement('span');
-      MQ.StaticMath(label).latex('y' + "'".repeat(i + 1) + '\\left(x_0\\right)=');
+      MQ.StaticMath(label).latex(k === 0 ? at + '=' : names[k] + '\\left(' + at + '\\right)=');
       var field = document.createElement('span');
       field.className = 'bound';
       box.appendChild(label);
       box.appendChild(field);
-      (function (i) {
-        var mf = MQ.MathField(field, Object.assign({}, MATH_OPTIONS, {
-          handlers: {
-            edit: function () {
-              if (row.settingSeeds) return;
-              while (row.derivs.length <= i) row.derivs.push('');
-              row.derivs[i] = mf.latex();
-              sendRows();
-            },
-            enter: function () { row.field.focus(); }
-          }
-        }));
-        row.settingSeeds = true;
-        mf.latex(row.derivs[i] || '0');
-        row.settingSeeds = false;
-        row.derivFields.push(mf);
-      })(i);
-    }
+      var mf = MQ.MathField(field, Object.assign({}, MATH_OPTIONS, {
+        handlers: {
+          edit: function () {
+            if (row.settingSeeds) return;
+            if (k < 2) row.start[k] = mf.latex();
+            else {
+              while (row.derivs.length <= k - 2) row.derivs.push('');
+              row.derivs[k - 2] = mf.latex();
+            }
+            sendRows();
+          },
+          enter: function () { row.field.focus(); }
+        }
+      }));
+      row.settingSeeds = true;
+      mf.latex((k < 2 ? row.start[k] : row.derivs[k - 2]) || '0');
+      row.settingSeeds = false;
+      row.derivFields.push(mf);
+    });
   }
 
   function sliderButton(row, latex, names, label) {
@@ -1019,6 +1119,8 @@
       '<span class="bound dmax"></span></div>' +
       '<div class="seeds" title="">through <span class="bound seeds-field"></span>' +
       '<span class="derivs"></span></div>' +
+      '<div class="phase" title="Choose what each axis shows, as angle against angular velocity for a pendulum">' +
+      'horizontal <select class="ax-h"></select> vertical <select class="ax-v"></select></div>' +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
       '<div class="steps"></div>' +
       '</div>' +
@@ -1051,7 +1153,11 @@
       domainMax: null,
       seeds: null,
       derivs: [],
+      start: ['', ''],
+      axes: null,
       derivFields: [],
+      derivsKey: '',
+      axesKey: '',
       seedsShown: false,
       settingSeeds: false,
       seedsField: null,
@@ -2637,6 +2743,8 @@
       loadTransform(row, s);
       if (typeof s.seeds === 'string') row.seeds = s.seeds;
       if (Array.isArray(s.derivs)) row.derivs = s.derivs.map(String);
+      if (Array.isArray(s.axes) && s.axes.length === 2) row.axes = s.axes.map(Number);
+      if (Array.isArray(s.start)) row.start = [String(s.start[0] || ''), String(s.start[1] || '')];
       paintRow(row);
     });
     if (rows.length === 0) addRow('', 0);

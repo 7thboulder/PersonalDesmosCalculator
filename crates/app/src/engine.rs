@@ -101,8 +101,12 @@ impl GraphPoints {
 /// and the solutions from each start.
 pub struct GraphOde {
     pub ode: Ode,
-    /// x and y, then y' to y⁽ⁿ⁻¹⁾ for an equation of order n.
+    /// Every quantity at each start: x, y, then y' to y⁽ⁿ⁻¹⁾ for an
+    /// equation of order n, or a system's t, x and y.
     pub starts: Vec<Vec<f64>>,
+    /// Which quantities go across and up.
+    pub axes: [usize; 2],
+    pub autonomous: bool,
     pub color: [f32; 4],
     pub width: f32,
     pub style: LineStyle,
@@ -348,6 +352,8 @@ impl Engine {
                 }),
                 transform: r["transform"].as_f64(),
                 seeds: r["seeds"].as_str().map(str::to_owned),
+                axes: crate::solve::ode_axes(&r["axes"]),
+                start: crate::solve::ode_start(&r["start"]),
                 derivs: r["derivs"]
                     .as_array()
                     .map_or(&[][..], Vec::as_slice)
@@ -403,15 +409,13 @@ impl Engine {
                     style,
                 });
             }
-            let starts: Vec<Vec<f64>> = result
-                .seeds
-                .iter()
-                .map(|s| s.at.iter().chain(&s.derivs).copied().collect())
-                .collect();
+            let starts: Vec<Vec<f64>> = result.seeds.iter().map(|s| s.state.clone()).collect();
             for ode in &result.odes {
                 self.odes.push(GraphOde {
                     ode: ode.clone(),
                     starts: starts.clone(),
+                    axes: result.ode_axes,
+                    autonomous: result.ode_autonomous,
                     color,
                     width,
                     style,
@@ -812,6 +816,8 @@ impl Engine {
             .zip(&fns)
             .map(|(o, fns)| SlopeField {
                 equation: fns.equation(&o.ode),
+                axes: o.axes,
+                autonomous: o.autonomous,
                 starts: &o.starts,
                 color: o.color,
                 width: o.width,
@@ -1294,6 +1300,11 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>, degrees: bool) -> Val
         // A differential equation shows its initial points under it.
         "ode": r.ode.map(|order| json!({
             "order": order,
+            "names": r.ode_names,
+            "axes": r.ode_axes,
+            "autonomous": r.ode_autonomous,
+            // Where each start is, so changing the axes can keep it.
+            "states": r.seeds_fixed.then(|| r.seeds.iter().map(|s| &s.state).collect::<Vec<_>>()),
             "error": r.seeds_error,
             "derivsError": r.derivs_error,
         })),

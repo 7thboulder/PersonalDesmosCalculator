@@ -33,8 +33,16 @@ pub struct RowInput {
     /// `(0, 1)` or `[(0, 1), (a, b)]`.
     pub seeds: Option<String>,
     /// The LaTeX of an equation of order n's initial derivatives, y' to
-    /// y⁽ⁿ⁻¹⁾, each a number or a list with one per initial point.
+    /// y⁽ⁿ⁻¹⁾ (a system's y, when its axes leave y off), each a number or
+    /// a list with one per initial point.
     pub derivs: Vec<String>,
+    /// Which of a differential equation's quantities go across and up, as
+    /// indices into [`RowAnalysis::ode_names`]: None for the usual y
+    /// against x. The initial points then give those two quantities.
+    pub axes: Option<[usize; 2]>,
+    /// The LaTeX of the starting values of the first two quantities (x or
+    /// t, then y or a system's x) when the axes leave them off.
+    pub start: [String; 2],
     /// Set when the row is a table instead of an expression.
     pub table: Option<Vec<ColumnInput>>,
     /// Set when the row is a matrix: the LaTeX of each cell, row by row.
@@ -147,8 +155,9 @@ pub struct Seed {
     /// For a point written with slider variables, as in `(a, b)`: the
     /// variable each coordinate drags.
     pub drag: Option<[Option<String>; 2]>,
-    /// For an equation of order n, y' to y⁽ⁿ⁻¹⁾ there.
-    pub derivs: Vec<f64>,
+    /// Every quantity there, in the order of [`RowAnalysis::ode_names`]:
+    /// x, y, y', … or a system's t, x, y.
+    pub state: Vec<f64>,
 }
 
 /// A differential equation, as its row draws it.
@@ -364,6 +373,14 @@ pub struct RowAnalysis {
     /// Whether every initial point is written as plain numbers, so
     /// dragging one can rewrite them.
     pub seeds_fixed: bool,
+    /// A differential equation's quantities as LaTeX: the independent
+    /// variable, then its state (x, y, y', … or a system's t, x, y).
+    pub ode_names: Vec<String>,
+    /// Which of them go across and up.
+    pub ode_axes: [usize; 2],
+    /// Whether the equation leaves the independent variable out, so
+    /// where it starts makes no difference.
+    pub ode_autonomous: bool,
 }
 
 /// What a regression found.
@@ -418,6 +435,9 @@ impl RowAnalysis {
             seeds_error: None,
             derivs_error: None,
             seeds_fixed: false,
+            ode_names: Vec::new(),
+            ode_axes: [0, 1],
+            ode_autonomous: true,
         }
     }
 
@@ -582,6 +602,8 @@ struct RowKey {
     domain: Option<[String; 2]>,
     seeds: Option<String>,
     derivs: Vec<String>,
+    axes: Option<[usize; 2]>,
+    start: [String; 2],
     transform: Option<u64>,
 }
 
@@ -591,6 +613,8 @@ impl RowKey {
             domain: row.domain.clone(),
             seeds: row.seeds.clone(),
             derivs: row.derivs.clone(),
+            axes: row.axes,
+            start: row.start.clone(),
             transform: row.transform.map(f64::to_bits),
         }
     }
@@ -2655,6 +2679,8 @@ impl Env {
                     (Err(e), _) | (_, Err(e)) => row.error = Some(e),
                 }
             }
+            row.ode_names = ["t", "x", "y"].map(String::from).to_vec();
+            row.ode_axes = [1, 2];
         } else {
             let mentions_x = |e: &Expr| {
                 let mut found = false;
@@ -2698,6 +2724,24 @@ impl Env {
                     None => Ode::Implicit { order, f },
                 });
             }
+            // θ'' = -sin θ is read as y'' = -sin y, in t, and shown as typed.
+            let (unknown, var) = match crate::parser::greek_unknown_of(&input.latex) {
+                Some((g, var)) => (format!("\\{g}"), var),
+                None => ("y".to_owned(), "x".to_owned()),
+            };
+            row.ode_names = std::iter::once(var)
+                .chain((0..order).map(|k| format!("{unknown}{}", "'".repeat(k))))
+                .collect();
+        }
+        row.ode_autonomous = row.odes.iter().all(|o| match o {
+            Ode::Explicit { f, .. } | Ode::Implicit { f, .. } => !f.uses_x(),
+            Ode::System { f, g } => !(f.uses_z() || g.uses_z()),
+        });
+        let m = row.ode_names.len();
+        if let Some([a, b]) = input.axes {
+            if a != b && a < m && b < m {
+                row.ode_axes = [a, b];
+            }
         }
         self.read_seeds(input, &mut row);
         row
@@ -2705,7 +2749,6 @@ impl Env {
 
     /// A differential equation's initial points and derivatives.
     fn read_seeds(&mut self, input: &RowInput, row: &mut RowAnalysis) {
-        let order = row.ode.unwrap_or(1);
         let latex = input.seeds.as_deref().unwrap_or("").trim();
         if latex.is_empty() {
             row.seeds_fixed = true;
@@ -2738,26 +2781,36 @@ impl Env {
                 (Expr::List(Vec::new()), Vec::new())
             }
         };
-        // y'(x₀), y''(x₀), …: a number for every point, or a list with one
-        // for each.
-        let mut derivs: Vec<Vec<f64>> = Vec::new();
-        for i in 0..order.saturating_sub(1) {
-            let latex = input.derivs.get(i).map_or("", |l| l.trim());
+        // Every quantity the points leave off: x₀ or t₀, y'(x₀), y''(x₀), …
+        // A number for every point, or a list with one for each.
+        let quantities = row.ode_names.len();
+        let axes = row.ode_axes;
+        let mut others: Vec<Vec<f64>> = Vec::new();
+        for k in 0..quantities {
+            if axes.contains(&k) {
+                others.push(Vec::new());
+                continue;
+            }
+            let latex = if k < 2 {
+                input.start[k].trim()
+            } else {
+                input.derivs.get(k - 2).map_or("", |l| l.trim())
+            };
             let values = if latex.is_empty() {
                 Ok(vec![0.0])
             } else {
                 match value_of(self, latex) {
                     Ok((_, Some(Value::Number(v)))) => Ok(vec![v]),
                     Ok((_, Some(Value::Numbers(vs)))) if !vs.is_empty() => Ok(vs),
-                    Ok(_) => Err("Initial derivatives are numbers, or a list of them".into()),
+                    Ok(_) => Err("Initial values are numbers, or a list of them".into()),
                     Err(e) => Err(e),
                 }
             };
             match values {
-                Ok(vs) => derivs.push(vs),
+                Ok(vs) => others.push(vs),
                 Err(e) => {
                     row.derivs_error.get_or_insert(e);
-                    derivs.push(vec![f64::NAN]);
+                    others.push(vec![f64::NAN]);
                 }
             }
         }
@@ -2778,16 +2831,23 @@ impl Env {
             .into_iter()
             .zip(drags)
             .enumerate()
-            .map(|(i, (at, drag))| Seed {
-                at,
-                drag,
-                derivs: derivs
-                    .iter()
-                    .map(|vs| match vs.len() {
-                        1 => vs[0],
-                        _ => vs.get(i).copied().unwrap_or(f64::NAN),
+            .map(|(i, (at, drag))| {
+                let state: Vec<f64> = (0..quantities)
+                    .map(|k| {
+                        if k == axes[0] {
+                            at[0]
+                        } else if k == axes[1] {
+                            at[1]
+                        } else {
+                            let vs = &others[k];
+                            match vs.len() {
+                                1 => vs[0],
+                                _ => vs.get(i).copied().unwrap_or(f64::NAN),
+                            }
+                        }
                     })
-                    .collect(),
+                    .collect();
+                Seed { at, drag, state }
             })
             .collect();
     }

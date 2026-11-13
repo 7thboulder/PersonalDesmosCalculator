@@ -124,6 +124,12 @@ const SYSTEM_HINT: &str = "A system is written x'=f, y'=g or (x',y')=(f,g)";
 /// `y''`, and `x'` or `\frac{dx}{dt}` becomes `x'`. A prime followed by
 /// brackets, as in `f'(x)`, is still a function's derivative.
 fn derivatives(toks: Vec<Tok>) -> Vec<Tok> {
+    derivatives_info(toks).0
+}
+
+/// As `derivatives`, saying too which Greek letter was read as y (see
+/// [`greek_ode`]).
+fn derivatives_info(toks: Vec<Tok>) -> (Vec<Tok>, Option<(String, bool)>) {
     let letter = |t: Option<&Tok>, names: &[&str]| match t {
         Some(Tok::Letter(l)) if names.contains(&l.as_str()) => Some(l.clone()),
         _ => None,
@@ -144,10 +150,15 @@ fn derivatives(toks: Vec<Tok>) -> Vec<Tok> {
             _ => None,
         }
     };
+    // A Greek letter can be the unknown too, as θ in θ'' = -sin θ.
+    let unknown = |t: Option<&Tok>| match t {
+        Some(Tok::Letter(l)) if l == "x" || l == "y" || greek_unknown(l) => Some(l.clone()),
+        _ => None,
+    };
     let mut out = Vec::with_capacity(toks.len());
     let mut i = 0;
     while i < toks.len() {
-        if let Some(v) = letter(toks.get(i), &["x", "y"]) {
+        if let Some(v) = unknown(toks.get(i)) {
             let primes = toks[i + 1..]
                 .iter()
                 .take_while(|t| **t == Tok::Prime)
@@ -169,7 +180,7 @@ fn derivatives(toks: Vec<Tok>) -> Vec<Tok> {
                 j += 1;
                 let (top, used) = power(&toks, j).unwrap_or((1, 0));
                 j += used;
-                let v = letter(toks.get(j), &["x", "y"])?;
+                let v = unknown(toks.get(j))?;
                 j += 1;
                 if toks.get(j) != Some(&Tok::RBrace) || toks.get(j + 1) != Some(&Tok::LBrace) {
                     return None;
@@ -196,7 +207,79 @@ fn derivatives(toks: Vec<Tok>) -> Vec<Tok> {
         out.push(toks[i].clone());
         i += 1;
     }
-    out
+    greek_ode(out)
+}
+
+/// Greek letters that can be a differential equation's unknown: all but
+/// the constants.
+fn greek_unknown(name: &str) -> bool {
+    crate::lexer::GREEK.contains(&name) && !matches!(name, "pi" | "tau")
+}
+
+/// An equation in a Greek letter and its derivatives, as θ'' = -sin θ, is
+/// read as one in y: θ becomes y, θ' becomes y' and so on, and t (the
+/// usual name of time) becomes x when x is not used. Returns the tokens,
+/// and the letter and whether t was renamed when it is such an equation.
+/// Anything that also uses y, or derivatives of two letters, is left as
+/// it is.
+fn greek_ode(toks: Vec<Tok>) -> (Vec<Tok>, Option<(String, bool)>) {
+    let base = |name: &str| -> Option<(String, usize)> {
+        let primes = name.len() - name.trim_end_matches('\'').len();
+        let stem = &name[..name.len() - primes];
+        (primes > 0).then(|| (stem.to_owned(), primes))
+    };
+    let mut greek: Option<String> = None;
+    for t in &toks {
+        let Tok::Letter(l) = t else { continue };
+        if l == "y" {
+            return (toks, None);
+        }
+        if let Some((stem, _)) = base(l) {
+            if stem == "x" || stem == "y" {
+                return (toks, None);
+            }
+            if greek_unknown(&stem) {
+                match &greek {
+                    Some(g) if *g != stem => return (toks, None),
+                    _ => greek = Some(stem),
+                }
+            }
+        }
+    }
+    let Some(g) = greek else {
+        return (toks, None);
+    };
+    let has = |name: &str| {
+        toks.iter()
+            .any(|t| matches!(t, Tok::Letter(l) if l == name))
+    };
+    let time = has("t") && !has("x");
+    let toks = toks
+        .into_iter()
+        .map(|t| match t {
+            Tok::Letter(l) if l == g => Tok::Letter("y".into()),
+            Tok::Letter(l) if time && l == "t" => Tok::Letter("x".into()),
+            Tok::Letter(l) => match base(&l) {
+                Some((stem, primes)) if stem == g => {
+                    Tok::Letter(format!("y{}", "'".repeat(primes)))
+                }
+                _ => Tok::Letter(l),
+            },
+            t => t,
+        })
+        .collect();
+    (toks, Some((g, time)))
+}
+
+/// For a differential equation written in a Greek letter, as
+/// θ'' = -(g/L) sin θ: the letter (`theta`) and the name of the variable
+/// it depends on (t, or x when x is used instead).
+pub(crate) fn greek_unknown_of(latex: &str) -> Option<(String, String)> {
+    let toks = crate::dots::rewrite(tokenize(latex).ok()?).ok()?;
+    let (g, time) = derivatives_info(toks).1?;
+    let toks = tokenize(latex).ok()?;
+    let uses_x = toks.iter().any(|t| matches!(t, Tok::Letter(l) if l == "x"));
+    Some((g, if time || !uses_x { "t" } else { "x" }.to_owned()))
 }
 
 struct Parser {

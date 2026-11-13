@@ -548,6 +548,26 @@ button.icon:disabled { color: #bbb; cursor: default; }
 .row .derivs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: 8px; }
 .row .derivs .bound { min-width: 28px; }
 .row .derivs.bad .bound { border-bottom-color: #e0832e; }
+/* Which quantity each axis shows: horizontal y, vertical y'. */
+.row .phase {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px 12px;
+  color: #666;
+  font-size: 13px;
+}
+.row.has-seeds .phase { display: flex; }
+.row .phase select {
+  font: inherit;
+  font-size: 14px;
+  color: #333;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  background: transparent;
+  padding: 0 2px;
+}
+.row .phase select:focus { outline: none; border-bottom-color: #2f72dc; }
 
 /* ---- Points and lines toggles ---- */
 #style-menu .toggles { display: none; gap: 12px; margin: 6px 0 2px; }

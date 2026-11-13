@@ -444,6 +444,11 @@ impl Program {
         self.reads(&|a| matches!(a, Arg::X | Arg::Y | Arg::Z | Arg::Extra(_)))
     }
 
+    /// True when the program reads x.
+    pub fn uses_x(&self) -> bool {
+        self.reads(&|a| a == Arg::X)
+    }
+
     /// True when the program reads y, so it needs a two-dimensional plot.
     pub fn uses_y(&self) -> bool {
         self.reads(&|a| a == Arg::Y)

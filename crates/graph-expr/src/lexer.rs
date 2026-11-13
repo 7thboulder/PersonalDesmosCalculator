@@ -64,7 +64,7 @@ pub enum Tok {
     Unsupported(String),
 }
 
-const GREEK: &[&str] = &[
+pub(crate) const GREEK: &[&str] = &[
     "alpha",
     "beta",
     "gamma",
