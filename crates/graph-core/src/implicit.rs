@@ -55,14 +55,16 @@ pub fn trace_implicit(field: &dyn Field, vp: &Viewport) -> Vec<Vec<[f32; 2]>> {
     };
     let (x0, x1) = vp.x_range();
     let (y0, y1) = vp.y_range();
+    // Cells are square on screen, so as tall in y units as y's scale says.
     let root = vp.units_per_px * ROOT_PX;
+    let root_y = vp.y_units_per_px() * ROOT_PX;
     let cells_x = ((x1 - x0) / root).ceil().max(1.0) as i64;
-    let cells_y = ((y1 - y0) / root).ceil().max(1.0) as i64;
+    let cells_y = ((y1 - y0) / root_y).ceil().max(1.0) as i64;
     // Whole root cells, so the grid does not shift as the view is panned.
     let column = |i: i64, tracer: &mut Tracer| {
         let (ax, bx) = (x0 + i as f64 * root, x0 + (i + 1) as f64 * root);
         for j in 0..cells_y {
-            let (ay, by) = (y0 + j as f64 * root, y0 + (j + 1) as f64 * root);
+            let (ay, by) = (y0 + j as f64 * root_y, y0 + (j + 1) as f64 * root_y);
             let corners = [
                 field.value(ax, ay),
                 field.value(bx, ay),

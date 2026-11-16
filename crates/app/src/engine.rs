@@ -27,6 +27,9 @@ fn mix(a: u64, b: u64) -> u64 {
     (a ^ b.wrapping_mul(0x9e37_79b9_7f4a_7c15)).rotate_left(23)
 }
 
+/// The normal helper's shading: Desmos's blue.
+const NORMAL_SHADE: &str = "#2d70b3";
+
 /// How much of the colour Desmos lays down inside an inequality.
 const SHADE_OPACITY: f32 = 0.4;
 /// And inside a polygon, unless the row says otherwise.
@@ -308,6 +311,8 @@ pub struct Engine {
     pub grid: GridSettings,
     /// Whether `cache` holds values worked out in degrees.
     cache_degrees: bool,
+    /// The wrench menu's axis steps and normal curve, worked out.
+    pub axes: crate::axes::Resolved,
 }
 
 impl Engine {
@@ -367,7 +372,17 @@ impl Engine {
             self.cache = Cache::default();
             self.cache_degrees = self.grid.degrees;
         }
-        let results = analyze_angles(&inputs, &mut self.cache, self.mode, self.grid.degrees);
+        // The wrench menu's steps may name variables, so they are read as
+        // rows after the panel's.
+        let panel_rows = inputs.len();
+        let mut inputs = inputs;
+        if self.mode == Mode::Flat {
+            inputs.extend(crate::axes::probes(&self.grid.axes));
+        }
+        let mut results = analyze_angles(&inputs, &mut self.cache, self.mode, self.grid.degrees);
+        self.axes = crate::axes::resolve(&self.grid.axes, &results[panel_rows..]);
+        results.truncate(panel_rows);
+        inputs.truncate(panel_rows);
 
         self.latex = inputs.iter().map(|r| r.latex.clone()).collect();
         self.generation += 1;
@@ -798,7 +813,7 @@ impl Engine {
                 line: p.line,
             })
             .collect();
-        let polygons: Vec<Polygon> = self
+        let mut polygons: Vec<Polygon> = self
             .polygons
             .iter()
             .map(|p| Polygon {
@@ -809,6 +824,23 @@ impl Engine {
                 style: p.style,
             })
             .collect();
+        // The normal helper's shading, with its probability written on it.
+        let mut marks = marks.to_vec();
+        if let Some(shade) = &self.axes.shade {
+            polygons.push(Polygon {
+                points: &shade.outline,
+                color: parse_color(NORMAL_SHADE, 1.0),
+                fill: SHADE_OPACITY,
+                width: 0.0,
+                style: LineStyle::Solid,
+            });
+            marks.push(Mark {
+                at: shade.note_at,
+                color: [0.0; 4],
+                kind: graph_core::scene::MarkKind::Note,
+                label: Some(shade.note.clone()),
+            });
+        }
         let fns: Vec<OdeFns> = self.odes.iter().map(|o| OdeFns::of(&o.ode)).collect();
         let fields: Vec<SlopeField> = self
             .odes
@@ -831,8 +863,13 @@ impl Engine {
             polygons: &polygons,
             points: &points,
             fields: &fields,
-            marks,
-            grid: self.grid,
+            marks: &marks,
+            grid: self.grid.clone(),
+            steps: if self.mode == Mode::Flat {
+                self.axes.steps
+            } else {
+                Default::default()
+            },
         })
     }
 
@@ -1062,9 +1099,11 @@ impl Engine {
     /// What the GPU draws for this frame: the fill inside every inequality
     /// it can evaluate, and the boundary of every solid-styled one.
     /// `origin` is the world position of the target's pixel (0, 0), and
-    /// `scale` the display's DPI scale.
-    pub fn shadings(&self, origin: [f64; 2], units_per_px: f64, scale: f32) -> Vec<Shading> {
+    /// `units` the world units per pixel across and up, and `scale` the
+    /// display's DPI scale.
+    pub fn shadings(&self, origin: [f64; 2], units: [f64; 2], scale: f32) -> Vec<Shading> {
         let origin = [origin[0] as f32, origin[1] as f32];
+        let [units_per_px, y_units_per_px] = units;
         // Complex colorings go first, so inequalities shade over them.
         let colorings = self.complex.iter().filter(|c| c.colors()).filter_map(|c| {
             let shader = c.shader.as_ref()?;
@@ -1077,6 +1116,7 @@ impl Engine {
                 line_px: 0.0,
                 origin,
                 units_per_px: units_per_px as f32,
+                y_units_per_px: y_units_per_px as f32,
                 complex: true,
             })
         });
@@ -1105,6 +1145,7 @@ impl Engine {
                 line_px,
                 origin,
                 units_per_px: units_per_px as f32,
+                y_units_per_px: y_units_per_px as f32,
                 complex: false,
             })
         });
@@ -1565,7 +1606,7 @@ mod tests {
         assert_eq!(reply[0]["complex"], true);
         assert_eq!(reply[0]["graphed"], true);
         // The coloring goes first, so the inequality shades over it.
-        let shadings = engine.shadings([-10.0, 10.0], 0.02, 1.0);
+        let shadings = engine.shadings([-10.0, 10.0], [0.02, 0.02], 1.0);
         assert_eq!(shadings.len(), 2);
         assert!(shadings[0].complex && !shadings[1].complex);
         assert!(shadings[0].body.contains("vec2<f32>"));
@@ -1576,7 +1617,7 @@ mod tests {
         engine.update(&json!([
             {"id": 1, "latex": "z^2", "color": "#c74440", "complex": "grid"},
         ]));
-        assert!(engine.shadings([-10.0, 10.0], 0.02, 1.0).is_empty());
+        assert!(engine.shadings([-10.0, 10.0], [0.02, 0.02], 1.0).is_empty());
         engine.with_plot(&vp, 1.0, |plot| {
             // -10 to 10 each way at the minor spacing, 0.5.
             assert_eq!(plot.parametrics.len(), 2 * 41);
@@ -1594,7 +1635,7 @@ mod tests {
             &json!([{"id": 1, "latex": "z+\\left(\\operatorname{real}\\left(z\\right)\\right)!"}]),
         );
         assert!(engine.complex[0].shader.is_none());
-        assert!(engine.shadings([-10.0, 10.0], 0.02, 1.0).is_empty());
+        assert!(engine.shadings([-10.0, 10.0], [0.02, 0.02], 1.0).is_empty());
         engine.with_plot(&vp, 1.0, |plot| assert!(!plot.parametrics.is_empty()));
     }
 
@@ -1612,7 +1653,7 @@ mod tests {
 
         // The circle and the parabola are drawn entirely by the GPU: the
         // equation as a line, the inequality as a line and a fill.
-        let shadings = engine.shadings([-10.0, 10.0], 0.02, 1.0);
+        let shadings = engine.shadings([-10.0, 10.0], [0.02, 0.02], 1.0);
         assert_eq!(shadings.len(), 2);
         assert_eq!(shadings[0].test, None, "an equation has no inside");
         assert!(shadings[0].line_px > 0.0);
@@ -1635,7 +1676,10 @@ mod tests {
         engine.update(&json!([
             {"id": 1, "latex": "x^2+y^2<4", "color": "#c74440", "style": "dashed"},
         ]));
-        assert_eq!(engine.shadings([-10.0, 10.0], 0.02, 1.0)[0].line_px, 0.0);
+        assert_eq!(
+            engine.shadings([-10.0, 10.0], [0.02, 0.02], 1.0)[0].line_px,
+            0.0
+        );
         engine.with_plot(&Viewport::new(800.0, 600.0), 1.0, |plot| {
             assert_eq!(plot.implicits.len(), 1)
         });

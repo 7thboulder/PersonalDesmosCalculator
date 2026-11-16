@@ -1,4 +1,4 @@
-use crate::grid::{grid_spacing, line_indices, GridSettings};
+use crate::grid::{axis_lines, grid_spacing, line_indices, AxisLines, AxisSteps, GridSettings};
 use crate::implicit::{trace_implicit, Field};
 use crate::ode::{phase_field_marks, phase_solutions, Axes, Equation};
 use crate::sample::{sample_curve, sample_parametric, Axis};
@@ -162,6 +162,9 @@ pub enum MarkKind {
     Hot,
     /// The point following the mouse along a curve while tracing.
     Trace,
+    /// No point, just its label centred over it, such as the probability
+    /// of a shaded part of a normal curve.
+    Note,
 }
 
 /// A point drawn over everything else, with an optional coordinate label.
@@ -189,6 +192,8 @@ pub struct Plot<'a> {
     pub marks: &'a [Mark],
     /// Grid, axes and angle settings.
     pub grid: GridSettings,
+    /// The wrench menu's axis steps, worked out.
+    pub steps: AxisSteps,
 }
 
 /// One frame's triangles, in parts: the renderer draws `vertices` up to
@@ -430,16 +435,19 @@ pub fn build_scene_cached(
         points,
         fields,
         marks,
-        grid: settings,
+        grid: ref settings,
+        steps,
     } = *plot;
     let mut out = Vec::with_capacity(64 * 1024);
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
     fill_rect(0.0, 0.0, w, h, BACKGROUND, &mut out);
 
-    let spacing = grid_spacing(vp.units_per_px, MAJOR_SPACING_LOGICAL * scale as f64);
+    let target = MAJOR_SPACING_LOGICAL * scale as f64;
+    let spacing = grid_spacing(vp.units_per_px, target);
+    let xs = axis_lines(steps.x_step, steps.x_center, vp.units_per_px, target);
+    let ys = axis_lines(steps.y_step, 0.0, vp.y_units_per_px(), target);
     let (x0, x1) = vp.x_range();
     let (y0, y1) = vp.y_range();
-    let ratio = (spacing.major / spacing.minor).round() as i64;
     let thin = scale.max(1.0).round();
 
     if settings.grid && settings.polar {
@@ -459,23 +467,42 @@ pub fn build_scene_cached(
             &[Pass::Major]
         };
         for &pass in passes {
-            let (step, color) = match pass {
-                Pass::Minor => (spacing.minor, MINOR_GRID),
-                Pass::Major => (spacing.major, MAJOR_GRID),
+            let color = match pass {
+                Pass::Minor => MINOR_GRID,
+                Pass::Major => MAJOR_GRID,
             };
-            for i in line_indices(x0, x1, step) {
-                if skip(pass, i, ratio) {
+            for (axis, (lo, hi), upp) in [
+                (&xs, (x0, x1), vp.units_per_px),
+                (&ys, (y0, y1), vp.y_units_per_px()),
+            ] {
+                let vertical = std::ptr::eq(axis, &xs);
+                let step = match pass {
+                    Pass::Minor => axis.minor,
+                    Pass::Major => axis.major,
+                };
+                // Minor lines closer than a few pixels are a grey smear.
+                if pass == Pass::Minor && step / upp < MIN_MINOR_PX * scale as f64 {
                     continue;
                 }
-                let sx = snap(vp.to_screen(i as f64 * step, 0.0)[0] as f32, thin);
-                stroke_polyline(&[[sx, 0.0], [sx, h]], thin, color, &mut out);
-            }
-            for i in line_indices(y0, y1, step) {
-                if skip(pass, i, ratio) {
-                    continue;
+                let ratio = (axis.major / axis.minor).round() as i64;
+                for i in line_indices(lo - axis.origin, hi - axis.origin, step) {
+                    let at = axis.origin + i as f64 * step;
+                    let on_axis = at.abs() < step * 1e-9;
+                    let skipped = match pass {
+                        Pass::Minor => i % ratio == 0,
+                        Pass::Major => on_axis,
+                    };
+                    if skipped {
+                        continue;
+                    }
+                    if vertical {
+                        let sx = snap(vp.to_screen(at, 0.0)[0] as f32, thin);
+                        stroke_polyline(&[[sx, 0.0], [sx, h]], thin, color, &mut out);
+                    } else {
+                        let sy = snap(vp.to_screen(0.0, at)[1] as f32, thin);
+                        stroke_polyline(&[[0.0, sy], [w, sy]], thin, color, &mut out);
+                    }
                 }
-                let sy = snap(vp.to_screen(0.0, i as f64 * step)[1] as f32, thin);
-                stroke_polyline(&[[0.0, sy], [w, sy]], thin, color, &mut out);
             }
         }
     }
@@ -492,7 +519,19 @@ pub fn build_scene_cached(
     }
 
     let shade_after = out.len();
-    labels(vp, scale, spacing.major, settings, text, &mut out);
+    if settings.polar {
+        let square = |major| AxisLines {
+            major,
+            minor: major,
+            origin: 0.0,
+            multiple: 1,
+            custom: false,
+        };
+        let (major, major_y) = (square(spacing.major), square(spacing.major));
+        labels(vp, scale, &major, &major_y, None, settings, text, &mut out);
+    } else {
+        labels(vp, scale, &xs, &ys, steps.sigma, settings, text, &mut out);
+    }
     if settings.grid && settings.polar {
         angle_labels(vp, scale, settings.degrees, text, &mut out);
     }
@@ -549,7 +588,8 @@ pub fn build_scene_cached(
     }
     for mark in marks {
         if let Some(label) = &mark.label {
-            draw_mark_label(vp, scale, mark.at, label, text, &mut out);
+            let centred = mark.kind == MarkKind::Note;
+            draw_mark_label(vp, scale, mark.at, label, centred, text, &mut out);
         }
     }
     Scene {
@@ -750,16 +790,18 @@ fn draw_mark(vp: &Viewport, scale: f32, mark: &Mark, out: &mut Vec<Vertex>) {
             disc(c, 7.5 * scale, BACKGROUND, out);
             disc(c, 6.0 * scale, mark.color, out);
         }
+        MarkKind::Note => {}
     }
 }
 
 /// A coordinate label in a white box up and to the right of the point,
-/// flipped to stay on screen.
+/// flipped to stay on screen, or `centred` on it.
 fn draw_mark_label(
     vp: &Viewport,
     scale: f32,
     at: [f64; 2],
     label: &str,
+    centred: bool,
     text: &mut TextAtlas,
     out: &mut Vec<Vertex>,
 ) {
@@ -781,6 +823,9 @@ fn draw_mark_label(
     let mut y0 = sy - gap - height;
     if y0 < 0.0 {
         y0 = sy + gap;
+    }
+    if centred {
+        (x0, y0) = (sx - width / 2.0, sy - height / 2.0);
     }
     let (x0, y0) = (
         x0.clamp(0.0, (w - width).max(0.0)),
@@ -871,13 +916,94 @@ fn draw_label(
     }
 }
 
+/// The number at a major line of a set step: as many places as the step
+/// and the centre need, up to three significant figures of the step, so
+/// σ = 0.0997… reads 0.0997, 0.1995, …
+pub fn step_label(value: f64, step: f64, origin: f64) -> (String, Option<String>) {
+    let step_exp = step.log10().floor() as i32;
+    if !(-4..6).contains(&step_exp) {
+        return axis_label(1, value);
+    }
+    // The fewest places that write `v` exactly, up to 6.
+    let exact = |v: f64| {
+        (0..6)
+            .find(|&p| {
+                let scaled = v * 10f64.powi(p);
+                (scaled - scaled.round()).abs() < 1e-6 * scaled.abs().max(1.0)
+            })
+            .unwrap_or(6)
+    };
+    let places = exact(step)
+        .min((2 - step_exp).max(0))
+        .max(exact(origin).min(4)) as usize;
+    let text = trim_zeros(format!("{value:.places$}"));
+    let text = if text
+        .trim_start_matches('-')
+        .chars()
+        .all(|c| c == '0' || c == '.')
+    {
+        "0".to_string()
+    } else {
+        text
+    };
+    (text.replace('-', &MINUS.to_string()), None)
+}
+
+/// `π/2`, `π`, `3π/2`, … for line `i` of a step that is a simple fraction
+/// of π, as Desmos writes a step of π.
+pub fn pi_label(i: i64, step: f64) -> Option<String> {
+    let ratio = step / std::f64::consts::PI;
+    let (top, bottom) = [1i64, 2, 3, 4, 6, 8, 12].iter().find_map(|&d| {
+        let n = (ratio * d as f64).round();
+        ((ratio * d as f64 - n).abs() < 1e-9 && n >= 1.0 && n < 1e6).then_some((n as i64, d))
+    })?;
+    let (mut n, mut d) = (i * top, bottom);
+    let gcd = |mut a: i64, mut b: i64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a.abs()
+    };
+    let g = gcd(n, d).max(1);
+    (n, d) = (n / g, d / g);
+    let sign = if n < 0 {
+        MINUS.to_string()
+    } else {
+        String::new()
+    };
+    let top = match n.abs() {
+        1 => "\u{3c0}".to_string(),
+        k => format!("{k}\u{3c0}"),
+    };
+    Some(if d == 1 {
+        format!("{sign}{top}")
+    } else {
+        format!("{sign}{top}/{d}")
+    })
+}
+
+/// `μ`, `μ+σ`, `μ−2σ`, … for the line `k` σs from the mean.
+pub fn sigma_label(k: i64) -> String {
+    match k {
+        0 => "\u{3bc}".to_string(),
+        1 => "\u{3bc}+\u{3c3}".to_string(),
+        -1 => format!("\u{3bc}{MINUS}\u{3c3}"),
+        k if k > 0 => format!("\u{3bc}+{k}\u{3c3}"),
+        k => format!("\u{3bc}{MINUS}{}\u{3c3}", -k),
+    }
+}
+
 /// Numbers along both axes at every major grid line. When an axis is off
-/// screen its numbers stay pinned to the nearest edge, as in Desmos.
+/// screen its numbers stay pinned to the nearest edge, as in Desmos. With
+/// `sigma` (μ and σ) the x axis is labelled in σs from μ instead.
+#[allow(clippy::too_many_arguments)]
 fn labels(
     vp: &Viewport,
     scale: f32,
-    major: f64,
-    settings: GridSettings,
+    xs: &AxisLines,
+    ys: &AxisLines,
+    sigma: Option<[f64; 2]>,
+    settings: &GridSettings,
     text: &mut TextAtlas,
     out: &mut Vec<Vertex>,
 ) {
@@ -895,29 +1021,54 @@ fn labels(
     let (ox, oy) = (ox as f32, oy as f32);
     let (x0, x1) = vp.x_range();
     let (y0, y1) = vp.y_range();
-    let major_px = (major / vp.units_per_px) as f32;
+    let major_px = (xs.major / vp.units_per_px) as f32;
     let minus_w = text.measure(&MINUS.to_string(), size);
+    // The label of a line `i` majors from an axis's origin, and whether it
+    // is the 0 that the corner label stands for.
+    let label = |axis: &AxisLines, i: i64, sigma: bool| {
+        let value = axis.origin + i as f64 * axis.major;
+        if sigma {
+            return ((sigma_label(i * axis.multiple), None), false);
+        }
+        let zero = value.abs() < axis.major * 1e-9;
+        let pi = (axis.custom && axis.origin == 0.0 && !zero)
+            .then(|| pi_label(i, axis.major))
+            .flatten();
+        let text = if let Some(pi) = pi {
+            (pi, None)
+        } else if axis.custom || axis.origin != 0.0 {
+            step_label(value, axis.major, axis.origin)
+        } else {
+            axis_label(i, axis.major)
+        };
+        (text, zero)
+    };
 
     // x axis: centred under each line, skipping every other one if crowded.
-    let xs = line_indices(x0, x1, major);
-    let widest = [*xs.start(), *xs.end()]
+    let in_sigmas = sigma.is_some();
+    let indices = line_indices(x0 - xs.origin, x1 - xs.origin, xs.major);
+    let widest = [*indices.start(), *indices.end()]
         .iter()
-        .map(|&i| label_width(text, &axis_label(i, major), size))
+        .map(|&i| label_width(text, &label(xs, i, in_sigmas).0, size))
         .fold(0.0, f32::max);
     let every = if widest + 2.0 * gap > major_px { 2 } else { 1 };
     let baseline = (oy + gap + digit).clamp(gap + digit, h - gap);
-    for i in xs {
-        if !show_x || i == 0 || i % every != 0 {
+    for i in indices {
+        let (text_of, zero) = label(xs, i, in_sigmas);
+        if !show_x || zero || i % every != 0 {
             continue;
         }
-        let label = axis_label(i, major);
-        let width = label_width(text, &label, size);
+        let width = label_width(text, &text_of, size);
         // Centre the digits, letting a minus sign hang to the left.
-        let sign = if i < 0 { minus_w } else { 0.0 };
-        let sx = vp.to_screen(i as f64 * major, 0.0)[0] as f32;
+        let sign = if text_of.0.starts_with(MINUS) {
+            minus_w
+        } else {
+            0.0
+        };
+        let sx = vp.to_screen(xs.origin + i as f64 * xs.major, 0.0)[0] as f32;
         draw_label(
             text,
-            &label,
+            &text_of,
             size,
             halo,
             sx - (width - sign) / 2.0 - sign,
@@ -927,20 +1078,22 @@ fn labels(
     }
 
     // y axis: right-aligned left of the axis, centred on each line.
-    for i in line_indices(y0, y1, major) {
-        if !show_y || i == 0 {
+    for i in line_indices(y0 - ys.origin, y1 - ys.origin, ys.major) {
+        let (text_of, zero) = label(ys, i, false);
+        if !show_y || zero {
             continue;
         }
-        let label = axis_label(i, major);
-        let width = label_width(text, &label, size);
+        let width = label_width(text, &text_of, size);
         let right = (ox - gap).min(w - gap);
         let left = (right - width).max(gap);
-        let sy = vp.to_screen(0.0, i as f64 * major)[1] as f32;
-        draw_label(text, &label, size, halo, left, sy + digit / 2.0, out);
+        let sy = vp.to_screen(0.0, ys.origin + i as f64 * ys.major)[1] as f32;
+        draw_label(text, &text_of, size, halo, left, sy + digit / 2.0, out);
     }
 
-    // A single 0 sits below and left of the origin.
-    if (show_x || show_y) && (0.0..=w).contains(&ox) && (0.0..=h).contains(&oy) {
+    // A single 0 sits below and left of the origin, unless σ labels have
+    // the x axis.
+    let corner = show_y || (show_x && !in_sigmas);
+    if corner && (0.0..=w).contains(&ox) && (0.0..=h).contains(&oy) {
         let zero = ("0".to_string(), None);
         let width = label_width(text, &zero, size);
         draw_label(text, &zero, size, halo, ox - gap - width, baseline, out);
@@ -1178,13 +1331,9 @@ enum Pass {
     Major,
 }
 
-/// Minor lines under a major line, and major lines on an axis, are skipped.
-fn skip(pass: Pass, i: i64, ratio: i64) -> bool {
-    match pass {
-        Pass::Minor => i % ratio == 0,
-        Pass::Major => i == 0,
-    }
-}
+/// The closest minor grid lines come, in logical pixels, before they are
+/// left out.
+const MIN_MINOR_PX: f64 = 6.0;
 
 /// Centres a line of `width` pixels on the pixel grid so 1 px lines stay crisp.
 fn snap(v: f32, width: f32) -> f32 {
@@ -1378,6 +1527,25 @@ mod tests {
         }
         let left = vp.to_screen(-2.0, -2.0)[0];
         assert!(line.iter().all(|v| v.pos[0] as f64 > left - 3.0));
+    }
+
+    #[test]
+    fn set_steps_label_as_typed() {
+        assert_eq!(
+            pi_label(1, std::f64::consts::FRAC_PI_2).unwrap(),
+            "\u{3c0}/2"
+        );
+        assert_eq!(pi_label(2, std::f64::consts::FRAC_PI_2).unwrap(), "\u{3c0}");
+        assert_eq!(
+            pi_label(-3, std::f64::consts::FRAC_PI_2).unwrap(),
+            "\u{2212}3\u{3c0}/2"
+        );
+        assert_eq!(pi_label(1, 0.5), None);
+        assert_eq!(sigma_label(-2), "\u{3bc}\u{2212}2\u{3c3}");
+        // σ = 15 about μ = 100, and a peak of 0.0997… a quarter at a time.
+        assert_eq!(step_label(115.0, 15.0, 100.0).0, "115");
+        assert_eq!(step_label(0.0997356, 0.0997356, 0.0).0, "0.0997");
+        assert_eq!(step_label(-2.5, 0.5, 0.25).0, "\u{2212}2.5");
     }
 
     #[test]

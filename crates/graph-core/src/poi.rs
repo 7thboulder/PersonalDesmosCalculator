@@ -331,12 +331,13 @@ pub fn coordinate_text(v: f64, units_per_px: f64) -> String {
     s.replace('-', "\u{2212}")
 }
 
-/// `(x, y)` as Desmos labels a point.
-pub fn point_text(at: [f64; 2], units_per_px: f64) -> String {
+/// `(x, y)` as Desmos labels a point, each to its own axis's units per
+/// pixel.
+pub fn point_text(at: [f64; 2], units_per_px: [f64; 2]) -> String {
     format!(
         "({}, {})",
-        coordinate_text(at[0], units_per_px),
-        coordinate_text(at[1], units_per_px)
+        coordinate_text(at[0], units_per_px[0]),
+        coordinate_text(at[1], units_per_px[1])
     )
 }
 
@@ -394,7 +395,7 @@ mod tests {
     #[test]
     fn labels_round_to_the_zoom() {
         assert_eq!(
-            point_text([std::f64::consts::FRAC_PI_2, 1.0], 0.02),
+            point_text([std::f64::consts::FRAC_PI_2, 1.0], [0.02, 0.02]),
             "(1.571, 1)"
         );
         assert_eq!(coordinate_text(-0.00001, 0.02), "0");

@@ -2775,16 +2775,56 @@
   // ---- Graph settings (the wrench menu) -------------------------------------
 
   // As Desmos names them in a graph's state. The engine keeps the real copy
-  // and sends it back whenever a graph opens.
+  // and sends it back whenever a graph opens. The axis steps and the normal
+  // distribution helper are this app's own: LaTeX, which may name sliders.
+  var NORMAL_DEFAULTS = {
+    on: false, mean: '0', sd: '1', sigmaLabels: true, yAuto: true,
+    shade: false, shadeFrom: '-1', shadeTo: '1'
+  };
   var graphSettings = {
     polarMode: false, showGrid: true, minorGridlines: true, showXAxis: true,
-    showYAxis: true, xAxisNumbers: true, yAxisNumbers: true, degreeMode: false
+    showYAxis: true, xAxisNumbers: true, yAxisNumbers: true, degreeMode: false,
+    xStep: '', yStep: '', xCenter: '', normal: Object.assign({}, NORMAL_DEFAULTS)
   };
   var settingsMenu = document.getElementById('settings-menu');
+  var normalBox = settingsMenu.querySelector('.normal');
+
+  // The step fields, by the setting each holds: 'xStep', or 'normal.mean'.
+  var stepFields = {};
+  var settingSteps = false;
+  function stepValue(g, key) {
+    return key.indexOf('normal.') === 0 ? g.normal[key.slice(7)] : g[key];
+  }
+  settingsMenu.querySelectorAll('.step-field').forEach(function (el) {
+    var key = el.dataset.axis || 'normal.' + el.dataset.normalField;
+    var field = MQ.MathField(el, Object.assign({}, MATH_OPTIONS, {
+      handlers: {
+        edit: function () {
+          if (settingSteps) return;
+          var change = {};
+          if (key.indexOf('normal.') === 0) {
+            change.normal = Object.assign({}, graphSettings.normal);
+            change.normal[key.slice(7)] = field.latex();
+          } else {
+            change[key] = field.latex();
+          }
+          changeSettings(change);
+        },
+        enter: function () { field.blur(); }
+      }
+    }));
+    stepFields[key] = field;
+  });
+  MQ.StaticMath(settingsMenu.querySelector('.peak-math')).latex('\\frac{1}{\\sigma\\sqrt{2\\pi}}');
+
   function showSettings(s) {
     Object.keys(graphSettings).forEach(function (k) {
       if (typeof s[k] === 'boolean') graphSettings[k] = s[k];
     });
+    ['xStep', 'yStep', 'xCenter'].forEach(function (k) {
+      graphSettings[k] = typeof s[k] === 'string' ? s[k] : '';
+    });
+    graphSettings.normal = Object.assign({}, NORMAL_DEFAULTS, s.normal || {});
     var g = graphSettings;
     settingsMenu.querySelectorAll('[data-grid]').forEach(function (b) {
       b.classList.toggle('on', (b.dataset.grid === 'polar') === g.polarMode);
@@ -2802,11 +2842,68 @@
         box.disabled = !g[p[1]];
         box.parentNode.classList.toggle('off', !g[p[1]]);
       });
+    // The fields, unless one is being typed in: the engine's echo of an
+    // earlier keystroke must not undo a later one.
+    settingSteps = true;
+    Object.keys(stepFields).forEach(function (key) {
+      var field = stepFields[key];
+      var value = stepValue(g, key) || '';
+      if (field.latex() !== value && !field.el().classList.contains('mq-focused')) field.latex(value);
+    });
+    settingSteps = false;
+    var n = g.normal;
+    normalBox.classList.toggle('on', n.on);
+    settingsMenu.querySelectorAll('input[data-normal]').forEach(function (box) {
+      box.checked = !!n[box.dataset.normal];
+    });
+    settingsMenu.querySelectorAll('[data-labels]').forEach(function (b) {
+      b.classList.toggle('on', (b.dataset.labels === 'sigma') === n.sigmaLabels);
+    });
+    // The helper sets the x step and centre, and the y step when auto.
+    stepFields.xStep.el().parentNode.classList.toggle('covered', n.on);
+    stepFields.xCenter.el().parentNode.classList.toggle('covered', n.on);
+    stepFields.yStep.el().parentNode.classList.toggle('covered', n.on && n.yAuto);
+    settingsMenu.querySelector('.auto-note').style.display = n.yAuto ? '' : 'none';
+    settingsMenu.querySelector('.shade-line').classList.toggle('off', !n.shade);
+    settingsMenu.querySelector('.shade-note').style.display = n.shade ? '' : 'none';
   }
   function changeSettings(change) {
     var next = Object.assign({}, graphSettings, change);
     showSettings(next);
     send({ type: 'settings', settings: Object.assign({}, graphSettings) });
+  }
+  function changeNormal(change) {
+    changeSettings({ normal: Object.assign({}, graphSettings.normal, change) });
+  }
+  // Numbers in the menu: four significant figures.
+  function shortNumber(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return '';
+    return String(Number(v.toPrecision(4))).replace('-', '−');
+  }
+  // What the engine made of the fields: which are not numbers, the peak and
+  // the shaded probability.
+  function showAxes(r) {
+    var errors = (r && r.errors) || [];
+    Object.keys(stepFields).forEach(function (key) {
+      var name = key.indexOf('normal.') === 0 ? key.slice(7) : key;
+      stepFields[key].el().classList.toggle('bad', errors.indexOf(name) >= 0);
+    });
+    settingsMenu.querySelector('.peak-value').textContent =
+      r && typeof r.peak === 'number' ? ' = ' + shortNumber(r.peak) : '';
+    settingsMenu.querySelector('.shade-note').textContent =
+      r && typeof r.probability === 'number' ? 'P = ' + shortNumber(r.probability) : '';
+  }
+  // The normal density as a row, with the helper's μ and σ.
+  function normalCurveLatex() {
+    var n = graphSettings.normal;
+    var simple = function (t) {
+      return /^([A-Za-z](_\{?[A-Za-z0-9]+\}?)?|\\[A-Za-z]+|\d+(\.\d+)?)$/.test(t);
+    };
+    var group = function (t) { return simple(t) ? t : '\\left(' + t + '\\right)'; };
+    var m = group(n.mean || '0'), sd = group(n.sd || '1');
+    var times = /^\d/.test(sd) ? '\\cdot ' : '';
+    return 'y=\\frac{1}{' + sd + '\\sqrt{2\\pi}}e^{-\\frac{\\left(x-' + m + '\\right)^{2}}{2' +
+      times + sd + '^{2}}}';
   }
   document.getElementById('settings-btn').addEventListener('mousedown', function (e) {
     e.stopPropagation();
@@ -2819,10 +2916,25 @@
     if (!b) return;
     if (b.dataset.grid) changeSettings({ polarMode: b.dataset.grid === 'polar', showGrid: true });
     else if (b.dataset.degrees) changeSettings({ degreeMode: b.dataset.degrees === 'true' });
+    else if (b.dataset.labels) changeNormal({ sigmaLabels: b.dataset.labels === 'sigma' });
+    else if (b.dataset.normalAction === 'fit') send({ type: 'fitNormal' });
+    else if (b.dataset.normalAction === 'curve') {
+      addRow(normalCurveLatex(), rows.length);
+      sendRows();
+    }
   });
   settingsMenu.addEventListener('change', function (e) {
     var box = e.target;
-    if (!box.dataset || !box.dataset.set) return;
+    if (!box.dataset) return;
+    if (box.dataset.normal) {
+      var change = {};
+      change[box.dataset.normal] = box.checked;
+      changeNormal(change);
+      // Turning the helper on shows the whole bell.
+      if (box.dataset.normal === 'on' && box.checked) send({ type: 'fitNormal' });
+      return;
+    }
+    if (!box.dataset.set) return;
     var change = {};
     change[box.dataset.set] = box.checked;
     changeSettings(change);
@@ -2834,6 +2946,8 @@
   window.engine = {
     // The wrench menu's settings, from a graph opened or a graph block.
     settings: showSettings,
+    // What the wrench menu's axis fields came to, after every update.
+    axes: showAxes,
     // The graph became 2D or 3D, from the switch, a file or a new graph.
     mode: showMode,
     // While desmos.com is asked for a pasted link.

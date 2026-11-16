@@ -6,7 +6,7 @@
 // Only the Windows window saves and opens outside tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use graph_core::{GridSettings, View3, Viewport};
+use graph_core::{AxisText, GridSettings, NormalText, View3, Viewport};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -145,7 +145,7 @@ pub fn to_file(rows: &Value, vp: &Viewport, space: &Space) -> String {
 }
 
 /// Whether a graph is 3D, and how its 3D box was last shown.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Space {
     pub three_d: bool,
     pub view: Option<BoxView>,
@@ -156,7 +156,7 @@ pub struct Space {
 /// The wrench menu's settings as JSON, named as Desmos names them in a
 /// graph's state (`minorGridlines` is this app's own).
 pub fn settings_json(s: &GridSettings) -> Value {
-    json!({
+    let mut v = json!({
         "polarMode": s.polar,
         "showGrid": s.grid,
         "minorGridlines": s.minor,
@@ -165,7 +165,33 @@ pub fn settings_json(s: &GridSettings) -> Value {
         "xAxisNumbers": s.x_numbers,
         "yAxisNumbers": s.y_numbers,
         "degreeMode": s.degrees,
-    })
+    });
+    // The axis steps and the normal helper are this app's own, and only
+    // written when used.
+    let a = &s.axes;
+    for (key, text) in [
+        ("xStep", &a.x_step),
+        ("yStep", &a.y_step),
+        ("xCenter", &a.x_center),
+    ] {
+        if !text.is_empty() {
+            v[key] = json!(text);
+        }
+    }
+    let n = &a.normal;
+    if *n != NormalText::default() {
+        v["normal"] = json!({
+            "on": n.on,
+            "mean": n.mean,
+            "sd": n.sd,
+            "sigmaLabels": n.sigma_labels,
+            "yAuto": n.y_auto,
+            "shade": n.shade,
+            "shadeFrom": n.shade_from,
+            "shadeTo": n.shade_to,
+        });
+    }
+    v
 }
 
 /// Reads settings written by `settings_json`, or a Desmos state's `graph`;
@@ -183,6 +209,36 @@ pub fn settings_from(v: &Value) -> GridSettings {
         x_numbers: flag("xAxisNumbers", d.x_numbers),
         y_numbers: flag("yAxisNumbers", d.y_numbers),
         degrees: flag("degreeMode", d.degrees),
+        axes: axes_from(v),
+    }
+}
+
+/// The axis steps and the normal helper from `settings_json`, or a Desmos
+/// state's numeric `xAxisStep` and `yAxisStep`.
+fn axes_from(v: &Value) -> AxisText {
+    let text = |key: &str, desmos: &str| match (&v[key], v[desmos].as_f64()) {
+        (Value::String(s), _) => s.clone(),
+        (_, Some(n)) if n > 0.0 => n.to_string(),
+        _ => String::new(),
+    };
+    let n = &v["normal"];
+    let d = NormalText::default();
+    let flag = |key: &str, default: bool| n[key].as_bool().unwrap_or(default);
+    let field = |key: &str, default: &str| n[key].as_str().unwrap_or(default).to_owned();
+    AxisText {
+        x_step: text("xStep", "xAxisStep"),
+        y_step: text("yStep", "yAxisStep"),
+        x_center: text("xCenter", ""),
+        normal: NormalText {
+            on: flag("on", d.on),
+            mean: field("mean", &d.mean),
+            sd: field("sd", &d.sd),
+            sigma_labels: flag("sigmaLabels", d.sigma_labels),
+            y_auto: flag("yAuto", d.y_auto),
+            shade: flag("shade", d.shade),
+            shade_from: field("shadeFrom", &d.shade_from),
+            shade_to: field("shadeTo", &d.shade_to),
+        },
     }
 }
 
@@ -840,7 +896,7 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
     } else {
         let (w, h) = (
             vp.units_per_px * vp.width_px,
-            vp.units_per_px * vp.height_px,
+            vp.y_units_per_px() * vp.height_px,
         );
         let mut graph = json!({
             "viewport": {
@@ -864,6 +920,19 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
             if !st.minor {
                 graph["xAxisMinorSubdivisions"] = json!(1);
                 graph["yAxisMinorSubdivisions"] = json!(1);
+            }
+            // Desmos takes a step as a plain number, and stretched axes
+            // only when told they need not be square.
+            for (key, text) in [
+                ("xAxisStep", &st.axes.x_step),
+                ("yAxisStep", &st.axes.y_step),
+            ] {
+                if let Ok(step) = text.trim().parse::<f64>() {
+                    graph[key] = json!(step);
+                }
+            }
+            if vp.y_scale != 1.0 {
+                graph["squareAxes"] = json!(false);
             }
         }
         graph
@@ -1285,7 +1354,7 @@ mod tests {
             ..Default::default()
         };
         let space = Space {
-            settings,
+            settings: settings.clone(),
             ..Default::default()
         };
         let rows = json!([{"latex": "r=\\theta"}]);
@@ -1301,5 +1370,36 @@ mod tests {
         assert_eq!(state["graph"]["polarMode"], true);
         assert_eq!(state["graph"]["degreeMode"], true);
         assert_eq!(space_of(&state.to_string()).settings, settings);
+    }
+
+    #[test]
+    fn axis_steps_and_the_normal_helper_save_and_open() {
+        let mut settings = GridSettings::default();
+        settings.axes.x_step = "\\pi".into();
+        settings.axes.y_step = "0.5".into();
+        settings.axes.normal = NormalText {
+            on: true,
+            mean: "m".into(),
+            sd: "s".into(),
+            shade: true,
+            shade_to: "\\infty".into(),
+            ..Default::default()
+        };
+        let space = Space {
+            settings: settings.clone(),
+            ..Default::default()
+        };
+        let rows = json!([{"latex": "m=70"}]);
+        let mut vp = Viewport::new(100.0, 100.0);
+        let text = to_file(&rows, &vp, &space);
+        assert_eq!(space_of(&text).settings, settings);
+        // Desmos gets the plain-number step, and unsquare axes.
+        vp.y_scale = 0.01;
+        let (state, _) = to_desmos(&rows, &vp, &space);
+        assert_eq!(state["graph"]["yAxisStep"], 0.5);
+        assert!(state["graph"]["xAxisStep"].is_null());
+        assert_eq!(state["graph"]["squareAxes"], false);
+        let back = space_of(&state.to_string()).settings.axes;
+        assert_eq!((back.x_step.as_str(), back.y_step.as_str()), ("", "0.5"));
     }
 }

@@ -748,6 +748,7 @@ mod tests {
                 vp.to_world(0.0, 0.0)[1] as f32,
             ],
             units_per_px: vp.units_per_px as f32,
+            y_units_per_px: vp.y_units_per_px() as f32,
             complex: false,
         };
         let px = render_offscreen(&gpu, w, h, &scene, &text, &[shading], &[]);
@@ -872,6 +873,7 @@ mod tests {
                 vp.to_world(0.0, 0.0)[1] as f32,
             ],
             units_per_px: vp.units_per_px as f32,
+            y_units_per_px: vp.y_units_per_px() as f32,
             complex: true,
         };
         let px = render_offscreen(&gpu, w, h, &scene, &text, &[shading], &[]);

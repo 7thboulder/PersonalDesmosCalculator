@@ -3,7 +3,8 @@
 /// Screen coordinates are physical pixels with the origin at the top-left of
 /// the graph area and y growing downwards. World coordinates are math units
 /// with y growing upwards. Both axes share one scale, like Desmos's default
-/// square grid.
+/// square grid, unless the wrench menu's axis steps stretch y: then each
+/// grid cell is one x step wide and one y step tall on screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     /// World point shown at the centre of the graph area.
@@ -12,6 +13,9 @@ pub struct Viewport {
     pub units_per_px: f64,
     pub width_px: f64,
     pub height_px: f64,
+    /// How many times more world units a pixel spans up than across; 1
+    /// for a square grid.
+    pub y_scale: f64,
 }
 
 /// About as fine as f64 can place a pixel near 1, which fractal rows zoom
@@ -28,6 +32,7 @@ impl Viewport {
             units_per_px: 20.0 / width_px,
             width_px,
             height_px: height_px.max(1.0),
+            y_scale: 1.0,
         }
     }
 
@@ -38,17 +43,22 @@ impl Viewport {
         self.height_px = height_px.max(1.0);
     }
 
+    /// World units per physical pixel going up.
+    pub fn y_units_per_px(&self) -> f64 {
+        self.units_per_px * self.y_scale
+    }
+
     pub fn to_screen(&self, x: f64, y: f64) -> [f64; 2] {
         [
             (x - self.center[0]) / self.units_per_px + self.width_px / 2.0,
-            self.height_px / 2.0 - (y - self.center[1]) / self.units_per_px,
+            self.height_px / 2.0 - (y - self.center[1]) / self.y_units_per_px(),
         ]
     }
 
     pub fn to_world(&self, px: f64, py: f64) -> [f64; 2] {
         [
             self.center[0] + (px - self.width_px / 2.0) * self.units_per_px,
-            self.center[1] - (py - self.height_px / 2.0) * self.units_per_px,
+            self.center[1] - (py - self.height_px / 2.0) * self.y_units_per_px(),
         ]
     }
 
@@ -69,7 +79,7 @@ impl Viewport {
     /// Moves the paper with the mouse: dragging right shows what was on the left.
     pub fn pan_px(&mut self, dx: f64, dy: f64) {
         self.center[0] -= dx * self.units_per_px;
-        self.center[1] += dy * self.units_per_px;
+        self.center[1] += dy * self.y_units_per_px();
     }
 
     /// Zooms by `factor` (above 1 zooms in) keeping the world point under the
