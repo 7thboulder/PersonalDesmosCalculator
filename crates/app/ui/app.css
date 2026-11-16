@@ -614,7 +614,9 @@ button.icon:disabled { color: #bbb; cursor: default; }
   z-index: 20;
   top: 40px;
   right: 6px;
-  width: 210px;
+  width: 250px;
+  max-height: calc(100vh - 52px);
+  overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid #ccc;
   border-radius: 6px;
@@ -639,7 +641,55 @@ button.icon:disabled { color: #bbb; cursor: default; }
 #settings-menu label { display: block; padding: 3px 0; cursor: pointer; user-select: none; }
 #settings-menu label.sub { padding-left: 22px; }
 #settings-menu label.off { color: #aaa; }
+#settings-menu .step-line { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; }
+#settings-menu .step-line.sub { padding-left: 22px; }
+#settings-menu .step-name { color: #666; font-size: 13px; white-space: nowrap; }
+#settings-menu .step-field {
+  flex: 1;
+  min-width: 36px;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  padding: 0 2px;
+  font-size: 14px;
+}
+#settings-menu .step-field.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
+#settings-menu .step-field.bad { border-bottom-color: #e0832e; }
+/* An empty step reads "auto"; one the normal helper sets reads σ or μ. */
+#settings-menu .step-field .mq-root-block.mq-empty:after {
+  visibility: visible;
+  content: 'auto';
+  color: #aaa;
+  font-style: italic;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+}
+/* A step the normal helper sets shows what sets it instead of the field. */
+#settings-menu .step-by { display: none; color: #2d70b3; font-size: 13px; }
+#settings-menu .step-line.covered .step-field { display: none; }
+#settings-menu .step-line.covered .step-by { display: inline; }
+#settings-menu .step-line.off .step-name { color: #aaa; }
+#settings-menu .normal { margin-top: 8px; padding-top: 6px; border-top: 1px solid #e4e4e4; }
+#settings-menu .normal-head { font-weight: bold; }
+#settings-menu .normal-body { display: none; padding-left: 22px; }
+#settings-menu .normal.on .normal-body { display: block; }
+#settings-menu .set-note { color: #888; font-size: 12px; padding: 1px 0 4px; }
+#settings-menu .shade-note { color: #2d70b3; }
+#settings-menu .peak-math { margin: 0 2px; }
+#settings-menu .label-kinds, #settings-menu .normal-buttons { display: flex; margin: 4px 0; }
+#settings-menu .normal-buttons { gap: 6px; margin-top: 6px; }
+#settings-menu .normal-buttons button {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+}
+#settings-menu .normal-buttons button:hover { background: #eef3fc; }
 #settings-menu .angle-kinds { display: flex; margin-top: 8px; }
+#settings-menu .label-kinds button,
 #settings-menu .angle-kinds button {
   flex: 1;
   padding: 5px 0;
@@ -649,8 +699,11 @@ button.icon:disabled { color: #bbb; cursor: default; }
   font-size: 13px;
   cursor: pointer;
 }
+#settings-menu .label-kinds button:first-child,
 #settings-menu .angle-kinds button:first-child { border-radius: 4px 0 0 4px; }
+#settings-menu .label-kinds button:last-child,
 #settings-menu .angle-kinds button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+#settings-menu .label-kinds button.on,
 #settings-menu .angle-kinds button.on { background: #2f72dc; border-color: #2f72dc; color: #fff; }
 
 /* ---- Tables ---- */

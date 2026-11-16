@@ -91,8 +91,13 @@ pub fn block_png(
     let mut engine = Engine::default();
     engine.grid = settings;
     engine.update(&block_rows(rows));
+    vp.y_scale = engine.axes.steps.y_scale();
     let scene = engine.with_plot(&vp, scale, |plot| build_scene(&vp, scale, plot, text));
-    let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, scale);
+    let shadings = engine.shadings(
+        vp.to_world(0.0, 0.0),
+        [vp.units_per_px, vp.y_units_per_px()],
+        scale,
+    );
     let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
     let pixels = render_offscreen(gpu, width, height, &scene, text, &shadings, &fractals);
     let mut png_bytes = Vec::new();
@@ -187,7 +192,12 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     }
     // --polar draws the polar grid, --degrees reads angles in degrees.
     if let Some((_, space)) = &opened {
-        engine.grid = space.settings;
+        engine.grid = space.settings.clone();
+    }
+    // --settings=JSON takes the wrench menu's settings as a file has them.
+    if let Some(json) = flag("--settings=") {
+        let value = serde_json::from_str(&json).map_err(|e| format!("--settings: {e}"))?;
+        engine.grid = crate::files::settings_from(&value);
     }
     if flag("--polar").is_some() {
         engine.grid.polar = true;
@@ -206,6 +216,13 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
     };
     let latex = &latex[..];
     let results = engine.update(&rows);
+    // The axis steps set y's scale; --fit zooms to the normal helper's bell.
+    vp.y_scale = engine.axes.steps.y_scale();
+    if let (Some(_), Some(normal)) = (flag("--fit"), engine.axes.normal) {
+        let (center, units) = crate::axes::fit(normal, vp.y_scale, width as f64, height as f64);
+        vp.center = center;
+        vp.units_per_px = units;
+    }
     for (l, r) in latex.iter().zip(results.as_array().into_iter().flatten()) {
         if let Some(e) = r["error"].as_str() {
             println!("{l}: {e}");
@@ -251,7 +268,11 @@ pub fn render_png(path: &str, width: u32, height: u32, latex: &[String]) -> Resu
         build_scene(&vp, 1.0, plot, &mut text)
     });
     let build = start.elapsed();
-    let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+    let shadings = engine.shadings(
+        vp.to_world(0.0, 0.0),
+        [vp.units_per_px, vp.y_units_per_px()],
+        1.0,
+    );
     let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
     let pixels = render_offscreen(&gpu, width, height, &scene, &text, &shadings, &fractals);
 
@@ -470,9 +491,11 @@ impl Frame {
         let scene = self
             .engine
             .with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, text));
-        let shadings = self
-            .engine
-            .shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+        let shadings = self.engine.shadings(
+            vp.to_world(0.0, 0.0),
+            [vp.units_per_px, vp.y_units_per_px()],
+            1.0,
+        );
         let fractals = self
             .engine
             .fractals(vp.to_world(0.0, 0.0), vp.units_per_px, self.size);
@@ -546,7 +569,11 @@ pub fn bench_sliders(width: u32, height: u32, frames: u32) -> Result<(), String>
         engine.update(&rows(&latex));
         let scene = engine.with_plot(&vp, 1.0, |plot| build_scene(&vp, 1.0, plot, &mut text));
         let built = start.elapsed();
-        let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+        let shadings = engine.shadings(
+            vp.to_world(0.0, 0.0),
+            [vp.units_per_px, vp.y_units_per_px()],
+            1.0,
+        );
         let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
         renderer.draw_scene(
             &gpu,
@@ -817,7 +844,11 @@ pub fn bench_suite(frames: u32) -> Result<(), String> {
             let scene = engine.with_plot(vp, 1.0, |plot| {
                 build_scene_cached(vp, 1.0, plot, &mut text, &mut lines)
             });
-            let shadings = engine.shadings(vp.to_world(0.0, 0.0), vp.units_per_px, 1.0);
+            let shadings = engine.shadings(
+                vp.to_world(0.0, 0.0),
+                [vp.units_per_px, vp.y_units_per_px()],
+                1.0,
+            );
             let fractals = engine.fractals(vp.to_world(0.0, 0.0), vp.units_per_px, (width, height));
             let cpu = start.elapsed();
             renderer.draw_scene(

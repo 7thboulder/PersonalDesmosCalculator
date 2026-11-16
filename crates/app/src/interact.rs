@@ -116,9 +116,13 @@ fn draggable(p: &GraphPoints) -> bool {
 /// The world position under the mouse rounded to about a pixel's
 /// precision, as Desmos rounds dragged points.
 fn dragged_to(vp: &Viewport, at: [f64; 2]) -> [f64; 2] {
-    let places = ((-vp.units_per_px.log10()).ceil()).clamp(0.0, 12.0) as i32;
-    let k = 10f64.powi(places);
-    vp.to_world(at[0], at[1]).map(|v| (v * k).round() / k)
+    let round = |v: f64, units: f64| {
+        let places = ((-units.log10()).ceil()).clamp(0.0, 12.0) as i32;
+        let k = 10f64.powi(places);
+        (v * k).round() / k
+    };
+    let [x, y] = vp.to_world(at[0], at[1]);
+    [round(x, vp.units_per_px), round(y, vp.y_units_per_px())]
 }
 
 /// The LaTeX of a row's initial points with the one at `index` moved to
@@ -396,7 +400,7 @@ impl Interaction {
     pub fn marks(&mut self, engine: &Engine, vp: &Viewport) -> Vec<Mark> {
         let hot = self.hover_poi(engine, vp);
         let pinned = self.pinned;
-        let label = |p: [f64; 2]| Some(point_text(p, vp.units_per_px));
+        let label = |p: [f64; 2]| Some(point_text(p, [vp.units_per_px, vp.y_units_per_px()]));
         let mut marks: Vec<Mark> = self
             .pois(engine, vp)
             .iter()

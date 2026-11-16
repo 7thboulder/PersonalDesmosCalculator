@@ -64,8 +64,11 @@ pub struct Shading {
     pub line_px: f32,
     /// World coordinates of the target's pixel (0, 0).
     pub origin: [f32; 2],
-    /// World units per physical pixel.
+    /// World units per physical pixel across.
     pub units_per_px: f32,
+    /// World units per physical pixel up, which differs from across when
+    /// the wrench menu's axis steps stretch the graph.
+    pub y_units_per_px: f32,
     /// Set when `body` is a complex function to color the plane by: the
     /// body of `fn complex_value(x: f32, y: f32) -> vec2<f32>`. `test`,
     /// `color` and `line_px` are then unused and `fill_opacity` is how
@@ -82,7 +85,8 @@ struct Uniforms {
     sense: f32,
     fill_opacity: f32,
     line_px: f32,
-    _pad: [f32; 2],
+    y_units_per_px: f32,
+    _pad: f32,
     /// The relation's numbers, four to a vec4 as WGSL lays out arrays.
     k: [[f32; 4]; MAX_CONSTANTS / 4],
 }
@@ -225,7 +229,8 @@ impl ShadingRenderer {
                     0.0
                 },
                 line_px: s.line_px,
-                _pad: [0.0; 2],
+                y_units_per_px: s.y_units_per_px,
+                _pad: 0.0,
                 k,
             };
             gpu.queue.write_buffer(
@@ -324,7 +329,8 @@ struct Uniforms {{
     sense: f32,
     fill_opacity: f32,
     line_px: f32,
-    pad: vec2<f32>,
+    y_units_per_px: f32,
+    pad: f32,
     k: array<vec4<f32>, {constants}>,
 }};
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -364,7 +370,7 @@ fn hue_rgb(h: f32) -> vec3<f32> {{
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
     let x = u.origin.x + pos.x * u.units_per_px;
-    let y = u.origin.y - pos.y * u.units_per_px;
+    let y = u.origin.y - pos.y * u.y_units_per_px;
     let w = complex_value(x, y);
     if (w.x != w.x || w.y != w.y) {{
         discard; // Undefined here.
@@ -409,7 +415,7 @@ fn relation(x: f32, y: f32) -> f32 {{
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{
     // Screen pixels to world coordinates; y grows upwards on the graph.
     let x = u.origin.x + pos.x * u.units_per_px;
-    let y = u.origin.y - pos.y * u.units_per_px;
+    let y = u.origin.y - pos.y * u.y_units_per_px;
     let v = relation(x, y);
     if (v != v) {{
         discard; // Undefined here: neither inside the region nor on it.

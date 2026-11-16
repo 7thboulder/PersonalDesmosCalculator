@@ -405,7 +405,7 @@ impl Running {
         Space {
             three_d: self.three_d(),
             view: Some(BoxView::of(&self.view3)),
-            settings: self.engine.grid,
+            settings: self.engine.grid.clone(),
         }
     }
 
@@ -418,7 +418,7 @@ impl Running {
         self.run_script(&format!("window.engine.mode({three_d})"));
         if self.rows_received {
             let results = self.engine.update(&self.rows);
-            self.run_script(&format!("window.engine.analysis({results})"));
+            self.show_analysis(results);
         }
         self.window.request_redraw();
     }
@@ -438,14 +438,17 @@ impl Running {
     /// rows are read again by whoever changes the mode or rows next, or
     /// here when degree mode changed.
     fn show_settings(&mut self, settings: graph_core::GridSettings) {
-        let degrees_changed = settings.degrees != self.engine.grid.degrees;
-        self.engine.grid = settings;
+        // Degrees change every value, and the axis steps are read with the
+        // rows.
+        let reread =
+            settings.degrees != self.engine.grid.degrees || settings.axes != self.engine.grid.axes;
         self.doc.settings_changed(&settings);
         let json = files::settings_json(&settings);
+        self.engine.grid = settings;
         self.run_script(&format!("window.engine.settings({json})"));
-        if degrees_changed && self.rows_received {
+        if reread && self.rows_received {
             let results = self.engine.update(&self.rows);
-            self.run_script(&format!("window.engine.analysis({results})"));
+            self.show_analysis(results);
         }
         self.window.request_redraw();
     }
@@ -616,9 +619,11 @@ impl Running {
         // The shader works in target pixels, so the graph area's offset is
         // folded into the world position of the target's own first pixel.
         let origin = self.viewport.to_world(-(area.x as f64), 0.0);
-        let shadings = self
-            .engine
-            .shadings(origin, self.viewport.units_per_px, scale);
+        let shadings = self.engine.shadings(
+            origin,
+            [self.viewport.units_per_px, self.viewport.y_units_per_px()],
+            scale,
+        );
         let fractals = self
             .engine
             .fractals(origin, self.viewport.units_per_px, size);
@@ -709,6 +714,8 @@ impl Running {
                     }
                 }
             }
+            // The wrench menu's "Zoom to fit" for the normal helper.
+            Some("fitNormal") => self.fit_normal(),
             // The wrench menu.
             Some("settings") => {
                 let settings = files::settings_from(&value["settings"]);
@@ -849,11 +856,35 @@ impl Running {
                 }
                 let results = self.engine.update(&value["rows"]);
                 self.rows_received = true;
-                self.run_script(&format!("window.engine.analysis({results})"));
+                self.show_analysis(results);
                 self.window.request_redraw();
             }
             _ => {}
         }
+    }
+
+    /// Hands the panel the rows' results, and the wrench menu what its
+    /// axis fields came to; the grid takes the steps' scale.
+    fn show_analysis(&mut self, results: serde_json::Value) {
+        self.run_script(&format!("window.engine.analysis({results})"));
+        let axes = &self.engine.axes.json;
+        self.run_script(&format!("window.engine.axes({axes})"));
+        self.viewport.y_scale = self.engine.axes.steps.y_scale();
+    }
+
+    /// Zooms to the whole bell of the normal helper's μ and σ.
+    fn fit_normal(&mut self) {
+        let Some(normal) = self.engine.axes.normal else {
+            return;
+        };
+        let area = self.graph_area();
+        let y_scale = self.engine.axes.steps.y_scale();
+        let (center, units) =
+            crate::axes::fit(normal, y_scale, area.width as f64, area.height as f64);
+        self.viewport.center = center;
+        self.viewport.units_per_px = units;
+        self.viewport.y_scale = y_scale;
+        self.window.request_redraw();
     }
 
     fn update_title(&self) {

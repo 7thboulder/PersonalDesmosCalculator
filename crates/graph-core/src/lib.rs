@@ -13,7 +13,7 @@ pub mod text;
 pub mod three;
 pub mod viewport;
 
-pub use grid::GridSettings;
+pub use grid::{AxisSteps, AxisText, GridSettings, NormalText};
 pub use implicit::{trace_implicit, Field};
 pub use ode::{Axes, Equation};
 pub use poi::{
