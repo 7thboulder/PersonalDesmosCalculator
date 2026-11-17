@@ -313,7 +313,7 @@ on the right. What you type is graphed as you type it:
   Excel or Sheets, open `.csv` files (☰ then **Open CSV as table**), offer a
   Σ summary and a regression picker with R².
 - The wrench menu's normal distribution helper puts the y axis on the mean
-  line and picks a round y step, so both axes line up with the μ and σ marks.
+  line, so it lines up with the μ and σ marks.
 
 Not yet: points of interest where two parametric or implicit curves meet
 each other (they show where these meet y = f(x) curves and the axes).

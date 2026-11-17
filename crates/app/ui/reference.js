@@ -518,6 +518,85 @@
       { m: ['\\chi^2', '=', '\\sum' + F(P('O-E') + '^2', 'E')], n: 'Chi-square statistic' }] }
   ];
 
+  // Statistics tools: every statistics function the calculator has, as it
+  // is typed. Click one to put it in a row. L and M are lists.
+  function c(name) {
+    var args = [].slice.call(arguments, 1).join(',');
+    return op(name) + P(args);
+  }
+  var L1 = B('1,2,3,4');
+  var TOOLS = [
+    { h: 'List summaries', k: 'statistics average spread center count', items: [
+      { m: [c('mean', 'L')], n: 'Mean' },
+      { m: [c('median', 'L')], n: 'Median' },
+      { m: [c('stdev', 'L')], n: 'Sample standard deviation (stdevp: population)' },
+      { m: [c('var', 'L')], n: 'Sample variance (varp: population)' },
+      { m: [c('mad', 'L')], n: 'Mean absolute deviation' },
+      { m: [c('quartile', 'L', '1')], n: 'Quartile 0 to 4' },
+      { m: [c('quantile', 'L', '0.9')], n: 'Quantile between 0 and 1' },
+      { m: [c('count', 'L')], n: 'Number of items (same as length)' },
+      { m: [c('total', 'L')], n: 'Sum' },
+      { m: [c('tscore', 'L', 'x')], n: 'How many stdevs x is from the mean' },
+      { m: [c('stats', 'L')], n: 'On its own row: a table of min, Q1, median, Q3, max, mean, stdev, …' }] },
+    { h: 'Two lists', k: 'correlation covariance relationship', items: [
+      { m: [c('corr', 'L', 'M')], n: "Pearson's r" },
+      { m: [c('spearman', 'L', 'M')], n: 'Rank correlation' },
+      { m: [c('cov', 'L', 'M')], n: 'Sample covariance (covp: population)' },
+      { m: ['y_1\\sim mx_1+b'], n: 'Regression with R²; a table’s Statistics… menu offers eight models' }] },
+    { h: 'Distributions', k: 'probability pdf cdf normal binomial poisson', items: [
+      { m: [c('normaldist', '\\mu', '\\sigma')], n: 'Normal; on its own row it draws the curve and offers Find Cumulative Probability' },
+      { m: [c('tdist', '\\nu')], n: "Student's t" },
+      { m: [c('binomialdist', 'n', 'p')], n: 'Binomial (drawn as bars)' },
+      { m: [c('poissondist', '\\lambda')], n: 'Poisson (bars)' },
+      { m: [c('uniformdist', 'a', 'b')], n: 'Uniform' },
+      { m: [c('chisqdist', 'k')], n: 'Chi-square' },
+      { m: [c('fdist', 'd_1', 'd_2')], n: 'F' },
+      { m: [c('expdist', '\\lambda')], n: 'Exponential' },
+      { m: [c('geodist', 'p')], n: 'Geometric (bars)' },
+      { m: [c('gammadist', 'k', '\\theta')], n: 'Gamma' },
+      { m: [c('betadist', '\\alpha', '\\beta')], n: 'Beta' }] },
+    { h: 'Using a distribution', k: 'probability density cumulative inverse', type: 'D = normaldist(0, 1) on its own row', items: [
+      { m: ['D.' + c('pdf', 'x')], n: 'Density (or P(X = x) for a discrete one)' },
+      { m: ['D.' + c('cdf', 'x')], n: 'P(X ≤ x)' },
+      { m: ['D.' + c('cdf', 'a', 'b')], n: 'P(a ≤ X ≤ b)' },
+      { m: [c('quantile', 'D', '0.975')], n: 'Inverse cdf' },
+      { m: [c('mean', 'D')], n: 'Mean (also median, stdev, var)' },
+      { m: ['D.' + c('random', '10')], n: '10 random draws' }] },
+    { h: 'Random', k: 'sample shuffle seed rerandomize', n: 'The ⚄ button on a row draws new numbers', items: [
+      { m: [c('random')], n: 'A number from 0 to 1' },
+      { m: [c('random', '5')], n: 'A list of 5' },
+      { m: [c('random', '5', 's')], n: 'With a seed s, the same draws every time' },
+      { m: [c('random', 'L')], n: 'One item picked from L (random(L, n) picks n)' },
+      { m: [c('shuffle', 'L')], n: 'L in random order' }] },
+    { h: 'Plots', k: 'histogram dotplot boxplot bins bars chart', n: 'Each goes on a row of its own; the row has options for bins, heights and offset', items: [
+      { m: [c('histogram', 'L')], n: 'Histogram, bin width picked for you' },
+      { m: [c('histogram', 'L', '2')], n: 'Bin width 2' },
+      { m: [c('histogram', c('freq', 'L', 'M'))], n: 'Values L with frequencies M' },
+      { m: [c('dotplot', 'L')], n: 'Dot plot' },
+      { m: [c('boxplot', 'L')], n: 'Box plot, outliers as dots' },
+      { m: [c('freq', 'L', 'M')], n: 'A frequency table: L repeated M times' }] },
+    { h: 'Hypothesis tests', k: 'significance p-value null alternative tail', n: 'On a row of their own; pick the tail (<, ≠, >) under the table', items: [
+      { m: [c('ttest', 'L', '\\mu_0')], n: 'One-sample t test (for paired data, test the differences: ttest(L − M, 0))' },
+      { m: [c('ittest', 'L', 'M')], n: 'Two independent samples (Welch)' },
+      { m: [c('ztest', 'L', '\\mu_0', '\\sigma')], n: 'z test with known σ' },
+      { m: [c('proptest', 'x', 'n', 'p_0')], n: 'One proportion: x successes in n' },
+      { m: [c('twoproptest', 'x_1', 'n_1', 'x_2', 'n_2')], n: 'Two proportions' },
+      { m: [c('chisqgof', 'O', 'E')], n: 'Chi-square goodness of fit' },
+      { m: [c('chisqtest', 'R_1', 'R_2')], n: 'Chi-square independence: one list of counts per row of the table' }] },
+    { h: 'Confidence intervals', k: 'interval estimate margin level', items: [
+      { m: [c('tinterval', 'L', '0.95')], n: 'Mean, σ unknown' },
+      { m: [c('ittinterval', 'L', 'M', '0.95')], n: 'Difference of two means' },
+      { m: [c('zinterval', 'L', '\\sigma', '0.95')], n: 'Mean, σ known' },
+      { m: [c('propinterval', 'x', 'n', '0.95')], n: 'One proportion' },
+      { m: [c('twopropinterval', 'x_1', 'n_1', 'x_2', 'n_2', '0.95')], n: 'Two proportions' }] },
+    { h: 'Tables of data', k: 'paste excel sheets csv import', items: [
+      { table: { cols: ['#To', '#Do'], rows: [
+        ['#Paste from Excel or Sheets', '#Ctrl+V in a table cell or an empty row'],
+        ['#Open a CSV file', '#☰ then Open CSV as table…'],
+        ['#Summarize a column', '#The Σ stats button, or the table’s Statistics… menu'],
+        ['#Plot or fit a column', '#The table’s Statistics… menu']] } }] }
+  ];
+
   var SECTIONS = [
     { title: 'Trig basics', groups: TRIG },
     { title: 'Trig identities', groups: IDENTITIES },
@@ -528,7 +607,8 @@
     { title: 'Derivatives', groups: DERIVATIVES },
     { title: 'Integrals', groups: INTEGRALS },
     { title: 'Special functions', groups: SPECIAL },
-    { title: 'Statistics', groups: STATISTICS }
+    { title: 'Statistics', groups: STATISTICS },
+    { title: 'Statistics tools', groups: TOOLS }
   ];
 
   // ---- The panel -------------------------------------------------------------
