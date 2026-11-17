@@ -175,6 +175,7 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
             .unwrap_or(0.0),
         y_step: positive(value(Field::YStep)),
         sigma: None,
+        y_axis_x: 0.0,
     };
     let mut reply = json!({ "values": values, "errors": errors });
     let mut shade = None;
@@ -182,6 +183,9 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
         let peak = pdf(mean, mean, sd);
         steps.x_step = Some(sd);
         steps.x_center = mean;
+        // The y axis stands on the line at the mean, so it lines up with
+        // the σ marks instead of falling between two of them.
+        steps.y_axis_x = mean;
         if n.y_auto {
             steps.y_step = Some(peak / PEAK_LINES);
         }
@@ -193,7 +197,14 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
             if let (Some(a), Some(b)) = (value(Field::ShadeFrom), value(Field::ShadeTo)) {
                 let p = probability(a, b);
                 reply["probability"] = json!(p);
-                shade = Some(shade_between(mean, sd, a.min(b), a.max(b), p));
+                let mut s = shade_between(mean, sd, a.min(b), a.max(b), p);
+                // Over the mean the note would sit on the y axis numbers,
+                // so it moves to halfway between two y grid lines.
+                if let Some(step) = steps.y_step.filter(|_| s.note_at[0] == mean) {
+                    let y = ((s.note_at[1] / step).floor() + 0.5) * step;
+                    s.note_at[1] = y.min(peak * 0.9);
+                }
+                shade = Some(s);
             }
         }
     }
@@ -321,6 +332,8 @@ mod tests {
         // Auto: the peak, 1/(σ√(2π)), is four lines up.
         let peak = 1.0 / (15.0 * (2.0 * std::f64::consts::PI).sqrt());
         assert!((r.steps.y_step.unwrap() * 4.0 - peak).abs() < 1e-15);
+        // The y axis stands on the mean's line.
+        assert_eq!(r.steps.y_axis_x, 100.0);
         assert!((r.json["peak"].as_f64().unwrap() - peak).abs() < 1e-15);
     }
 

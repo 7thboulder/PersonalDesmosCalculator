@@ -87,6 +87,7 @@ pub fn result_latex(v: &crate::Value) -> String {
             zs.len(),
             &mut zs.iter().map(|z| complex(z[0], z[1], &value_latex)),
         ),
+        Value::Dist(d) => d.latex(),
     }
 }
 
@@ -193,6 +194,7 @@ pub fn exact_latex(v: &crate::Value) -> String {
                 .map(|z| complex(z[0], z[1], &exact_number))
                 .collect(),
         ),
+        Value::Dist(d) => d.latex(),
     }
 }
 

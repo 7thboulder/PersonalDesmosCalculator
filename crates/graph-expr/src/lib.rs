@@ -19,16 +19,17 @@ pub mod parser;
 pub mod recursion;
 pub mod series;
 pub mod special;
+pub mod stats;
 pub mod subscripts;
 pub mod symbolic;
 pub mod units;
 pub mod wgsl;
 
 pub use analyze::{
-    analyze, analyze_angles, analyze_cached, analyze_mode, Axis, Cache, ColumnAnalysis,
-    ColumnInput, Compare, ComplexPlot, Curve, Curve3, Fit, Fractal, Implicit3, Mode, NewValue, Ode,
-    ParamSurface, Parameter, Parametric, Region, RowAnalysis, RowInput, RowKind, Seed, Surface,
-    Value, MAX_ODE_ORDER,
+    analyze, analyze_angles, analyze_cached, analyze_mode, set_random_seed, Axis, Cache,
+    ColumnAnalysis, ColumnInput, Compare, ComplexPlot, Curve, Curve3, Fit, Fractal, Implicit3,
+    Mode, NewValue, Ode, ParamSurface, Parameter, Parametric, Region, RowAnalysis, RowInput,
+    RowKind, Seed, StatKind, StatOptions, StatsOut, Surface, Value, MAX_ODE_ORDER,
 };
 pub use compile::Program;
 pub use interval::Interval;

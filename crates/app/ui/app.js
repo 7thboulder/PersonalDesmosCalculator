@@ -106,6 +106,13 @@
       'gcd lcm nCr nPr for polygon join sort unique distance midpoint real imag conj arg ' +
       'det inv transpose rref trace rank eigenvalues eigenvectors identity ' +
       'mandelbrot julia cobweb bifurcation lim ' +
+      // Statistics, as in Desmos, and the tests and distributions beyond it.
+      'stdev stddev stdevp stddevp var variance varp mad count cov covp corr spearman ' +
+      'quantile quartile stats random shuffle freq histogram dotplot boxplot ' +
+      'ttest ittest tscore ztest proptest twoproptest chisqgof chisqtest ' +
+      'tinterval ittinterval zinterval propinterval twopropinterval ' +
+      'normaldist tdist binomialdist poissondist uniformdist chisqdist fdist expdist geodist ' +
+      'gammadist betadist pdf cdf ' +
       // Special functions, beyond Desmos. Γ, ψ, ζ, B, W, K, E and the
       // Bessel J_n, Y_n, I_n, K_n are letters, so they need no name here.
       'erf erfc erfi Si Ci Ei li Li Ai Bi'
@@ -268,7 +275,8 @@
           transform: transformOf(r),
           seeds: r.seeds, derivs: r.derivs,
           axes: r.axes || undefined,
-          start: r.start[0] || r.start[1] ? r.start : undefined
+          start: r.start[0] || r.start[1] ? r.start : undefined,
+          stats: statsSent(r)
         });
       });
     // The ticker goes first, as a hidden row the engine analyzes like any
@@ -896,6 +904,8 @@
     if (showValue) row.valueMath.latex(r.fit != null ? r.fit : '=' + r.value);
     showMatrixValue(row, warn ? null : r.matrix);
     showTransform(row, r);
+    showStats(row, r);
+    showSummaryButton(row, r);
 
     var p = r.parameter;
     el.classList.toggle('has-domain', !!p);
@@ -1121,10 +1131,13 @@
       '<span class="derivs"></span></div>' +
       '<div class="phase" title="Choose what each axis shows, as angle against angular velocity for a pendulum">' +
       'horizontal <select class="ax-h"></select> vertical <select class="ax-v"></select></div>' +
+      STATS_HTML +
       '<div class="missing">add slider: <span class="buttons"></span></div>' +
       '<div class="steps"></div>' +
       '</div>' +
       '<button class="solve-btn" title="Solve with steps (Ctrl+Alt+S)">Solve</button>' +
+      '<button class="reroll" title="Re-randomize">&#x2684;</button>' +
+      '<button class="summary-btn" title="Summary statistics of this list">\u03a3 stats</button>' +
       '<button class="remove" title="Delete">&#x2715;</button>';
     var row = {
       id: nextId++,
@@ -1161,6 +1174,9 @@
       seedsShown: false,
       settingSeeds: false,
       seedsField: null,
+      stats: {},
+      statsShown: false,
+      settingStats: false,
       slider: { min: -10, max: 10, step: null },
       playing: false,
       settingSlider: false,
@@ -1184,6 +1200,7 @@
           if (!loading && /^matrix?$/.test(before) && latex === EMPTY_MATRIX) { replaceWithMatrix(row); return; }
           if (!row.settingSlider) row.playPos = null;
           markStepsStale(row);
+          showReroll(row);
           sendRows();
         },
         enter: function () { addRow('', indexOf(row) + 1).field.focus(); },
@@ -1251,6 +1268,13 @@
 
     bindSwatch(row);
     bindTransform(row);
+    bindStats(row);
+    showReroll(row);
+    ['.reroll', '.summary-btn'].forEach(function (sel) {
+      el.querySelector(sel).addEventListener('mousedown', function (e) { e.preventDefault(); });
+    });
+    el.querySelector('.reroll').addEventListener('click', reroll);
+    el.querySelector('.summary-btn').addEventListener('click', function () { summaryOf(row); });
 
     row.play.addEventListener('click', function () { togglePlay(row); });
     el.querySelector('.slower').addEventListener('click', function () { changeSpeed(row, -1); });
@@ -1284,6 +1308,445 @@
     paintRow(row);
     renumber();
     return row;
+  }
+
+  // ---- Statistics rows -------------------------------------------------------
+
+  // What a distribution, histogram, dot plot, box plot, test or summary row
+  // shows under it, as Desmos lays it out: Find Cumulative Probability with
+  // its min and max, bin alignment and bar heights, a box plot's offset and
+  // height, a test's tail picker and its table of results.
+  var STATS_HTML =
+    '<div class="stats-box">' +
+    '<div class="st-cdf">' +
+    '<button class="st-toggle st-cdf-toggle"><span class="st-check"></span>Find Cumulative Probability</button>' +
+    '<div class="st-cdf-fields"><span class="st-label">Min</span><span class="bound st-min"></span>' +
+    '<span class="st-label">Max</span><span class="bound st-max"></span>' +
+    '<span class="st-prob"></span></div></div>' +
+    '<div class="st-bins">' +
+    '<span class="st-label">Bins</span><span class="st-seg st-align">' +
+    '<button data-v="left" title="Bins start at multiples of the width">Left</button>' +
+    '<button data-v="center" title="Bins are centred on multiples of the width">Center</button></span>' +
+    '<span class="st-seg st-height">' +
+    '<button data-v="count" title="Bar height is how many values fall in the bin">Count</button>' +
+    '<button data-v="relative" title="Bar height is the share of all values">Relative</button>' +
+    '<button data-v="density" title="Bar area is the share of all values, so the bars total 1">Density</button></span></div>' +
+    '<div class="st-box"><span class="st-label">Offset</span><span class="bound st-offset"></span>' +
+    '<span class="st-label">Height</span><span class="bound st-bh"></span>' +
+    '<button class="st-toggle st-outliers" title="Draw values more than 1.5 IQR past the box as dots">' +
+    '<span class="st-check"></span>Show outliers</button></div>' +
+    '<div class="st-table"><div class="st-tails"><span class="st-hyp"></span>' +
+    '<span class="st-seg"><button data-v="less" title="Alternative: less than">&lt;</button>' +
+    '<button data-v="ne" title="Alternative: not equal">&ne;</button>' +
+    '<button data-v="greater" title="Alternative: greater than">&gt;</button></span></div>' +
+    '<div class="st-grid"></div></div>' +
+    '</div>';
+
+  // The settings a row keeps, as the engine reads them.
+  function statsSent(row) {
+    var s = row.stats;
+    if (!s || !Object.keys(s).length) return undefined;
+    return s;
+  }
+
+  function changeStats(row, change) {
+    row.stats = Object.assign({}, row.stats || {}, change);
+    paintStats(row);
+    sendRows();
+  }
+
+  function bindStats(row) {
+    var el = row.el.querySelector('.stats-box');
+    var fieldOptions = function (key) {
+      return Object.assign({}, MATH_OPTIONS, {
+        handlers: {
+          edit: function () {
+            if (row.settingStats) return;
+            if (key === 'cdf') {
+              row.stats = Object.assign({}, row.stats, { cdf: [row.cdfMin.latex(), row.cdfMax.latex()] });
+            } else {
+              var change = {};
+              change[key] = (key === 'offset' ? row.offsetField : row.heightField).latex();
+              row.stats = Object.assign({}, row.stats, change);
+            }
+            sendRows();
+          },
+          enter: function () { row.field.focus(); }
+        }
+      });
+    };
+    row.cdfMin = MQ.MathField(el.querySelector('.st-min'), fieldOptions('cdf'));
+    row.cdfMax = MQ.MathField(el.querySelector('.st-max'), fieldOptions('cdf'));
+    row.offsetField = MQ.MathField(el.querySelector('.st-offset'), fieldOptions('offset'));
+    row.heightField = MQ.MathField(el.querySelector('.st-bh'), fieldOptions('boxHeight'));
+    el.querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    });
+    el.querySelector('.st-cdf-toggle').addEventListener('click', function () {
+      var on = !(row.stats && row.stats.cdf);
+      // Desmos starts from the whole line; typing a bound narrows it.
+      var last = row.lastCdf || ['', ''];
+      changeStats(row, { cdf: on ? last : null });
+      if (on) {
+        row.settingStats = true;
+        row.cdfMin.latex(last[0]);
+        row.cdfMax.latex(last[1]);
+        row.settingStats = false;
+        row.cdfMin.focus();
+      }
+    });
+    el.querySelector('.st-outliers').addEventListener('click', function () {
+      changeStats(row, { ends: !(row.stats && row.stats.ends) });
+    });
+    [['.st-align', 'align'], ['.st-height', 'height'], ['.st-tails .st-seg', 'tail']].forEach(function (p) {
+      el.querySelectorAll(p[0] + ' button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var change = {};
+          change[p[1]] = b.dataset.v;
+          changeStats(row, change);
+        });
+      });
+    });
+  }
+
+  // The buttons and fields as the row's settings say.
+  function paintStats(row) {
+    var el = row.el.querySelector('.stats-box');
+    var s = row.stats || {};
+    el.classList.toggle('cdf-on', !!s.cdf);
+    if (s.cdf) row.lastCdf = s.cdf;
+    el.classList.toggle('outliers-on', !s.ends);
+    var pick = function (sel, v) {
+      el.querySelectorAll(sel + ' button').forEach(function (b) { b.classList.toggle('on', b.dataset.v === v); });
+    };
+    pick('.st-align', s.align || 'left');
+    pick('.st-height', s.height || 'count');
+    pick('.st-tails .st-seg', s.tail || 'ne');
+  }
+
+  // Shows what the engine said about a statistics row.
+  function showStats(row, r) {
+    var st = r.stats;
+    var el = row.el;
+    var box = el.querySelector('.stats-box');
+    el.classList.toggle('has-stats', !!st);
+    ['distribution', 'histogram', 'dotplot', 'boxplot', 'table'].forEach(function (k) {
+      box.classList.toggle('st-' + k, !!st && st.kind === k);
+    });
+    if (!st) return;
+    if (!row.statsShown) {
+      // The fields take what was saved, the first time.
+      row.statsShown = true;
+      var s = row.stats || {};
+      row.settingStats = true;
+      if (s.cdf) { row.cdfMin.latex(s.cdf[0] || ''); row.cdfMax.latex(s.cdf[1] || ''); }
+      // Empty means the defaults, which the fields show.
+      row.offsetField.latex(s.offset || '1');
+      row.heightField.latex(s.boxHeight || '1');
+      row.settingStats = false;
+    }
+    paintStats(row);
+    box.querySelector('.st-cdf-fields').classList.toggle('bad', !!st.cdfError);
+    box.querySelector('.st-cdf-fields').title = st.cdfError || '';
+    box.querySelector('.st-box').classList.toggle('bad', !!st.boxError);
+    box.querySelector('.st-box').title = st.boxError || '';
+    var prob = box.querySelector('.st-prob');
+    if (st.probability != null) {
+      var range = st.discrete ? '\\le x\\le' : '<x<';
+      MQ.StaticMath(prob).latex('P\\left(\\min' + range + '\\max\\right)=' + st.probability);
+    } else {
+      prob.textContent = '';
+    }
+    box.querySelector('.st-tails').style.display = st.tails ? '' : 'none';
+    var hyp = box.querySelector('.st-hyp');
+    if (st.hypotheses) MQ.StaticMath(hyp).latex(st.hypotheses[0] + ',\\ \\ ' + st.hypotheses[1]);
+    else hyp.textContent = '';
+    var grid = box.querySelector('.st-grid');
+    grid.innerHTML = '';
+    (st.rows || []).forEach(function (pair) {
+      var cell = document.createElement('span');
+      cell.className = 'st-cell';
+      grid.appendChild(cell);
+      MQ.StaticMath(cell).latex(pair[0] + '=' + pair[1]);
+    });
+  }
+
+  // Rows with random draws get a button to draw again, as in Desmos. All
+  // draws change together, from a new seed for the graph.
+  function showReroll(row) {
+    var latex = row.field.latex();
+    row.el.classList.toggle('random', /operatorname\{(random|shuffle)\}/.test(latex));
+  }
+  function reroll() {
+    changeSettings({ randomSeed: 1 + Math.floor(Math.random() * 2147483646) });
+  }
+
+  // Adds a row under `after` (or at the end).
+  function addRowAfter(after, latex) {
+    var at = after ? indexOf(after) + 1 : rows.length;
+    var r = addRow(latex, at);
+    sendRows();
+    return r;
+  }
+
+  // A row's value is a list of numbers: offer its summary.
+  function showSummaryButton(row, r) {
+    var list = r.value != null && !r.error && /^\\left\[/.test(r.value) && r.value.indexOf('\\left(') < 0;
+    row.el.classList.toggle('number-list', !!list);
+  }
+  function summaryOf(row) {
+    var latex = row.field.latex();
+    var m = /^([A-Za-z](?:_\{?[A-Za-z0-9]+\}?)?)=/.exec(latex);
+    var arg = m ? m[1] : latex;
+    addRowAfter(row, '\\operatorname{stats}\\left(' + arg + '\\right)').field.focus();
+  }
+
+  // ---- Tables: statistics menu, regressions and pasted data ---------------
+
+  // Regressions Desmos users type, with the table's columns in place.
+  // Each model has #p for a parameter p and X for the first column.
+  var FITS = [
+    ['Linear', '#mX+#b', ['m', 'b'], 'mx + b'],
+    ['Quadratic', '#aX^{2}+#bX+#c', ['a', 'b', 'c'], 'ax\u00b2 + bx + c'],
+    ['Cubic', '#aX^{3}+#bX^{2}+#cX+#d', ['a', 'b', 'c', 'd'], 'ax\u00b3 + bx\u00b2 + cx + d'],
+    ['Exponential', '#a#b^{X}', ['a', 'b'], 'ab\u02e3'],
+    ['Logarithmic', '#a+#b\\ln X', ['a', 'b'], 'a + b ln x'],
+    ['Power', '#aX^{#b}', ['a', 'b'], 'ax\u1d47'],
+    ['Logistic', '\\frac{#c}{1+#ae^{-#bX}}', ['a', 'b', 'c'], 'c / (1 + ae\u207b\u1d47\u02e3)'],
+    ['Sinusoidal', '#a\\sin\\left(#bX+#c\\right)+#d', ['a', 'b', 'c', 'd'], 'a sin(bx + c) + d']
+  ];
+
+  // Names some row already defines, so a regression's parameters can
+  // steer clear of them.
+  function definedNames() {
+    var names = {};
+    rows.forEach(function (r) {
+      if (r.kind === 'table') {
+        r.columns.forEach(function (c) { names[c.field.latex()] = true; });
+        return;
+      }
+      if (!r.field) return;
+      var m = /^([A-Za-z](?:_\{?[A-Za-z0-9]+\}?)?)(?:\\left\(.*\\right\))?=/.exec(r.field.latex());
+      if (m) names[m[1]] = true;
+      var fit = /\\sim/.test(r.field.latex()) ? r.field.latex() : '';
+      if (fit) FITS.forEach(function (f) { f[2].forEach(function (p) { if (fit.indexOf(p) >= 0) names[p] = true; }); });
+    });
+    return names;
+  }
+
+  function regressionLatex(xName, yName, fit) {
+    var taken = definedNames();
+    var used = fit[2].some(function (p) { return taken[p]; });
+    // a, b → a_1, b_1, or the first subscript that is free.
+    var n = 0;
+    if (used) {
+      n = 1;
+      while (fit[2].some(function (p) { return taken[p + '_' + n]; })) n++;
+    }
+    var body = fit[1].replace(/#([a-z])/g, function (all, p) { return n ? p + '_' + n : p; });
+    // x in the model is the table's first column, so a product such as
+    // m x_1 keeps a space.
+    body = body.replace(/X/g, ' ' + xName + ' ').replace(/ +/g, ' ').replace(/ (?=[+^}=]|$)/g, '');
+    return yName + '\\sim ' + body.trim();
+  }
+
+  var TABLE_TOOLS_HTML =
+    '<div class="table-tools"><select class="st-menu" title="Statistics for this table">' +
+    '<option value="">Statistics…</option></select></div>';
+
+  function fillTableMenu(t) {
+    var sel = t.el.querySelector('.st-menu');
+    var names = t.columns.map(function (c) { return c.field.latex(); }).filter(function (n) { return n; });
+    var key = names.join('|');
+    if (sel.dataset.key === key) return;
+    sel.dataset.key = key;
+    sel.innerHTML = '<option value="">Statistics…</option>';
+    var group = function (label, items) {
+      var g = document.createElement('optgroup');
+      g.label = label;
+      items.forEach(function (it) {
+        var o = document.createElement('option');
+        o.value = it[0];
+        o.textContent = it[1];
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
+    };
+    var plain = function (n) { return quantityText(n.replace(/_\{?([^}]*)\}?/, '$1')); };
+    group('Summary', names.map(function (n) { return ['stats|' + n, 'Summary of ' + plain(n)]; }));
+    group('Plot', names.reduce(function (out, n) {
+      return out.concat([
+        ['histogram|' + n, 'Histogram of ' + plain(n)],
+        ['dotplot|' + n, 'Dot plot of ' + plain(n)],
+        ['boxplot|' + n, 'Box plot of ' + plain(n)]
+      ]);
+    }, []));
+    if (names.length >= 2) {
+      var x = names[0];
+      group('Fit ' + names.slice(1).map(plain).join(', ') + ' against ' + plain(x),
+        FITS.map(function (f, i) { return ['fit|' + i, f[0] + ': ' + plain(names[1]) + ' ~ ' + f[3]]; }));
+    }
+  }
+
+  function bindTableTools(t) {
+    var sel = t.el.querySelector('.st-menu');
+    sel.addEventListener('focus', function () { fillTableMenu(t); });
+    sel.addEventListener('mousedown', function () { fillTableMenu(t); });
+    sel.addEventListener('change', function () {
+      var v = sel.value;
+      sel.value = '';
+      if (!v) return;
+      var parts = v.split('|');
+      var latex;
+      if (parts[0] === 'fit') {
+        var names = t.columns.map(function (c) { return c.field.latex(); });
+        latex = regressionLatex(names[0], names[1], FITS[Number(parts[1])]);
+      } else {
+        latex = '\\operatorname{' + parts[0] + '}\\left(' + parts[1] + '\\right)';
+      }
+      addRowAfter(t, latex);
+    });
+  }
+
+  // A number as typed into a cell: 1.5e3 becomes 1.5·10³, and thousands
+  // separators go.
+  function cellLatex(text) {
+    var s = text.trim().replace(/^"|"$/g, '').replace(/,(?=\d{3}(\D|$))/g, '');
+    var m = /^([+-]?\d*\.?\d+)[eE]([+-]?\d+)$/.exec(s);
+    if (m) return m[1] + '\\cdot10^{' + m[2] + '}';
+    return s.replace(/^\+/, '');
+  }
+  function numeric(text) {
+    var s = text.trim().replace(/^"|"$/g, '').replace(/,(?=\d{3}(\D|$))/g, '');
+    return s === '' || /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s);
+  }
+
+  // Rows of cells from text copied out of Excel or Google Sheets (tabs),
+  // or a CSV file (commas). Null when it isn't a grid of numbers.
+  function parseGrid(text, csv) {
+    var lines = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
+    var sep = text.indexOf('\t') >= 0 ? '\t' : csv || /,/.test(lines[0]) ? ',' : null;
+    if (!sep || (lines.length < 2 && sep === ',')) {
+      if (lines.length < 2) return null;
+      sep = '\t';
+    }
+    var grid = lines.map(function (l) {
+      if (sep !== ',') return l.split(sep);
+      // Quoted CSV fields may hold commas.
+      var out = [], cur = '', q = false;
+      for (var i = 0; i < l.length; i++) {
+        var ch = l.charAt(i);
+        if (ch === '"') q = !q;
+        else if (ch === ',' && !q) { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out;
+    });
+    // A header row of words is dropped.
+    var header = null;
+    if (grid.length > 1 && !grid[0].every(numeric)) header = grid.shift();
+    if (!grid.length || !grid.every(function (r) { return r.every(numeric); })) return null;
+    var width = grid.reduce(function (w, r) { return Math.max(w, r.length); }, 0);
+    return { header: header, rows: grid, width: width };
+  }
+
+  // Puts a grid of numbers into table `t` from column `ci`, row `ri`,
+  // adding rows and columns as needed.
+  function fillTable(t, ci, ri, g) {
+    t.filling = true;
+    while (t.columns.length < ci + g.width) addColumn(t, nextColumnName(t));
+    while (t.nrows < ri + g.rows.length) addTableRow(t);
+    g.rows.forEach(function (r, i) {
+      r.forEach(function (v, j) { t.columns[ci + j].cells[ri + i].latex(cellLatex(v)); });
+    });
+    t.filling = false;
+    growTable(t);
+    sendRows();
+  }
+
+  // A table made from a grid of numbers, in place of row `at`.
+  function tableFromGrid(at, g) {
+    var t = addTable(at);
+    // addTable gives two columns and one row to start.
+    fillTable(t, 0, 0, g);
+    tableFocus(t, 0, 0);
+    return t;
+  }
+
+  // Pasting copied cells into a table fills it from the cell; pasting them
+  // into an empty expression makes a table there.
+  document.addEventListener('paste', function (e) {
+    if (document.body.classList.contains('doc-view')) return;
+    var text = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (!text || looksLikeDesmos(text)) return;
+    var cellBox = e.target.closest && e.target.closest('.table-row');
+    var g = parseGrid(text, false);
+    if (!g) return;
+    if (cellBox) {
+      var t = rows.filter(function (r) { return r.el === cellBox; })[0];
+      if (!t) return;
+      var ci = -1, ri = -1;
+      t.columns.forEach(function (c, i) {
+        c.cells.forEach(function (f, j) {
+          if (f.el().contains(e.target) || f.el().classList.contains('mq-focused')) { ci = i; ri = j; }
+        });
+      });
+      if (ci < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      fillTable(t, ci, ri, g);
+      return;
+    }
+    var i = activeIndex();
+    var row = rows[i];
+    if (!row || row.kind || !row.field || row.field.latex() !== '') return;
+    e.preventDefault();
+    e.stopPropagation();
+    row.el.parentNode.removeChild(row.el);
+    rows.splice(i, 1);
+    tableFromGrid(i, g);
+    renumber();
+  }, true);
+
+  // ☰ → Open CSV as table: a file picker in the panel, read here.
+  var csvInput = document.createElement('input');
+  csvInput.type = 'file';
+  csvInput.accept = '.csv,.tsv,.txt,text/csv';
+  csvInput.style.display = 'none';
+  document.body.appendChild(csvInput);
+  csvInput.addEventListener('change', function () {
+    var file = csvInput.files && csvInput.files[0];
+    csvInput.value = '';
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var g = parseGrid(String(reader.result), /\.csv$/i.test(file.name));
+      if (!g) {
+        showToast(file.name + ' has no table of numbers to open');
+        return;
+      }
+      // Into an empty last row, or a new one at the end.
+      var at = rows.length;
+      var last = rows[rows.length - 1];
+      if (last && !last.kind && last.field && last.field.latex() === '') {
+        at = rows.length - 1;
+        last.el.parentNode.removeChild(last.el);
+        rows.splice(at, 1);
+      }
+      tableFromGrid(at, g);
+      renumber();
+    };
+    reader.readAsText(file);
+  });
+  function openCsv() { csvInput.click(); }
+
+  var toastTimer = 0;
+  function showToast(message) {
+    toast.textContent = message;
+    toast.classList.add('open');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove('open'); }, 3500);
   }
 
   // ---- Solve ---------------------------------------------------------------
@@ -1640,7 +2103,7 @@
     el.className = 'row table-row';
     el.innerHTML =
       '<div class="tab"><span class="index"></span></div>' +
-      '<div class="body"><div class="grid"></div>' +
+      '<div class="body"><div class="grid"></div>' + TABLE_TOOLS_HTML +
       '<div class="missing">add slider: <span class="buttons"></span></div></div>' +
       '<button class="remove" title="Delete">&#x2715;</button>';
     var t = {
@@ -1672,6 +2135,7 @@
     t.columns[0].swatch.style.visibility = 'hidden';
     el.addEventListener('focusin', function () { setActive(t); });
     el.querySelector('.remove').addEventListener('click', function () { removeRow(t); });
+    bindTableTools(t);
     renumber();
     return t;
   }
@@ -2443,7 +2907,43 @@
       ['\\operatorname{mean}\\left(L\\right)', 'Also median'],
       ['\\min\\left(L\\right),\\ \\max\\left(L\\right)', 'Smallest and largest'],
       ['\\operatorname{total}\\left(L\\right)', 'Sum of a list'],
-      ['\\operatorname{length}\\left(L\\right)', 'Number of elements']]],
+      ['\\operatorname{length}\\left(L\\right)', 'Number of elements; count works too'],
+      ['\\operatorname{stdev}\\left(L\\right)', 'Sample standard deviation; stdevp for the population'],
+      ['\\operatorname{var}\\left(L\\right)', 'Sample variance; varp for the population'],
+      ['\\operatorname{mad}\\left(L\\right)', 'Mean absolute deviation'],
+      ['\\operatorname{quartile}\\left(L,1\\right)', 'Quartile 0 to 4 (the median of each half, as on a TI-84)'],
+      ['\\operatorname{quantile}\\left(L,0.9\\right)', 'Quantile p from 0 to 1, interpolated'],
+      ['\\operatorname{cov}\\left(X,Y\\right)', 'Sample covariance; covp for the population'],
+      ['\\operatorname{corr}\\left(X,Y\\right)', "Pearson's r; spearman for rank correlation"],
+      ['\\operatorname{stats}\\left(L\\right)', 'Summary: n, mean, SDs, five-number summary, IQR, outliers (also \u03a3 stats on a list)'],
+      ['\\operatorname{freq}\\left(L,F\\right)', 'Frequency table: each value of L repeated F times, for any function here'],
+      ['\\operatorname{random}\\left(5\\right)', 'Random numbers 0 to 1; random() for one, random(L, n) picks from L, a last number seeds it; the dice button draws again'],
+      ['\\operatorname{shuffle}\\left(L\\right)', 'Random order']]],
+    ['STATISTICAL PLOTS', [
+      ['\\operatorname{histogram}\\left(L,2\\right)', 'Bins of width 2 (1 if left out); under the row: Left or Center bins, Count, Relative or Density'],
+      ['\\operatorname{dotplot}\\left(L\\right)', 'Stacked dots; dotplot(L, w) bins them'],
+      ['\\operatorname{boxplot}\\left(L\\right)', 'Box plot; under the row: offset, height, and outliers as dots'],
+      ['y_1\\sim mx_1+b', 'Regressions with R\u00b2; a table\u2019s Statistics menu writes them for you']]],
+    ['DISTRIBUTIONS', [
+      ['\\operatorname{normaldist}\\left(\\mu,\\sigma\\right)', 'Normal (0, 1 if left out); a row draws it, with Find Cumulative Probability under it'],
+      ['\\operatorname{tdist}\\left(\\nu\\right),\\ \\operatorname{chisqdist}\\left(k\\right),\\ \\operatorname{fdist}\\left(d_1,d_2\\right)', 't, \u03c7\u00b2 and F'],
+      ['\\operatorname{binomialdist}\\left(n,p\\right),\\ \\operatorname{poissondist}\\left(\\lambda\\right)', 'Discrete ones are drawn as bars; also geodist(p)'],
+      ['\\operatorname{uniformdist}\\left(a,b\\right),\\ \\operatorname{expdist}\\left(\\lambda\\right)', 'Also gammadist(k, \u03b8) and betadist(\u03b1, \u03b2)'],
+      ['D.\\operatorname{pdf}\\left(x\\right)', 'Density (or P(X = x) for a discrete one)'],
+      ['D.\\operatorname{cdf}\\left(x\\right),\\ D.\\operatorname{cdf}\\left(a,b\\right)', 'P(X \u2264 x) and P(a \u2264 X \u2264 b)'],
+      ['D.\\operatorname{random}\\left(100\\right)', '100 draws'],
+      ['\\operatorname{quantile}\\left(D,0.975\\right)', 'Inverse cdf; mean, median, stdev and var of D work too']]],
+    ['TESTS AND INTERVALS', [
+      ['\\operatorname{ttest}\\left(L,\\mu_0\\right)', 'One-sample t-test; pick <, \u2260 or > under the row'],
+      ['\\operatorname{ittest}\\left(A,B\\right)', 'Two-sample t-test (Welch)'],
+      ['\\operatorname{tscore}\\left(L,\\mu_0\\right)', 'The t statistic alone'],
+      ['\\operatorname{ztest}\\left(L,\\mu_0,\\sigma\\right)', 'z-test with \u03c3 known'],
+      ['\\operatorname{proptest}\\left(x,n,p_0\\right)', 'One-proportion z-test: x successes in n trials; twoproptest(x\u2081, n\u2081, x\u2082, n\u2082)'],
+      ['\\operatorname{chisqgof}\\left(O,E\\right)', '\u03c7\u00b2 goodness of fit: observed and expected counts'],
+      ['\\operatorname{chisqtest}\\left(R_1,R_2\\right)', '\u03c7\u00b2 test of independence, one list per row of counts'],
+      ['\\operatorname{tinterval}\\left(L,0.95\\right)', 'Confidence interval for a mean; ittinterval(A, B, C) for a difference'],
+      ['\\operatorname{zinterval}\\left(L,\\sigma,0.95\\right)', 'z interval with \u03c3 known'],
+      ['\\operatorname{propinterval}\\left(x,n,0.95\\right)', 'For a proportion; twopropinterval for a difference']]],
     ['LISTS', [
       ['\\left[1,2,3\\right],\\ \\left[1...10\\right]', 'Lists and ranges'],
       ['L\\left[2\\right],\\ L\\left[2...4\\right]', 'Element (from 1) and slice'],
@@ -2674,6 +3174,7 @@
     if (!b) return;
     fileMenu.classList.remove('open');
     if (b.dataset.file === 'import') openImport();
+    else if (b.dataset.file === 'csv') openCsv();
     else if (b.dataset.file === 'help') openHelp();
     else send({ type: b.dataset.file });
   });
@@ -2745,6 +3246,7 @@
       if (Array.isArray(s.derivs)) row.derivs = s.derivs.map(String);
       if (Array.isArray(s.axes) && s.axes.length === 2) row.axes = s.axes.map(Number);
       if (Array.isArray(s.start)) row.start = [String(s.start[0] || ''), String(s.start[1] || '')];
+      if (s.stats && typeof s.stats === 'object') row.stats = s.stats;
       paintRow(row);
     });
     if (rows.length === 0) addRow('', 0);

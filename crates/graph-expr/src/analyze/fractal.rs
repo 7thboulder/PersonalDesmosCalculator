@@ -168,7 +168,7 @@ impl Env {
 
     /// The value of an argument that must not depend on anything, or
     /// `None` when it reads an undefined name (left in `problems`).
-    fn constant(&mut self, e: &Expr, problems: &mut Problems) -> Option<Value> {
+    pub(super) fn constant(&mut self, e: &Expr, problems: &mut Problems) -> Option<Value> {
         let before = problems.missing.len() + problems.errors.len();
         let val = self.lower(e, &HashMap::new(), NO_FREE, problems);
         if problems.missing.len() + problems.errors.len() > before {

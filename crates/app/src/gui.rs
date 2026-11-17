@@ -440,8 +440,9 @@ impl Running {
     fn show_settings(&mut self, settings: graph_core::GridSettings) {
         // Degrees change every value, and the axis steps are read with the
         // rows.
-        let reread =
-            settings.degrees != self.engine.grid.degrees || settings.axes != self.engine.grid.axes;
+        let reread = settings.degrees != self.engine.grid.degrees
+            || settings.axes != self.engine.grid.axes
+            || settings.random_seed != self.engine.grid.random_seed;
         self.doc.settings_changed(&settings);
         let json = files::settings_json(&settings);
         self.engine.grid = settings;

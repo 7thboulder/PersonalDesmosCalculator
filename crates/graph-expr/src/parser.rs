@@ -545,7 +545,27 @@ impl Parser {
                     Some(Tok::Letter(l)) if l == "y" => Expr::Coord(Box::new(e), Coord::Y),
                     Some(Tok::Letter(l)) if l == "z" => Expr::Coord(Box::new(e), Coord::Z),
                     Some(Tok::OpName(n)) if n == "length" => Expr::Call(Builtin::Length, vec![e]),
-                    _ => return Err("Only .x, .y, .z and .length can follow a '.'".into()),
+                    Some(Tok::OpName(n)) if crate::ast::Method::from_name(&n).is_some() => {
+                        let method = crate::ast::Method::from_name(&n).expect("checked");
+                        let mut args = vec![e];
+                        if self.peek() == Some(&Tok::LParen) {
+                            // `D.random()` takes nothing.
+                            if self.toks.get(self.pos + 1) == Some(&Tok::RParen) {
+                                self.pos += 2;
+                            } else {
+                                args.extend(self.paren_args()?);
+                            }
+                        } else if method != crate::ast::Method::Random {
+                            return Err(format!("Try .{n}(x)"));
+                        }
+                        Expr::Shape(ShapeFn::Method(method), args)
+                    }
+                    _ => {
+                        return Err(
+                            "Only .x, .y, .z, .length, .pdf, .cdf and .random can follow a '.'"
+                                .into(),
+                        )
+                    }
                 };
             } else if self.peek() == Some(&Tok::Prime) {
                 return Err("Only functions can be differentiated with ', like f'(x)".into());
@@ -1086,8 +1106,12 @@ impl Parser {
             if self.peek() != Some(&Tok::LParen) {
                 return Err(format!("Function '{name}' needs parentheses"));
             }
-            // `mandelbrot()` needs nothing more.
-            if shape == ShapeFn::Mandelbrot && self.toks.get(self.pos + 1) == Some(&Tok::RParen) {
+            // `mandelbrot()`, `random()` and `normaldist()` need nothing more.
+            let bare = matches!(
+                shape,
+                ShapeFn::Mandelbrot | ShapeFn::Random | ShapeFn::Dist(_)
+            );
+            if bare && self.toks.get(self.pos + 1) == Some(&Tok::RParen) {
                 self.pos += 2;
                 return Ok(Expr::Shape(shape, Vec::new()));
             }

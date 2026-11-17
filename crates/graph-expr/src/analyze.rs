@@ -20,7 +20,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 mod fractal;
+mod statistics;
 pub use fractal::Fractal;
+pub use statistics::{set_random_seed, StatKind, StatOptions, StatsOut};
 
 #[derive(Clone, Debug, Default)]
 pub struct RowInput {
@@ -51,6 +53,8 @@ pub struct RowInput {
     /// How far along a 2×2 matrix's transformation view is, from 0 (the
     /// plane as it is) to 1 (the plane after the matrix), when it is on.
     pub transform: Option<f64>,
+    /// A statistics row's settings: cumulative probability, bins, tails.
+    pub stats: StatOptions,
 }
 
 /// One column of a table: its header and the LaTeX of each cell.
@@ -262,6 +266,8 @@ pub enum Value {
     /// A complex number, real part then imaginary part.
     Complex(f64, f64),
     Complexes(Vec<[f64; 2]>),
+    /// A probability distribution, such as `normaldist(0, 1)`.
+    Dist(crate::stats::Dist),
 }
 
 /// What an action sets a variable to: a value, or a whole matrix.
@@ -381,6 +387,9 @@ pub struct RowAnalysis {
     /// Whether the equation leaves the independent variable out, so
     /// where it starts makes no difference.
     pub ode_autonomous: bool,
+    /// For a distribution, a statistics plot, a test or a summary: what
+    /// the row shows under it.
+    pub stats: Option<StatsOut>,
 }
 
 /// What a regression found.
@@ -438,6 +447,7 @@ impl RowAnalysis {
             ode_names: Vec::new(),
             ode_axes: [0, 1],
             ode_autonomous: true,
+            stats: None,
         }
     }
 
@@ -488,6 +498,10 @@ impl RowAnalysis {
             && self.columns.iter().all(|c| c.points.is_empty()))
     }
 }
+
+/// The error for adding to or scaling a distribution.
+const DIST_ARITHMETIC: &str =
+    "Distributions can't be used in arithmetic; try D.pdf(x), D.cdf(x) or D.random(n)";
 
 /// Names with fixed meanings that rows cannot redefine.
 const CONSTANTS: &[(&str, f64)] = &[
@@ -605,6 +619,7 @@ struct RowKey {
     axes: Option<[usize; 2]>,
     start: [String; 2],
     transform: Option<u64>,
+    stats: StatOptions,
 }
 
 impl RowKey {
@@ -616,6 +631,7 @@ impl RowKey {
             axes: row.axes,
             start: row.start.clone(),
             transform: row.transform.map(f64::to_bits),
+            stats: row.stats.clone(),
         }
     }
 }
@@ -702,6 +718,9 @@ fn same_value(a: &Result<Value, String>, b: &Result<Value, String>) -> bool {
                     push(11, p.as_flattened());
                 }
             }
+            Value::Dist(d) => {
+                push(12 + d.kind as u64, &d.p);
+            }
         }
         out
     }
@@ -729,6 +748,8 @@ enum Item {
     Polygon3(Vec<[f64; 3]>),
     /// A complex number with a nonzero imaginary part: real, imaginary.
     Complex(Low, Low),
+    /// A distribution and its parameters, all of them given.
+    Dist(crate::stats::DistKind, Vec<Low>),
 }
 
 impl Item {
@@ -809,6 +830,10 @@ impl Val {
             Low::Const(v) => Some(v),
             _ => None,
         };
+        if let [Item::Dist(kind, params)] = self.items.as_slice() {
+            let params = params.iter().map(num).collect::<Option<Vec<f64>>>()?;
+            return crate::stats::Dist::from_args(*kind, &params).map(Value::Dist);
+        }
         if self.items.iter().any(|i| matches!(i, Item::Polygon3(_))) {
             let polygons = self
                 .items
@@ -937,6 +962,13 @@ impl Val {
             Value::Complexes(zs) => {
                 Val::list(zs.iter().map(|z| Item::complex(c(z[0]), c(z[1]))).collect())
             }
+            Value::Dist(d) => Val {
+                items: vec![Item::Dist(
+                    d.kind,
+                    d.p[..d.kind.params()].iter().map(|v| c(*v)).collect(),
+                )],
+                list: false,
+            },
         }
     }
 }
@@ -1451,6 +1483,8 @@ pub fn analyze_angles(
         recursive: HashSet::new(),
         recursions: FastMap::default(),
         building: Vec::new(),
+        salt: std::cell::Cell::new(0),
+        draws: std::cell::Cell::new(0),
     };
     for table in tables.iter().flatten() {
         for column in &table.columns {
@@ -1637,6 +1671,7 @@ pub fn analyze_angles(
             if let Some(done) = finished.remove(&row.id) {
                 return done;
             }
+            env.draw_for(row.id);
             if let Some(note) = pde_notes.remove(&row.id) {
                 return RowAnalysis {
                     kind: RowKind::NotYet,
@@ -1676,7 +1711,10 @@ pub fn analyze_angles(
                     env.other_row_cached(row, statement)
                 }
             };
-            if out.error.is_none() && out.points.len() == 1 {
+            if let Some(Value::Dist(d)) = out.value {
+                env.dist_row(row, d, &mut out);
+            }
+            if out.error.is_none() && out.points.len() == 1 && out.stats.is_none() {
                 out.drag = point.and_then(|e| env.drag_of(&e));
             }
             show_units(&mut out, shown);
@@ -2213,6 +2251,10 @@ struct Env {
     /// The groups of recursive functions whose bodies are being lowered,
     /// innermost last.
     building: Vec<Vec<String>>,
+    /// What random draws are told apart by (the row or variable being
+    /// worked out), and how many it has made so far.
+    salt: std::cell::Cell<u64>,
+    draws: std::cell::Cell<u64>,
 }
 
 /// A recursive function's group, its place in it, and what lowering the
@@ -2233,6 +2275,12 @@ fn constant_key(v: &Val, key: &mut Vec<u64>) -> Option<()> {
             Item::Point(a, b) => key.extend([1, bits(a)?, bits(b)?]),
             Item::Complex(a, b) => key.extend([2, bits(a)?, bits(b)?]),
             Item::Point3(a, b, c) => key.extend([3, bits(a)?, bits(b)?, bits(c)?]),
+            Item::Dist(kind, params) => {
+                key.extend([4, *kind as u64]);
+                for p in params {
+                    key.push(bits(p)?);
+                }
+            }
             Item::Polygon(_) | Item::Polygon3(_) => return None,
         }
     }
@@ -3055,6 +3103,9 @@ impl Env {
             if fractal::draws_row(*f) {
                 return self.fractal_row(id, *f, args);
             }
+            if let ShapeFn::StatRow(r) = f {
+                return self.stat_row(input, *r, args);
+            }
         }
         if self.mode == Mode::Flat && e.mentions("z") && !self.vars.contains_key("z") {
             if let Some(row) = self.complex_row(id, e) {
@@ -3722,8 +3773,13 @@ impl Env {
             None => {
                 self.recording.push(Vec::new());
                 let mut problems = Problems::default();
+                let salt = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                    (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+                });
+                let draws = self.draw_for(salt);
                 let val =
                     self.lower_with(&expr, &HashMap::new(), NO_FREE, 0, &mut problems, visiting);
+                self.restore_draws(draws);
                 let reads = self.recording.pop().unwrap_or_default();
                 let deps = self.deps_of(&reads);
                 let result = match (problems.first_message(), val.constant()) {
@@ -4241,7 +4297,7 @@ impl Env {
         }
         let mut found = false;
         let mut visit = |e: &Expr| match e {
-            Expr::Call(f, _) => found |= f.takes_list(),
+            Expr::Call(f, _) => found |= f.reads_whole_list(),
             Expr::Apply(name, _) | Expr::Prime(name, ..) => {
                 // A recursive function's calls are worked out one at a time.
                 found |= !self.recursive.contains(name)
@@ -4591,6 +4647,9 @@ impl Env {
             if polygon(items[0]) || polygon(items[1]) {
                 return Err("Polygons can't be used in arithmetic".into());
             }
+            if matches!(items[0], Dist(..)) || matches!(items[1], Dist(..)) {
+                return Err(DIST_ARITHMETIC.into());
+            }
             if matches!(items[0], Complex(..)) || matches!(items[1], Complex(..)) {
                 return match (items[0].parts(), items[1].parts()) {
                     (Some(z), Some(w)) => complex_op(op, z, w),
@@ -4660,6 +4719,7 @@ impl Env {
                         Item::Polygon(_) | Item::Polygon3(_) => {
                             return Err("Polygons can't be negated".into())
                         }
+                        Item::Dist(..) => return Err(DIST_ARITHMETIC.into()),
                         Item::Complex(a, b) => Item::Complex(neg(a), neg(b)),
                     })
                 })
@@ -5499,7 +5559,7 @@ impl Env {
                                 Some(vec![constant(a)?, constant(b)?, constant(c)?])
                             }
                             Item::Complex(a, b) => Some(vec![constant(a)?, constant(b)?]),
-                            Item::Polygon(_) | Item::Polygon3(_) => None,
+                            Item::Polygon(_) | Item::Polygon3(_) | Item::Dist(..) => None,
                         };
                         let Some(k) = key(item) else {
                             problems.error("Function 'unique' needs numbers or points that don't depend on x or y");
@@ -5589,6 +5649,15 @@ impl Env {
             }
             ShapeFn::Mandelbrot | ShapeFn::Julia | ShapeFn::Cobweb | ShapeFn::Bifurcation => {
                 problems.error(fractal::whole_row(f));
+                Val::nan()
+            }
+            ShapeFn::Dist(kind) => self.distribution(kind, args, problems),
+            ShapeFn::Method(m) => self.method(m, args, problems),
+            ShapeFn::Random => self.random(args, problems),
+            ShapeFn::Shuffle => self.shuffle(args, problems),
+            ShapeFn::Freq => self.freq(args, problems),
+            ShapeFn::StatRow(r) => {
+                problems.error(format!("'{}' draws on a row of its own", r.name()));
                 Val::nan()
             }
         }
@@ -5775,6 +5844,20 @@ impl Env {
             let n: usize = args.iter().map(|v| v.items.len()).sum();
             return Val::num(Low::Const(n as f64));
         }
+        if args
+            .iter()
+            .any(|v| v.items.iter().any(|i| matches!(i, Item::Dist(..))))
+        {
+            return self.call_on_dist(f, args, problems);
+        }
+        if matches!(
+            f,
+            Builtin::Cov | Builtin::Covp | Builtin::Corr | Builtin::Spearman
+        ) || (matches!(f, Builtin::Quantile | Builtin::Quartile | Builtin::TScore)
+            && !args.is_empty())
+        {
+            return self.call_on_lists(f, args, problems);
+        }
         let complex = args.iter().any(Val::has_complex);
         if complex && matches!(f, Builtin::Total | Builtin::Mean) {
             // Sums and means of complex numbers add up each part.
@@ -5858,6 +5941,7 @@ impl Env {
                 Item::Num(l) => l.uses_arg(),
                 Item::Point(a, b) | Item::Complex(a, b) => a.uses_arg() || b.uses_arg(),
                 Item::Point3(a, b, c) => a.uses_arg() || b.uses_arg() || c.uses_arg(),
+                Item::Dist(_, ps) => ps.iter().any(Low::uses_arg),
                 Item::Polygon(_) | Item::Polygon3(_) => false,
             });
             if let Some(g) = GRAPH_VARIABLES.iter().find(|g| **g == name) {
@@ -5942,6 +6026,10 @@ fn numbers_of(v: &Value, rows: usize, error: &mut Option<String>) -> Option<Vec<
         }
         Value::Polygon(_) | Value::Polygons(_) | Value::Polygon3(_) | Value::Polygons3(_) => {
             *error = Some("Table cells hold numbers, not polygons".into());
+            None
+        }
+        Value::Dist(_) => {
+            *error = Some("Table cells hold numbers, not distributions".into());
             None
         }
         Value::Complex(..) | Value::Complexes(_) => {
@@ -6400,7 +6488,7 @@ impl Env {
                 self.trace_call(Builtin::Factorial, vec![a])
             }
             Expr::Call(f, args) => {
-                if f.takes_list() {
+                if f.reads_whole_list() {
                     return None;
                 }
                 let mut traced = Vec::with_capacity(args.len());

@@ -509,7 +509,7 @@ pub fn build_scene_cached(
 
     let grid_after = out.len();
     let axis_w = (1.5 * scale).round().max(1.0);
-    let [ox, oy] = vp.to_screen(0.0, 0.0);
+    let [ox, oy] = vp.to_screen(steps.y_axis_x, 0.0);
     let (ox, oy) = (snap(ox as f32, axis_w), snap(oy as f32, axis_w));
     if settings.y_axis && (0.0..=w).contains(&ox) {
         stroke_polyline(&[[ox, 0.0], [ox, h]], axis_w, AXIS, &mut out);
@@ -528,9 +528,22 @@ pub fn build_scene_cached(
             custom: false,
         };
         let (major, major_y) = (square(spacing.major), square(spacing.major));
-        labels(vp, scale, &major, &major_y, None, settings, text, &mut out);
+        labels(
+            vp, scale, &major, &major_y, None, 0.0, settings, text, &mut out,
+        );
     } else {
-        labels(vp, scale, &xs, &ys, steps.sigma, settings, text, &mut out);
+        let at = steps.y_axis_x;
+        labels(
+            vp,
+            scale,
+            &xs,
+            &ys,
+            steps.sigma,
+            at,
+            settings,
+            text,
+            &mut out,
+        );
     }
     if settings.grid && settings.polar {
         angle_labels(vp, scale, settings.degrees, text, &mut out);
@@ -995,7 +1008,8 @@ pub fn sigma_label(k: i64) -> String {
 
 /// Numbers along both axes at every major grid line. When an axis is off
 /// screen its numbers stay pinned to the nearest edge, as in Desmos. With
-/// `sigma` (μ and σ) the x axis is labelled in σs from μ instead.
+/// `sigma` (μ and σ) the x axis is labelled in σs from μ instead. The y
+/// axis is drawn at x = `y_axis_x`, which is 0 but for the normal helper.
 #[allow(clippy::too_many_arguments)]
 fn labels(
     vp: &Viewport,
@@ -1003,6 +1017,7 @@ fn labels(
     xs: &AxisLines,
     ys: &AxisLines,
     sigma: Option<[f64; 2]>,
+    y_axis_x: f64,
     settings: &GridSettings,
     text: &mut TextAtlas,
     out: &mut Vec<Vertex>,
@@ -1017,8 +1032,9 @@ fn labels(
     let gap = LABEL_GAP * scale;
     let digit = size * DIGIT_HEIGHT;
     let (w, h) = (vp.width_px as f32, vp.height_px as f32);
-    let [ox, oy] = vp.to_screen(0.0, 0.0);
+    let [ox, oy] = vp.to_screen(y_axis_x, 0.0);
     let (ox, oy) = (ox as f32, oy as f32);
+    let moved = y_axis_x != 0.0;
     let (x0, x1) = vp.x_range();
     let (y0, y1) = vp.y_range();
     let major_px = (xs.major / vp.units_per_px) as f32;
@@ -1092,7 +1108,7 @@ fn labels(
 
     // A single 0 sits below and left of the origin, unless σ labels have
     // the x axis.
-    let corner = show_y || (show_x && !in_sigmas);
+    let corner = (show_y || (show_x && !in_sigmas)) && !moved;
     if corner && (0.0..=w).contains(&ox) && (0.0..=h).contains(&oy) {
         let zero = ("0".to_string(), None);
         let width = label_width(text, &zero, size);

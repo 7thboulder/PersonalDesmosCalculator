@@ -480,6 +480,123 @@
       { m: [op('Bi') + P('0'), '=', F('1', '3^{\\frac{1}{6}}' + Gam(F('2', '3')))] }] }
   ];
 
+  // Statistics: the formulas behind the statistics functions, as a course
+  // writes them.
+  var xb = '\\bar{x}', ss = '\\sum_{i=1}^{n}', mu = '\\mu', sg = '\\sigma';
+  var STATISTICS = [
+    { h: 'Summaries', type: 'mean(L), stdev(L), var(L), mad(L), quartile(L, q)', k: 'average deviation spread', items: [
+      { m: [xb, '=', F('1', 'n') + ss + 'x_i'], n: 'Mean' },
+      { m: ['s^2', '=', F('1', 'n-1') + ss + P('x_i-' + xb) + '^2'], n: 'Sample variance, var; s = stdev' },
+      { m: [sg + '^2', '=', F('1', 'n') + ss + P('x_i-' + mu) + '^2'], n: 'Population variance, varp; σ = stdevp' },
+      { m: ['\\text{MAD}', '=', F('1', 'n') + ss + A('x_i-' + xb)], n: 'Mean absolute deviation, mad' },
+      { m: ['\\text{IQR}', '=', 'Q_3-Q_1'], n: 'Outliers lie beyond Q₁ − 1.5 IQR or Q₃ + 1.5 IQR' },
+      { m: ['z', '=', F('x-' + mu, sg)], n: 'z-score' }] },
+    { h: 'Correlation and regression', type: 'corr(X, Y), cov(X, Y), y_1 ~ mx_1 + b', k: 'least squares line slope', items: [
+      { m: ['r', '=', F(ss + P('x_i-' + xb) + P('y_i-\\bar{y}'), R(ss + P('x_i-' + xb) + '^2' + ss + P('y_i-\\bar{y}') + '^2'))], n: "Pearson's r, corr" },
+      { m: ['m', '=', 'r' + F('s_y', 's_x')], n: 'Least-squares slope' },
+      { m: ['b', '=', '\\bar{y}-m' + xb], n: 'Intercept: the line passes through the means' },
+      { m: ['R^2', '=', '1-' + F(ss + P('y_i-\\hat{y}_i') + '^2', ss + P('y_i-\\bar{y}') + '^2')], n: 'Share of the variation the model explains' }] },
+    { h: 'Probability rules', k: 'complement union conditional independent bayes', items: [
+      { m: ['P' + P('A^c'), '=', '1-P' + P('A')] },
+      { m: ['P' + P('A\\cup B'), '=', 'P' + P('A') + '+P' + P('B') + '-P' + P('A\\cap B')] },
+      { m: ['P' + P('A|B'), '=', F('P' + P('A\\cap B'), 'P' + P('B'))], n: 'Conditional probability' },
+      { m: ['P' + P('A|B'), '=', F('P' + P('B|A') + 'P' + P('A'), 'P' + P('B'))], n: "Bayes' rule" },
+      { m: [op('nCr') + P('n,k'), '=', F('n!', 'k!' + P('n-k') + '!')], n: 'Combinations' }] },
+    { h: 'Distributions', type: 'normaldist(μ, σ), binomialdist(n, p), poissondist(λ), …', k: 'pdf pmf density bell', items: [
+      { m: ['f' + P('x'), '=', F('1', sg + R('2\\pi')) + 'e^{-' + F(P('x-' + mu) + '^2', '2' + sg + '^2') + '}'], n: 'Normal density' },
+      { m: ['P' + P('X=k'), '=', op('nCr') + P('n,k') + 'p^k' + P('1-p') + '^{n-k}'], n: 'Binomial: mean np, variance np(1 − p)' },
+      { m: ['P' + P('X=k'), '=', F('\\lambda^ke^{-\\lambda}', 'k!')], n: 'Poisson: mean and variance λ' },
+      { m: ['P' + P('X=k'), '=', P('1-p') + '^{k-1}p'], n: 'Geometric (geodist): the first success on trial k; mean 1/p' },
+      { m: ['f' + P('x'), '=', '\\lambda e^{-\\lambda x}'], n: 'Exponential (expdist), x ≥ 0; mean 1/λ' },
+      { table: { cols: ['#Within', '#Share'], rows: [['#μ ± σ', '#68.27%'], ['#μ ± 2σ', '#95.45%'], ['#μ ± 3σ', '#99.73%']] } }] },
+    { h: 'Sampling and inference', type: 'ttest(L, μ₀), tinterval(L, C), proptest(x, n, p₀), …', k: 'hypothesis test confidence interval standard error', items: [
+      { m: ['\\text{SE}', '=', F('s', R('n'))], n: 'Standard error of a mean' },
+      { m: ['t', '=', F(xb + '-' + mu + '_0', 's/' + R('n'))], n: 'One-sample t, with n − 1 degrees of freedom' },
+      { m: ['z', '=', F('\\hat{p}-p_0', R(F('p_0' + P('1-p_0'), 'n')))], n: 'One-proportion z' },
+      { m: [xb + '\\pm t^*' + F('s', R('n'))], n: 'Confidence interval for a mean' },
+      { m: ['\\hat{p}\\pm z^*' + R(F('\\hat{p}' + P('1-\\hat{p}'), 'n'))], n: 'Confidence interval for a proportion' },
+      { m: ['\\chi^2', '=', '\\sum' + F(P('O-E') + '^2', 'E')], n: 'Chi-square statistic' }] }
+  ];
+
+  // Statistics tools: every statistics function the calculator has, as it
+  // is typed. Click one to put it in a row. L and M are lists.
+  function c(name) {
+    var args = [].slice.call(arguments, 1).join(',');
+    return op(name) + P(args);
+  }
+  var L1 = B('1,2,3,4');
+  var TOOLS = [
+    { h: 'List summaries', k: 'statistics average spread center count', items: [
+      { m: [c('mean', 'L')], n: 'Mean' },
+      { m: [c('median', 'L')], n: 'Median' },
+      { m: [c('stdev', 'L')], n: 'Sample standard deviation (stdevp: population)' },
+      { m: [c('var', 'L')], n: 'Sample variance (varp: population)' },
+      { m: [c('mad', 'L')], n: 'Mean absolute deviation' },
+      { m: [c('quartile', 'L', '1')], n: 'Quartile 0 to 4' },
+      { m: [c('quantile', 'L', '0.9')], n: 'Quantile between 0 and 1' },
+      { m: [c('count', 'L')], n: 'Number of items (same as length)' },
+      { m: [c('total', 'L')], n: 'Sum' },
+      { m: [c('tscore', 'L', 'x')], n: 'How many stdevs x is from the mean' },
+      { m: [c('stats', 'L')], n: 'On its own row: a table of min, Q1, median, Q3, max, mean, stdev, …' }] },
+    { h: 'Two lists', k: 'correlation covariance relationship', items: [
+      { m: [c('corr', 'L', 'M')], n: "Pearson's r" },
+      { m: [c('spearman', 'L', 'M')], n: 'Rank correlation' },
+      { m: [c('cov', 'L', 'M')], n: 'Sample covariance (covp: population)' },
+      { m: ['y_1\\sim mx_1+b'], n: 'Regression with R²; a table’s Statistics… menu offers eight models' }] },
+    { h: 'Distributions', k: 'probability pdf cdf normal binomial poisson', items: [
+      { m: [c('normaldist', '\\mu', '\\sigma')], n: 'Normal; on its own row it draws the curve and offers Find Cumulative Probability' },
+      { m: [c('tdist', '\\nu')], n: "Student's t" },
+      { m: [c('binomialdist', 'n', 'p')], n: 'Binomial (drawn as bars)' },
+      { m: [c('poissondist', '\\lambda')], n: 'Poisson (bars)' },
+      { m: [c('uniformdist', 'a', 'b')], n: 'Uniform' },
+      { m: [c('chisqdist', 'k')], n: 'Chi-square' },
+      { m: [c('fdist', 'd_1', 'd_2')], n: 'F' },
+      { m: [c('expdist', '\\lambda')], n: 'Exponential' },
+      { m: [c('geodist', 'p')], n: 'Geometric (bars)' },
+      { m: [c('gammadist', 'k', '\\theta')], n: 'Gamma' },
+      { m: [c('betadist', '\\alpha', '\\beta')], n: 'Beta' }] },
+    { h: 'Using a distribution', k: 'probability density cumulative inverse', type: 'D = normaldist(0, 1) on its own row', items: [
+      { m: ['D.' + c('pdf', 'x')], n: 'Density (or P(X = x) for a discrete one)' },
+      { m: ['D.' + c('cdf', 'x')], n: 'P(X ≤ x)' },
+      { m: ['D.' + c('cdf', 'a', 'b')], n: 'P(a ≤ X ≤ b)' },
+      { m: [c('quantile', 'D', '0.975')], n: 'Inverse cdf' },
+      { m: [c('mean', 'D')], n: 'Mean (also median, stdev, var)' },
+      { m: ['D.' + c('random', '10')], n: '10 random draws' }] },
+    { h: 'Random', k: 'sample shuffle seed rerandomize', n: 'The ⚄ button on a row draws new numbers', items: [
+      { m: [c('random')], n: 'A number from 0 to 1' },
+      { m: [c('random', '5')], n: 'A list of 5' },
+      { m: [c('random', '5', 's')], n: 'With a seed s, the same draws every time' },
+      { m: [c('random', 'L')], n: 'One item picked from L (random(L, n) picks n)' },
+      { m: [c('shuffle', 'L')], n: 'L in random order' }] },
+    { h: 'Plots', k: 'histogram dotplot boxplot bins bars chart', n: 'Each goes on a row of its own; the row has options for bins, heights and offset', items: [
+      { m: [c('histogram', 'L')], n: 'Histogram, bin width picked for you' },
+      { m: [c('histogram', 'L', '2')], n: 'Bin width 2' },
+      { m: [c('histogram', c('freq', 'L', 'M'))], n: 'Values L with frequencies M' },
+      { m: [c('dotplot', 'L')], n: 'Dot plot' },
+      { m: [c('boxplot', 'L')], n: 'Box plot, outliers as dots' },
+      { m: [c('freq', 'L', 'M')], n: 'A frequency table: L repeated M times' }] },
+    { h: 'Hypothesis tests', k: 'significance p-value null alternative tail', n: 'On a row of their own; pick the tail (<, ≠, >) under the table', items: [
+      { m: [c('ttest', 'L', '\\mu_0')], n: 'One-sample t test (for paired data, test the differences: ttest(L − M, 0))' },
+      { m: [c('ittest', 'L', 'M')], n: 'Two independent samples (Welch)' },
+      { m: [c('ztest', 'L', '\\mu_0', '\\sigma')], n: 'z test with known σ' },
+      { m: [c('proptest', 'x', 'n', 'p_0')], n: 'One proportion: x successes in n' },
+      { m: [c('twoproptest', 'x_1', 'n_1', 'x_2', 'n_2')], n: 'Two proportions' },
+      { m: [c('chisqgof', 'O', 'E')], n: 'Chi-square goodness of fit' },
+      { m: [c('chisqtest', 'R_1', 'R_2')], n: 'Chi-square independence: one list of counts per row of the table' }] },
+    { h: 'Confidence intervals', k: 'interval estimate margin level', items: [
+      { m: [c('tinterval', 'L', '0.95')], n: 'Mean, σ unknown' },
+      { m: [c('ittinterval', 'L', 'M', '0.95')], n: 'Difference of two means' },
+      { m: [c('zinterval', 'L', '\\sigma', '0.95')], n: 'Mean, σ known' },
+      { m: [c('propinterval', 'x', 'n', '0.95')], n: 'One proportion' },
+      { m: [c('twopropinterval', 'x_1', 'n_1', 'x_2', 'n_2', '0.95')], n: 'Two proportions' }] },
+    { h: 'Tables of data', k: 'paste excel sheets csv import', items: [
+      { table: { cols: ['#To', '#Do'], rows: [
+        ['#Paste from Excel or Sheets', '#Ctrl+V in a table cell or an empty row'],
+        ['#Open a CSV file', '#☰ then Open CSV as table…'],
+        ['#Summarize a column', '#The Σ stats button, or the table’s Statistics… menu'],
+        ['#Plot or fit a column', '#The table’s Statistics… menu']] } }] }
+  ];
+
   var SECTIONS = [
     { title: 'Trig basics', groups: TRIG },
     { title: 'Trig identities', groups: IDENTITIES },
@@ -489,7 +606,9 @@
     { title: 'Hyperbolic', groups: HYPERBOLIC },
     { title: 'Derivatives', groups: DERIVATIVES },
     { title: 'Integrals', groups: INTEGRALS },
-    { title: 'Special functions', groups: SPECIAL }
+    { title: 'Special functions', groups: SPECIAL },
+    { title: 'Statistics', groups: STATISTICS },
+    { title: 'Statistics tools', groups: TOOLS }
   ];
 
   // ---- The panel -------------------------------------------------------------
