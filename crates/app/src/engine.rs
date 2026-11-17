@@ -311,6 +311,8 @@ pub struct Engine {
     pub grid: GridSettings,
     /// Whether `cache` holds values worked out in degrees.
     cache_degrees: bool,
+    /// The random seed `cache` was worked out with.
+    cache_seed: u64,
     /// The wrench menu's axis steps and normal curve, worked out.
     pub axes: crate::axes::Resolved,
 }
@@ -356,6 +358,7 @@ impl Engine {
                         .collect()
                 }),
                 transform: r["transform"].as_f64(),
+                stats: stat_options(&r["stats"]),
                 seeds: r["seeds"].as_str().map(str::to_owned),
                 axes: crate::solve::ode_axes(&r["axes"]),
                 start: crate::solve::ode_start(&r["start"]),
@@ -368,6 +371,11 @@ impl Engine {
             })
             .collect();
         // Values worked out in radians mean nothing in degrees.
+        graph_expr::set_random_seed(self.grid.random_seed);
+        if self.cache_seed != self.grid.random_seed {
+            self.cache = Cache::default();
+            self.cache_seed = self.grid.random_seed;
+        }
         if self.cache_degrees != self.grid.degrees {
             self.cache = Cache::default();
             self.cache_degrees = self.grid.degrees;
@@ -1246,6 +1254,61 @@ fn point_style(row: &Value) -> PointStyle {
     }
 }
 
+/// A statistics row's settings, as the panel sends them.
+fn stat_options(v: &Value) -> graph_expr::StatOptions {
+    use graph_expr::stats::{BarHeight, BinAlign, Tail};
+    let text = |key: &str| v[key].as_str().unwrap_or("").to_owned();
+    graph_expr::StatOptions {
+        cdf: match (v["cdf"][0].as_str(), v["cdf"][1].as_str()) {
+            (Some(lo), Some(hi)) => Some([lo.to_owned(), hi.to_owned()]),
+            _ => None,
+        },
+        align: match v["align"].as_str() {
+            Some("center") => BinAlign::Center,
+            _ => BinAlign::Left,
+        },
+        height: match v["height"].as_str() {
+            Some("relative") => BarHeight::Relative,
+            Some("density") => BarHeight::Density,
+            _ => BarHeight::Count,
+        },
+        tail: match v["tail"].as_str() {
+            Some("less") => Tail::Less,
+            Some("greater") => Tail::Greater,
+            _ => Tail::NotEqual,
+        },
+        offset: text("offset"),
+        box_height: text("boxHeight"),
+        whiskers_to_ends: v["ends"].as_bool().unwrap_or(false),
+    }
+}
+
+/// What a statistics row shows under it, for the panel.
+fn stats_json(s: &graph_expr::StatsOut) -> Value {
+    use graph_expr::StatKind;
+    let (kind, discrete) = match s.kind {
+        StatKind::Distribution { discrete } => ("distribution", discrete),
+        StatKind::Histogram => ("histogram", false),
+        StatKind::Dotplot => ("dotplot", false),
+        StatKind::Boxplot => ("boxplot", false),
+        StatKind::Table => ("table", false),
+    };
+    json!({
+        "kind": kind,
+        "discrete": discrete,
+        "rows": s.table.as_ref().map(|t| t
+            .rows
+            .iter()
+            .map(|(name, v)| [name.clone(), value_latex(fitted(*v))])
+            .collect::<Vec<_>>()),
+        "tails": s.table.as_ref().is_some_and(|t| t.tails),
+        "hypotheses": s.table.as_ref().and_then(|t| t.hypotheses.clone()),
+        "probability": s.probability.map(|p| value_latex(fitted(p))),
+        "cdfError": s.cdf_error,
+        "boxError": s.box_error,
+    })
+}
+
 fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>, degrees: bool) -> Value {
     let (kind, name) = match &r.kind {
         RowKind::Empty => ("empty", None),
@@ -1338,6 +1401,9 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>, degrees: bool) -> Val
                 .collect::<Vec<_>>(),
             "transforms": m.rows == 2 && m.cols == 2 && !r.picture.iter().any(|s| s.ink == Ink::Row),
         })),
+        // A distribution, statistics plot, test or summary shows its
+        // settings and results under it.
+        "stats": r.stats.as_ref().map(stats_json),
         // A differential equation shows its initial points under it.
         "ode": r.ode.map(|order| json!({
             "order": order,

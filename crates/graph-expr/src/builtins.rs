@@ -3,6 +3,7 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use crate::special;
+use crate::stats;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Builtin {
@@ -52,6 +53,25 @@ pub enum Builtin {
     Median,
     Total,
     Length,
+    // Statistics of whole lists, as in Desmos.
+    Stdev,
+    Stdevp,
+    Var,
+    Varp,
+    Mad,
+    /// Two lists of the same length, passed one after the other.
+    Cov,
+    Covp,
+    Corr,
+    Spearman,
+    /// A list, then the quantile (or quartile) wanted last.
+    Quantile,
+    Quartile,
+    /// A list, then μ₀ last.
+    TScore,
+    /// A distribution's density, cumulative probability and so on: its
+    /// parameters, then the arguments.
+    Dist(crate::stats::DistKind, crate::stats::DistOp),
     Factorial,
     // Special functions, beyond Desmos.
     Gamma,
@@ -140,6 +160,22 @@ const NAMES: &[(&str, Builtin)] = &[
     ("median", Median),
     ("total", Total),
     ("length", Length),
+    ("count", Length),
+    ("stdev", Stdev),
+    ("stddev", Stdev),
+    ("stdevp", Stdevp),
+    ("stddevp", Stdevp),
+    ("var", Var),
+    ("variance", Var),
+    ("varp", Varp),
+    ("mad", Mad),
+    ("cov", Cov),
+    ("covp", Covp),
+    ("corr", Corr),
+    ("spearman", Spearman),
+    ("quantile", Quantile),
+    ("quartile", Quartile),
+    ("tscore", TScore),
     ("erf", Erf),
     ("erfc", Erfc),
     ("erfi", Erfi),
@@ -238,6 +274,13 @@ impl Builtin {
             LambertW => "W",
             EllipticK => "K",
             EllipticE => "E",
+            Dist(_, op) => match op {
+                stats::DistOp::Pdf => "pdf",
+                stats::DistOp::Cdf | stats::DistOp::CdfBetween => "cdf",
+                stats::DistOp::Quantile => "quantile",
+                stats::DistOp::Mean => "mean",
+                stats::DistOp::Var => "var",
+            },
             other => NAMES
                 .iter()
                 .find(|(_, b)| *b == other)
@@ -252,6 +295,10 @@ impl Builtin {
             | Polylog | GammaRe | GammaIm | ZetaRe | ZetaIm => (2, 2),
             Arctan | Round => (1, 2),
             Min | Max | Gcd | Lcm | Mean | Median | Total | Length => (1, usize::MAX),
+            Stdev | Stdevp | Var | Varp | Mad => (1, usize::MAX),
+            Cov | Covp | Corr | Spearman | Quantile | Quartile => (2, 2),
+            TScore => (1, 2),
+            Dist(..) => (1, usize::MAX),
             _ => (1, 1),
         };
         Arity { min, max }
@@ -261,7 +308,31 @@ impl Builtin {
     /// Functions that take a whole list, such as `total`, rather than being
     /// applied to each element.
     pub fn takes_list(self) -> bool {
-        matches!(self, Min | Max | Gcd | Lcm | Mean | Median | Total | Length)
+        matches!(
+            self,
+            Min | Max
+                | Gcd
+                | Lcm
+                | Mean
+                | Median
+                | Total
+                | Length
+                | Stdev
+                | Stdevp
+                | Var
+                | Varp
+                | Mad
+        )
+    }
+
+    /// Functions that read whole lists in any argument, including the
+    /// statistics of two lists and quantiles.
+    pub fn reads_whole_list(self) -> bool {
+        self.takes_list()
+            || matches!(
+                self,
+                Cov | Covp | Corr | Spearman | Quantile | Quartile | TScore
+            )
     }
 
     pub fn inverse(self) -> Option<Builtin> {
@@ -358,6 +429,41 @@ impl Builtin {
             Median => median(a),
             Total => a.iter().sum(),
             Length => a.len() as f64,
+            Stdev => stats::var(a).sqrt(),
+            Stdevp => stats::varp(a).sqrt(),
+            Var => stats::var(a),
+            Varp => stats::varp(a),
+            Mad => stats::mad(a),
+            Cov | Covp | Corr | Spearman => {
+                if a.len() % 2 != 0 {
+                    return f64::NAN;
+                }
+                let (l, r) = a.split_at(a.len() / 2);
+                match self {
+                    Cov => stats::cov(l, r),
+                    Covp => stats::covp(l, r),
+                    Corr => stats::corr(l, r),
+                    _ => stats::spearman(l, r),
+                }
+            }
+            Quantile | Quartile | TScore => match a.split_last() {
+                Some((q, l)) if !l.is_empty() => match self {
+                    Quantile => stats::quantile(l, *q),
+                    Quartile => stats::quartile(l, *q),
+                    _ => stats::tscore(l, *q),
+                },
+                _ => f64::NAN,
+            },
+            Dist(kind, op) => {
+                let n = kind.params();
+                if a.len() < n {
+                    return f64::NAN;
+                }
+                match stats::Dist::from_args(kind, &a[..n]) {
+                    Some(d) => d.eval(op, &a[n..]),
+                    None => f64::NAN,
+                }
+            }
             Factorial => factorial(x),
             Gamma => special::gamma(x),
             Digamma => special::digamma(x),

@@ -301,6 +301,19 @@ on the right. What you type is graphed as you type it:
 - Click a row's color circle to hide or show its curve; hold it (or
   right-click) for colors, solid, dashed or dotted lines, thickness and opacity.
 - Axis numbers in Desmos's style.
+- Statistics, as in Desmos: `stdev`, `var`, `mad`, `quantile`, `quartile`,
+  `cov`, `corr`, `spearman`, `count`, `tscore`; distributions (`normaldist`,
+  `tdist`, `binomialdist`, `poissondist`, `uniformdist`, plus `chisqdist`,
+  `fdist`, `expdist`, `geodist`, `gammadist`, `betadist`) with `.pdf`, `.cdf`,
+  `.random` and a Find Cumulative Probability box (discrete ones draw bars);
+  `random`, `shuffle` and a ⚄ re-randomize button; `histogram`, `dotplot`
+  and `boxplot` rows with Desmos's bin, height and offset options; `stats`,
+  `ttest`, `ittest`, `ztest`, `proptest`, `chisqtest` and confidence
+  intervals with a tail picker; `freq` tables. Tables take pasted cells from
+  Excel or Sheets, open `.csv` files (☰ then **Open CSV as table**), offer a
+  Σ summary and a regression picker with R².
+- The wrench menu's normal distribution helper puts the y axis on the mean
+  line and picks a round y step, so both axes line up with the μ and σ marks.
 
 Not yet: points of interest where two parametric or implicit curves meet
 each other (they show where these meet y = f(x) curves and the axes).

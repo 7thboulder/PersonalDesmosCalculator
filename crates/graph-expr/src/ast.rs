@@ -86,6 +86,98 @@ pub enum ShapeFn {
     Julia,
     Cobweb,
     Bifurcation,
+    /// `normaldist(μ, σ)` and the other distributions.
+    Dist(crate::stats::DistKind),
+    /// `D.pdf(x)`, `D.cdf(a, b)`, `D.random(n)`: the distribution is the
+    /// first argument.
+    Method(Method),
+    /// `random()`, `random(n)`, `random(L, n)`, `random(D, n)`, with an
+    /// optional seed last.
+    Random,
+    /// `shuffle(L)`, with an optional seed.
+    Shuffle,
+    /// `freq(L, F)`: each value of L repeated as F says.
+    Freq,
+    /// Rows that show a statistics table or plot: `histogram(L)`,
+    /// `ttest(L, μ₀)`, `stats(L)` and the like. Each is a whole row.
+    StatRow(StatRow),
+}
+
+/// What can follow a distribution after a '.'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    Pdf,
+    Cdf,
+    Random,
+}
+
+/// The statistics functions that take a row of their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatRow {
+    Stats,
+    Histogram,
+    Dotplot,
+    Boxplot,
+    TTest,
+    ITTest,
+    ZTest,
+    PropTest,
+    TwoPropTest,
+    ChisqGof,
+    ChisqTest,
+    TInterval,
+    ITTInterval,
+    ZInterval,
+    PropInterval,
+    TwoPropInterval,
+}
+
+pub const STAT_ROWS: &[(&str, StatRow)] = &[
+    ("stats", StatRow::Stats),
+    ("histogram", StatRow::Histogram),
+    ("dotplot", StatRow::Dotplot),
+    ("boxplot", StatRow::Boxplot),
+    ("ttest", StatRow::TTest),
+    ("ittest", StatRow::ITTest),
+    ("ztest", StatRow::ZTest),
+    ("proptest", StatRow::PropTest),
+    ("twoproptest", StatRow::TwoPropTest),
+    ("chisqgof", StatRow::ChisqGof),
+    ("chisqtest", StatRow::ChisqTest),
+    ("tinterval", StatRow::TInterval),
+    ("ittinterval", StatRow::ITTInterval),
+    ("zinterval", StatRow::ZInterval),
+    ("propinterval", StatRow::PropInterval),
+    ("twopropinterval", StatRow::TwoPropInterval),
+];
+
+impl StatRow {
+    pub fn name(self) -> &'static str {
+        STAT_ROWS
+            .iter()
+            .find(|(_, r)| *r == self)
+            .map(|(n, _)| *n)
+            .unwrap_or("?")
+    }
+}
+
+impl Method {
+    pub fn from_name(name: &str) -> Option<Method> {
+        Some(match name {
+            "pdf" => Method::Pdf,
+            "cdf" => Method::Cdf,
+            "random" => Method::Random,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Pdf => "pdf",
+            Method::Cdf => "cdf",
+            Method::Random => "random",
+        }
+    }
 }
 
 impl ShapeFn {
@@ -105,7 +197,18 @@ impl ShapeFn {
             "julia" => ShapeFn::Julia,
             "cobweb" => ShapeFn::Cobweb,
             "bifurcation" => ShapeFn::Bifurcation,
-            _ => return None,
+            "random" => ShapeFn::Random,
+            "shuffle" => ShapeFn::Shuffle,
+            "freq" => ShapeFn::Freq,
+            other => {
+                if let Some(kind) = crate::stats::DistKind::from_name(other) {
+                    return Some(ShapeFn::Dist(kind));
+                }
+                return STAT_ROWS
+                    .iter()
+                    .find(|(n, _)| *n == other)
+                    .map(|(_, r)| ShapeFn::StatRow(*r));
+            }
         })
     }
 }

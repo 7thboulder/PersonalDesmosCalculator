@@ -1293,3 +1293,133 @@ button.ref-toggle.on { background: #dfe9fb; color: #2f72dc; }
 #reference .ref-table th .ref-static { font-size: 13px; color: #333; }
 #reference .ref-table td { padding: 2px 1px; border-bottom: 1px solid #f3f3f3; color: #333; }
 #reference .ref-foot { flex: none; padding: 6px 10px; border-top: 1px solid #e4e4e4; color: #888; font-size: 11px; background: #fafafa; }
+
+/* ---- Statistics rows ---- */
+/* Under a distribution, histogram, dot plot, box plot, test or summary:
+   its settings and results, laid out as Desmos does. */
+.row .stats-box {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 36px 8px 12px;
+  font: 12px "Segoe UI", Arial, sans-serif;
+  color: #555;
+}
+.row.has-stats .stats-box { display: flex; }
+.row .stats-box > div { display: none; align-items: center; gap: 6px; flex-wrap: wrap; }
+.row .stats-box.st-distribution .st-cdf,
+.row .stats-box.st-histogram .st-bins,
+.row .stats-box.st-dotplot .st-bins,
+.row .stats-box.st-boxplot .st-box,
+.row .stats-box.st-table .st-table { display: flex; }
+.row .stats-box.st-dotplot .st-height { display: none; }
+.row .stats-box .st-table { flex-direction: column; align-items: stretch; }
+.row .st-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.row .st-check {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #888;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.row .stats-box.cdf-on .st-cdf-toggle .st-check,
+.row .stats-box.outliers-on .st-outliers .st-check { background: #2f72dc; border-color: #2f72dc; }
+.row .st-cdf-fields { display: none; align-items: center; gap: 6px; flex-wrap: wrap; width: 100%; }
+.row .stats-box.cdf-on .st-cdf-fields { display: flex; }
+.row .stats-box .bound {
+  min-width: 36px;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  padding: 0 2px;
+  font-size: 15px;
+  color: #333;
+}
+.row .stats-box .bound.mq-focused { border-bottom-color: #2f72dc; box-shadow: none; }
+.row .stats-box .bad .bound { border-bottom-color: #e0832e; }
+.row .st-label { color: #777; }
+.row .st-prob { margin-left: auto; font-size: 15px; color: #333; }
+.row .st-seg { display: inline-flex; border: 1px solid #ccd; border-radius: 4px; overflow: hidden; }
+.row .st-seg button {
+  border: 0;
+  border-left: 1px solid #ccd;
+  background: #fff;
+  color: #555;
+  font: inherit;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.row .st-seg button:first-child { border-left: 0; }
+.row .st-seg button.on { background: #2f72dc; color: #fff; }
+.row .st-tails { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.row .st-hyp { font-size: 14px; color: #333; }
+.row .st-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 2px 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #f4f4f4;
+  font-size: 14px;
+  color: #333;
+}
+.row .st-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
+.row .st-grid .mq-math-mode, .row .st-grid .mq-math-mode .mq-root-block { padding: 0; }
+
+/* A row with random draws: draw again. */
+.row .reroll {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: #888;
+  font-size: 17px;
+  cursor: pointer;
+  display: none;
+}
+.row.random .reroll { display: block; }
+.row .reroll:hover { color: #2f72dc; }
+
+/* A list of numbers: its summary in one click. */
+.row .summary-btn {
+  position: absolute;
+  right: 54px;
+  top: 3px;
+  padding: 0 6px;
+  height: 17px;
+  border: 1px solid #c9d6ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f72dc;
+  font: 11px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+  display: none;
+}
+.row.number-list:hover .summary-btn, .row.number-list.active .summary-btn { display: block; }
+.row .summary-btn:hover { background: #eef3fc; }
+
+/* A table's statistics menu: summaries, plots and regressions. */
+.table-row .table-tools { display: flex; margin: 4px 0 6px; }
+.table-row .st-menu {
+  font: 12px "Segoe UI", Arial, sans-serif;
+  color: #2f72dc;
+  border: 1px solid #c9d6ee;
+  border-radius: 9px;
+  background: #fff;
+  padding: 1px 4px;
+  cursor: pointer;
+}

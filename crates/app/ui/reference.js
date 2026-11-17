@@ -480,6 +480,44 @@
       { m: [op('Bi') + P('0'), '=', F('1', '3^{\\frac{1}{6}}' + Gam(F('2', '3')))] }] }
   ];
 
+  // Statistics: the formulas behind the statistics functions, as a course
+  // writes them.
+  var xb = '\\bar{x}', ss = '\\sum_{i=1}^{n}', mu = '\\mu', sg = '\\sigma';
+  var STATISTICS = [
+    { h: 'Summaries', type: 'mean(L), stdev(L), var(L), mad(L), quartile(L, q)', k: 'average deviation spread', items: [
+      { m: [xb, '=', F('1', 'n') + ss + 'x_i'], n: 'Mean' },
+      { m: ['s^2', '=', F('1', 'n-1') + ss + P('x_i-' + xb) + '^2'], n: 'Sample variance, var; s = stdev' },
+      { m: [sg + '^2', '=', F('1', 'n') + ss + P('x_i-' + mu) + '^2'], n: 'Population variance, varp; σ = stdevp' },
+      { m: ['\\text{MAD}', '=', F('1', 'n') + ss + A('x_i-' + xb)], n: 'Mean absolute deviation, mad' },
+      { m: ['\\text{IQR}', '=', 'Q_3-Q_1'], n: 'Outliers lie beyond Q₁ − 1.5 IQR or Q₃ + 1.5 IQR' },
+      { m: ['z', '=', F('x-' + mu, sg)], n: 'z-score' }] },
+    { h: 'Correlation and regression', type: 'corr(X, Y), cov(X, Y), y_1 ~ mx_1 + b', k: 'least squares line slope', items: [
+      { m: ['r', '=', F(ss + P('x_i-' + xb) + P('y_i-\\bar{y}'), R(ss + P('x_i-' + xb) + '^2' + ss + P('y_i-\\bar{y}') + '^2'))], n: "Pearson's r, corr" },
+      { m: ['m', '=', 'r' + F('s_y', 's_x')], n: 'Least-squares slope' },
+      { m: ['b', '=', '\\bar{y}-m' + xb], n: 'Intercept: the line passes through the means' },
+      { m: ['R^2', '=', '1-' + F(ss + P('y_i-\\hat{y}_i') + '^2', ss + P('y_i-\\bar{y}') + '^2')], n: 'Share of the variation the model explains' }] },
+    { h: 'Probability rules', k: 'complement union conditional independent bayes', items: [
+      { m: ['P' + P('A^c'), '=', '1-P' + P('A')] },
+      { m: ['P' + P('A\\cup B'), '=', 'P' + P('A') + '+P' + P('B') + '-P' + P('A\\cap B')] },
+      { m: ['P' + P('A|B'), '=', F('P' + P('A\\cap B'), 'P' + P('B'))], n: 'Conditional probability' },
+      { m: ['P' + P('A|B'), '=', F('P' + P('B|A') + 'P' + P('A'), 'P' + P('B'))], n: "Bayes' rule" },
+      { m: [op('nCr') + P('n,k'), '=', F('n!', 'k!' + P('n-k') + '!')], n: 'Combinations' }] },
+    { h: 'Distributions', type: 'normaldist(μ, σ), binomialdist(n, p), poissondist(λ), …', k: 'pdf pmf density bell', items: [
+      { m: ['f' + P('x'), '=', F('1', sg + R('2\\pi')) + 'e^{-' + F(P('x-' + mu) + '^2', '2' + sg + '^2') + '}'], n: 'Normal density' },
+      { m: ['P' + P('X=k'), '=', op('nCr') + P('n,k') + 'p^k' + P('1-p') + '^{n-k}'], n: 'Binomial: mean np, variance np(1 − p)' },
+      { m: ['P' + P('X=k'), '=', F('\\lambda^ke^{-\\lambda}', 'k!')], n: 'Poisson: mean and variance λ' },
+      { m: ['P' + P('X=k'), '=', P('1-p') + '^{k-1}p'], n: 'Geometric (geodist): the first success on trial k; mean 1/p' },
+      { m: ['f' + P('x'), '=', '\\lambda e^{-\\lambda x}'], n: 'Exponential (expdist), x ≥ 0; mean 1/λ' },
+      { table: { cols: ['#Within', '#Share'], rows: [['#μ ± σ', '#68.27%'], ['#μ ± 2σ', '#95.45%'], ['#μ ± 3σ', '#99.73%']] } }] },
+    { h: 'Sampling and inference', type: 'ttest(L, μ₀), tinterval(L, C), proptest(x, n, p₀), …', k: 'hypothesis test confidence interval standard error', items: [
+      { m: ['\\text{SE}', '=', F('s', R('n'))], n: 'Standard error of a mean' },
+      { m: ['t', '=', F(xb + '-' + mu + '_0', 's/' + R('n'))], n: 'One-sample t, with n − 1 degrees of freedom' },
+      { m: ['z', '=', F('\\hat{p}-p_0', R(F('p_0' + P('1-p_0'), 'n')))], n: 'One-proportion z' },
+      { m: [xb + '\\pm t^*' + F('s', R('n'))], n: 'Confidence interval for a mean' },
+      { m: ['\\hat{p}\\pm z^*' + R(F('\\hat{p}' + P('1-\\hat{p}'), 'n'))], n: 'Confidence interval for a proportion' },
+      { m: ['\\chi^2', '=', '\\sum' + F(P('O-E') + '^2', 'E')], n: 'Chi-square statistic' }] }
+  ];
+
   var SECTIONS = [
     { title: 'Trig basics', groups: TRIG },
     { title: 'Trig identities', groups: IDENTITIES },
@@ -489,7 +527,8 @@
     { title: 'Hyperbolic', groups: HYPERBOLIC },
     { title: 'Derivatives', groups: DERIVATIVES },
     { title: 'Integrals', groups: INTEGRALS },
-    { title: 'Special functions', groups: SPECIAL }
+    { title: 'Special functions', groups: SPECIAL },
+    { title: 'Statistics', groups: STATISTICS }
   ];
 
   // ---- The panel -------------------------------------------------------------

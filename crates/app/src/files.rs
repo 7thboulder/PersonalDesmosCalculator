@@ -166,6 +166,9 @@ pub fn settings_json(s: &GridSettings) -> Value {
         "yAxisNumbers": s.y_numbers,
         "degreeMode": s.degrees,
     });
+    if s.random_seed != 0 {
+        v["randomSeed"] = json!(s.random_seed);
+    }
     // The axis steps and the normal helper are this app's own, and only
     // written when used.
     let a = &s.axes;
@@ -210,6 +213,14 @@ pub fn settings_from(v: &Value) -> GridSettings {
         y_numbers: flag("yAxisNumbers", d.y_numbers),
         degrees: flag("degreeMode", d.degrees),
         axes: axes_from(v),
+        // Desmos writes its seed as hex text; any text picks a seed.
+        random_seed: match &v["randomSeed"] {
+            Value::Number(n) => n.as_u64().unwrap_or(0),
+            Value::String(s) => s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+            }),
+            _ => 0,
+        },
     }
 }
 
@@ -553,6 +564,9 @@ fn from_desmos(state: &Value) -> (Value, Option<View>) {
                 if let (Some(a), Some(b)) = (d["min"].as_str(), d["max"].as_str()) {
                     row.insert("domain".into(), json!([a, b]));
                 }
+                if let Some(stats) = desmos_stats(e) {
+                    row.insert("stats".into(), stats);
+                }
                 rows.push(Value::Object(row));
             }
             Some("table") => {
@@ -599,6 +613,37 @@ fn from_desmos(state: &Value) -> (Value, Option<View>) {
     (Value::Array(rows), view)
 }
 
+/// A statistics row's settings from Desmos's: Find Cumulative Probability
+/// (`cdf`) and a plot's `vizProps`.
+fn desmos_stats(e: &Value) -> Option<Value> {
+    let mut stats = serde_json::Map::new();
+    let c = &e["cdf"];
+    if c["show"].as_bool() == Some(true) {
+        let bound = |k: &str| c[k].as_str().unwrap_or("").to_owned();
+        stats.insert("cdf".into(), json!([bound("min"), bound("max")]));
+    }
+    let v = &e["vizProps"];
+    if let Some(a) = v["binAlignment"].as_str() {
+        stats.insert(
+            "align".into(),
+            json!(if a == "center" { "center" } else { "left" }),
+        );
+    }
+    if let Some(m @ ("count" | "relative" | "density")) = v["histogramMode"].as_str() {
+        stats.insert("height".into(), json!(m));
+    }
+    if let Some(o) = v["axisOffset"].as_str() {
+        stats.insert("offset".into(), json!(o));
+    }
+    if let Some(b) = v["breadth"].as_str() {
+        stats.insert("boxHeight".into(), json!(b));
+    }
+    if let Some(show) = v["showBoxplotOutliers"].as_bool() {
+        stats.insert("ends".into(), json!(!show));
+    }
+    (!stats.is_empty()).then_some(Value::Object(stats))
+}
+
 /// The row settings `to_desmos` knows how to carry over. A row setting
 /// outside this list is an app-only feature: it is left out of the export
 /// with a warning, so a new kind of row should be added here only once it
@@ -621,6 +666,7 @@ const DESMOS_ROW_KEYS: &[&str] = &[
     "ticker",
     "note",
     "table",
+    "stats",
 ];
 
 /// Function names Desmos (2D or 3D) knows, as `\operatorname{...}` writes
@@ -862,6 +908,33 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
             if let (Some(a), Some(b)) = (a.as_str(), b.as_str()) {
                 out.insert("parametricDomain".into(), json!({"min": a, "max": b}));
             }
+        }
+        // Find Cumulative Probability and a plot's settings.
+        let st = &r["stats"];
+        if let Some([a, b]) = st["cdf"].as_array().map(Vec::as_slice) {
+            out.insert(
+                "cdf".into(),
+                json!({"show": true, "min": a.as_str().unwrap_or(""), "max": b.as_str().unwrap_or("")}),
+            );
+        }
+        let mut viz = serde_json::Map::new();
+        if let Some(a) = st["align"].as_str() {
+            viz.insert("binAlignment".into(), json!(a));
+        }
+        if let Some(h) = st["height"].as_str() {
+            viz.insert("histogramMode".into(), json!(h));
+        }
+        if let Some(o) = st["offset"].as_str().filter(|o| !o.is_empty()) {
+            viz.insert("axisOffset".into(), json!(o));
+        }
+        if let Some(b) = st["boxHeight"].as_str().filter(|b| !b.is_empty()) {
+            viz.insert("breadth".into(), json!(b));
+        }
+        if let Some(ends) = st["ends"].as_bool() {
+            viz.insert("showBoxplotOutliers".into(), json!(!ends));
+        }
+        if !viz.is_empty() {
+            out.insert("vizProps".into(), Value::Object(viz));
         }
         list.push(Value::Object(out));
     }

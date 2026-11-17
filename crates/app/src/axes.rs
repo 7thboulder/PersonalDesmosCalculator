@@ -103,6 +103,29 @@ pub struct Resolved {
     pub json: Value,
 }
 
+/// A step of 1, 2 or 5 times a power of ten near `v`, so the y axis reads
+/// 0.01, 0.02, 0.03 rather than 0.00997, 0.01995, 0.02992.
+pub fn round_step(v: f64) -> f64 {
+    if !(v > 0.0) || !v.is_finite() {
+        return v;
+    }
+    let power = 10f64.powf(v.log10().floor());
+    let m = v / power;
+    let nice = if m < 1.5 {
+        1.0
+    } else if m < 3.5 {
+        2.0
+    } else if m < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    // 0.01 rather than 0.010000000000000002.
+    format!("{:.12e}", nice * power)
+        .parse()
+        .unwrap_or(nice * power)
+}
+
 /// The normal density.
 pub fn pdf(x: f64, mean: f64, sd: f64) -> f64 {
     let z = (x - mean) / sd;
@@ -175,6 +198,7 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
             .unwrap_or(0.0),
         y_step: positive(value(Field::YStep)),
         sigma: None,
+        y_axis_x: 0.0,
     };
     let mut reply = json!({ "values": values, "errors": errors });
     let mut shade = None;
@@ -182,8 +206,11 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
         let peak = pdf(mean, mean, sd);
         steps.x_step = Some(sd);
         steps.x_center = mean;
+        // The y axis stands on the line at the mean, so it lines up with
+        // the σ marks instead of falling between two of them.
+        steps.y_axis_x = mean;
         if n.y_auto {
-            steps.y_step = Some(peak / PEAK_LINES);
+            steps.y_step = Some(round_step(peak / PEAK_LINES));
         }
         if n.sigma_labels {
             steps.sigma = Some([mean, sd]);
@@ -193,7 +220,14 @@ pub fn resolve(text: &AxisText, results: &[RowAnalysis]) -> Resolved {
             if let (Some(a), Some(b)) = (value(Field::ShadeFrom), value(Field::ShadeTo)) {
                 let p = probability(a, b);
                 reply["probability"] = json!(p);
-                shade = Some(shade_between(mean, sd, a.min(b), a.max(b), p));
+                let mut s = shade_between(mean, sd, a.min(b), a.max(b), p);
+                // Over the mean the note would sit on the y axis numbers,
+                // so it moves to halfway between two y grid lines.
+                if let Some(step) = steps.y_step.filter(|_| s.note_at[0] == mean) {
+                    let y = ((s.note_at[1] / step).floor() + 0.5) * step;
+                    s.note_at[1] = y.min(peak * 0.9);
+                }
+                shade = Some(s);
             }
         }
     }
@@ -318,9 +352,13 @@ mod tests {
         assert_eq!(r.steps.x_step, Some(15.0));
         assert_eq!(r.steps.x_center, 100.0);
         assert_eq!(r.steps.sigma, Some([100.0, 15.0]));
-        // Auto: the peak, 1/(σ√(2π)), is four lines up.
+        // Auto: a round step near a quarter of the peak, 1/(σ√(2π)), so
+        // the peak is about four lines up.
         let peak = 1.0 / (15.0 * (2.0 * std::f64::consts::PI).sqrt());
-        assert!((r.steps.y_step.unwrap() * 4.0 - peak).abs() < 1e-15);
+        assert_eq!(r.steps.y_step, Some(0.005));
+        assert!((peak / 0.005 - 4.0).abs() < 1.5);
+        // The y axis stands on the mean's line.
+        assert_eq!(r.steps.y_axis_x, 100.0);
         assert!((r.json["peak"].as_f64().unwrap() - peak).abs() < 1e-15);
     }
 

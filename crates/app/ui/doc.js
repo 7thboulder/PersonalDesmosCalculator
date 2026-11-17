@@ -1063,6 +1063,10 @@
         }
       }
       else if (r.value != null && r.slider == null) value = '=' + r.value;
+      // A summary, test or interval: its results in a line.
+      else if (r.stats && r.stats.rows) {
+        value = '\\Rightarrow\\ ' + r.stats.rows.map(function (p) { return p[0] + '=' + p[1]; }).join(',\\ ');
+      }
     }
     line.el.classList.toggle('graphable', !!(r && line.live && r.graphed && !warn));
     var key = JSON.stringify([value, warn]);

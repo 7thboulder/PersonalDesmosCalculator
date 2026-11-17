@@ -41,6 +41,7 @@
   <button data-file="save">Save<span class="key">Ctrl+S</span></button>
   <button data-file="saveAs">Save as&hellip;<span class="key">Ctrl+Shift+S</span></button>
   <button data-file="import">Import from Desmos&hellip;</button>
+  <button data-file="csv">Open CSV as table&hellip;</button>
   <button data-file="exportDesmos">Export to Desmos&hellip;</button>
   <button data-file="help">Functions and shortcuts<span class="key">Ctrl+/</span></button>
 </div>
@@ -58,7 +59,7 @@
   <div class="sub step-line"><span class="step-name">Center</span><span class="step-field" data-axis="xCenter"></span><span class="step-by">&mu; (normal distribution)</span></div>
   <label><input type="checkbox" data-set="showYAxis"> Y-Axis</label>
   <label class="sub"><input type="checkbox" data-set="yAxisNumbers"> Numbers</label>
-  <div class="sub step-line"><span class="step-name">Step</span><span class="step-field" data-axis="yStep"></span><span class="step-by">auto (peak &divide; 4)</span></div>
+  <div class="sub step-line"><span class="step-name">Step</span><span class="step-field" data-axis="yStep"></span><span class="step-by">auto (a round step near peak &divide; 4)</span></div>
   <div class="normal">
     <label class="normal-head"><input type="checkbox" data-normal="on"> Normal distribution</label>
     <div class="normal-body">
@@ -69,7 +70,7 @@
         <button data-labels="numbers">Numbers</button><button data-labels="sigma">&mu; &plusmn; k&sigma;</button>
       </div>
       <label><input type="checkbox" data-normal="yAuto"> Auto y step</label>
-      <div class="set-note auto-note">Peak <span class="peak-math"></span><span class="peak-value"></span>, 4 steps up</div>
+      <div class="set-note auto-note">Peak <span class="peak-math"></span><span class="peak-value"></span>, about 4 steps up</div>
       <label><input type="checkbox" data-normal="shade"> Shade between &sigma; marks</label>
       <div class="step-line shade-line"><span class="step-name">from</span><span class="step-field" data-normal-field="shadeFrom"></span><span class="step-name">&sigma; to</span><span class="step-field" data-normal-field="shadeTo"></span><span class="step-name">&sigma;</span></div>
       <div class="set-note shade-note"></div>

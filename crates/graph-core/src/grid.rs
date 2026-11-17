@@ -17,6 +17,8 @@ pub struct GridSettings {
     pub degrees: bool,
     /// The axis steps and the normal distribution helper, as typed.
     pub axes: AxisText,
+    /// Where random draws start from; re-randomizing changes it.
+    pub random_seed: u64,
 }
 
 /// The wrench menu's axis steps, as typed: LaTeX that may name slider
@@ -74,6 +76,10 @@ pub struct AxisSteps {
     pub y_step: Option<f64>,
     /// μ and σ when the x axis is labelled in σs from μ.
     pub sigma: Option<[f64; 2]>,
+    /// Where the y axis is drawn across: 0, or μ for the normal helper so
+    /// the axis sits on the line at the mean rather than between two σ
+    /// lines.
+    pub y_axis_x: f64,
 }
 
 impl AxisSteps {
@@ -161,6 +167,7 @@ impl Default for GridSettings {
             y_numbers: true,
             degrees: false,
             axes: AxisText::default(),
+            random_seed: 0,
         }
     }
 }
