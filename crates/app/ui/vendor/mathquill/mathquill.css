@@ -446,3 +446,10 @@
   filter: progid:DXImageTransform.Microsoft.Chroma(color='white');
   margin-top: -0.1em;
 }
+
+.mq-math-mode .mq-quantifier {
+  margin-left: 0.2em;
+}
+.mq-math-mode .mq-root-block > span:first-child > .mq-quantifier {
+  margin-left: 0;
+}

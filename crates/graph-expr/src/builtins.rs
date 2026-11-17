@@ -101,6 +101,9 @@ pub enum Builtin {
     GammaIm,
     ZetaRe,
     ZetaIm,
+    /// 1 when the number is in a number system (ℕ, ℤ, ℚ, ℝ, ℙ, …) and 0
+    /// when it isn't: membership in a restriction such as `\{x ∈ ℤ\}`.
+    InSet(crate::logic::NumSet),
 }
 
 /// How many arguments a function takes.
@@ -267,6 +270,7 @@ impl Builtin {
             Digamma => "ψ",
             Beta => "B",
             Zeta | ZetaRe | ZetaIm => "ζ",
+            InSet(_) => "∈",
             BesselJ => "J",
             BesselY => "Y",
             BesselI => "I",
@@ -356,6 +360,12 @@ impl Builtin {
     pub fn eval(self, a: &[f64]) -> f64 {
         let x = a.first().copied().unwrap_or(f64::NAN);
         match self {
+            InSet(_) if x.is_nan() => f64::NAN,
+            InSet(set) => match set.contains(x) {
+                Ok(true) => 1.0,
+                Ok(false) => 0.0,
+                Err(_) => f64::NAN,
+            },
             Sin => sin(x),
             Cos => cos(x),
             Tan => match (sin(x), cos(x)) {

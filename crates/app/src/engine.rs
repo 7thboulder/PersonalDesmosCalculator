@@ -1327,13 +1327,14 @@ fn row_json(r: &RowAnalysis, defined: &HashMap<&str, u64>, degrees: bool) -> Val
         "kind": kind,
         "name": name,
         "error": r.error,
-        "value": r.value.as_ref().map(|v| match (&r.undefined_as, &r.unit) {
+        // A statement shows true or false, with what decided it.
+        "value": r.verdict.clone().or_else(|| r.value.as_ref().map(|v| match (&r.undefined_as, &r.unit) {
             // Shown as Desmos would, but with what made it undefined:
             // tan(π/2) = 1/0 = undefined.
             (Some(form), _) => format!("{form}=\\operatorname{{undefined}}"),
             (None, Some(unit)) => format!("{}\\ {unit}", result_latex(v)),
             (None, None) => result_latex(v),
-        }),
+        })),
         // A regression's parameters and R², as Desmos lists them under it.
         "fit": r.fit.as_ref().map(|f| {
             let mut parts: Vec<String> = f

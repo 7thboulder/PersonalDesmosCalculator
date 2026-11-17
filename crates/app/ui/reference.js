@@ -597,6 +597,63 @@
         ['#Plot or fit a column', '#The table’s Statistics… menu']] } }] }
   ];
 
+  // Proof symbols: each one with the ; shortcut that types it, read from the
+  // Shortcuts list when the panel is built so renamed ones show as renamed.
+  var PROOF_EXAMPLES = {
+    ';bcup': '\\bigcup_{i=1}^{n}A_i', ';bcap': '\\bigcap_{i=1}^{n}A_i',
+    ';pow': '\\mathcal{P}\\left(A\\right)', ';card': '\\left|A\\right|',
+    ';set': '\\left\\{x:P\\left(x\\right)\\right\\}',
+    ';sup': '\\sup_{x\\in S}', ';lub': '\\sup_{x\\in S}', ';glb': '\\inf_{x\\in S}',
+    ';lsup': '\\limsup_{n\\to \\infty }a_n', ';linf': '\\liminf_{n\\to \\infty }a_n',
+    ';cl': '\\overline{A}', ';cmp': 'A^{c}', ';itr': 'A^{\\circ}'
+  };
+  var PROOF_GROUPS = ['Number systems', 'Logic', 'Sets', 'Analysis'];
+  var PROOF_NOTES = {
+    'Number systems': 'ℕ starts at 1. Add _0, ^+, ^- or ^n after one: ℕ_0, ℤ^+, ℝ^n. ℕ ℤ ℚ ℝ ℙ ℂ work in rows; the rest are for writing',
+    'Logic': 'A row with ∀ or ∃ shows true or false, checked with numbers (ℕ and ℤ up to 10,000) and naming a counterexample or a witness. Solve tries a proof first',
+    'Sets': 'In rows, a list is a set: A∪B, A∩B and A∖B give sorted lists without repeats, and 3∈A is true or false. |A| stays the absolute value; length(A) is the size'
+  };
+  var PROOF_EXTRA = {
+    'Number systems': [
+      { m: ['\\mathbb{N}_0'], n: 'Natural numbers with 0' },
+      { m: ['\\mathbb{Z}^+'], n: 'Positive integers' },
+      { m: ['\\mathbb{Z}_n'], n: 'Integers mod n' },
+      { m: ['\\mathbb{Q}^+'], n: 'Positive rationals' },
+      { m: ['\\mathbb{R}^+'], n: 'Positive reals (ℝ^- negative)' },
+      { m: ['\\mathbb{R}^n'], n: 'n-dimensional space' },
+      { m: ['\\mathbb{R}\\setminus \\mathbb{Q}'], n: 'Irrationals' }],
+    'Logic': [
+      { m: ['\\Rightarrow '], n: 'Implies', t: ';=>' },
+      { m: ['\\Leftrightarrow '], n: 'If and only if', t: ';<=>' },
+      { m: ['\\forall \\epsilon >0\\exists \\delta >0:\\delta \\le \\frac{\\epsilon }{2}'], n: 'Quantifiers nest; a bound like ε>0 is the set it runs over' },
+      { m: ['\\forall n\\in \\mathbb{N}:\\sum_{k=1}^{n}k=\\frac{n\\left(n+1\\right)}{2}'], n: 'Press Solve to prove it' }],
+    'Sets': [
+      { m: ['y=x^2\\left\\{x\\in \\left[0,2\\right]\\right\\}'], n: 'Restrict a graph to an interval (any brackets: (0,2], [0,2), …)' },
+      { m: ['y=x^2\\left\\{x\\in \\mathbb{Z}\\right\\}'], n: 'Over ℕ, ℤ or ℙ the graph is dots' },
+      { m: ['x^2=4,x\\in \\mathbb{N}'], n: 'Solve keeps only answers in the set (or put x∈ℕ on its own row)' },
+      { m: ['3x+5y=1,x,y\\in \\mathbb{Z}'], n: 'Solve in whole numbers' }]
+  };
+
+  function proofGroups() {
+    var all = (window.shortcuts && window.shortcuts.list()) || [];
+    var groups = PROOF_GROUPS.map(function (name) {
+      var items = all.filter(function (s) { return s.group === name; }).map(function (s) {
+        var key = s.base || s.trigger;
+        var latex = PROOF_EXAMPLES[key] || s.latex.split(window.shortcuts.SLOT).join('A');
+        return { m: [latex], n: s.note + '   ·   type ' + s.trigger };
+      });
+      (PROOF_EXTRA[name] || []).forEach(function (e) {
+        var found = e.t && all.filter(function (s) { return (s.base || s.trigger) === e.t; })[0];
+        items.push({ m: e.m, n: e.n + (found ? '   ·   type ' + found.trigger : '') });
+      });
+      return { h: name, k: 'proof real analysis symbol', n: PROOF_NOTES[name], items: items };
+    });
+    var blocks = all.filter(function (s) { return s.group === 'Proofs'; });
+    groups.push({ h: 'Proof blocks', k: 'proof theorem lemma definition corollary qed', n: 'In a document, type one at the start of a text line. Theorem, Lemma, Definition and Corollary share one count. Enter on an empty line at the end leaves the block; Backspace at its start removes it',
+      items: blocks.map(function (s) { return { text: s.trigger + '   ' + s.note }; }) });
+    return groups;
+  }
+
   var SECTIONS = [
     { title: 'Trig basics', groups: TRIG },
     { title: 'Trig identities', groups: IDENTITIES },
@@ -608,7 +665,8 @@
     { title: 'Integrals', groups: INTEGRALS },
     { title: 'Special functions', groups: SPECIAL },
     { title: 'Statistics', groups: STATISTICS },
-    { title: 'Statistics tools', groups: TOOLS }
+    { title: 'Statistics tools', groups: TOOLS },
+    { title: 'Proof symbols', groups: proofGroups }
   ];
 
   // ---- The panel -------------------------------------------------------------
@@ -717,7 +775,8 @@
       chip.textContent = s.title;
       chip.dataset.section = sec.id;
       jump.appendChild(chip);
-      s.groups.forEach(function (g) {
+      var groups = typeof s.groups === 'function' ? s.groups() : s.groups;
+      groups.forEach(function (g) {
         var group = document.createElement('div');
         group.className = 'ref-group';
         var gh = document.createElement('h3');

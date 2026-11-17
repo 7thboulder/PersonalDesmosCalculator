@@ -780,6 +780,56 @@ fn desmos_brackets(latex: &str) -> String {
     out
 }
 
+/// Whether a row uses the logic and set symbols only this app reads.
+fn uses_proof_symbols(latex: &str) -> bool {
+    const PROOF: &[&str] = &[
+        "forall",
+        "exists",
+        "nexists",
+        "in",
+        "notin",
+        "ni",
+        "mathbb",
+        "Bbb",
+        "cup",
+        "cap",
+        "setminus",
+        "subset",
+        "subseteq",
+        "subsetneq",
+        "supset",
+        "supseteq",
+        "nsubset",
+        "nsubseteq",
+        "varnothing",
+        "emptyset",
+        "neg",
+        "lnot",
+        "wedge",
+        "land",
+        "vee",
+        "lor",
+        "oplus",
+        "Rightarrow",
+        "Leftarrow",
+        "Leftrightarrow",
+        "implies",
+        "iff",
+        "mid",
+        "nmid",
+    ];
+    let mut rest = latex;
+    while let Some(at) = rest.find('\\') {
+        rest = &rest[at + 1..];
+        let word: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+        if PROOF.contains(&word.as_str()) {
+            return true;
+        }
+        rest = &rest[word.len()..];
+    }
+    latex.chars().any(|c| "∀∃∄∈∉ℕℤℚℝℙ∪∩∖∅¬∧∨⇒⇔".contains(c))
+}
+
 pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<String>) {
     let mut list = Vec::new();
     let mut warnings = Vec::new();
@@ -827,6 +877,11 @@ pub fn to_desmos(rows: &Value, vp: &Viewport, space: &Space) -> (Value, Vec<Stri
         for k in &extra {
             warnings.push(format!(
                 "{name}: its \"{k}\" setting has no Desmos equivalent, so it was left out."
+            ));
+        }
+        if uses_proof_symbols(latex) {
+            warnings.push(format!(
+                "{name} uses proof symbols (∀, ∃, ∈, ℕ, ∪, …) that Desmos doesn't read, so it will show an error there."
             ));
         }
         if let Some(note) = r["note"].as_str() {
@@ -1092,6 +1147,15 @@ pub fn with_extension(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proof_symbols_warn_on_desmos_export() {
+        assert!(uses_proof_symbols("\\forall n\\in \\mathbb{N}:n>0"));
+        assert!(uses_proof_symbols(
+            "y=x^2\\left\\{x\\in \\left[0,2\\right]\\right\\}"
+        ));
+        assert!(!uses_proof_symbols("y=\\int_0^{\\infty }e^{-t}dt+\\sin x"));
+    }
 
     fn rows() -> Value {
         json!([

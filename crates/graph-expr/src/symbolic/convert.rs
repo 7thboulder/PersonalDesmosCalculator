@@ -239,6 +239,17 @@ fn convert(e: &Expr, defs: &Defs, depth: usize) -> Result<Sym, String> {
         Expr::Repeat(kind, v, lo, hi, body) => {
             let (lo, hi) = (c(lo)?, c(hi)?);
             let (Some(a), Some(b)) = (lo.as_q(), hi.as_q()) else {
+                // Σ_{k=a}^{n} of a polynomial in k (up to cubes), in closed
+                // form: what an induction proof about the sum checks.
+                let body = c(body)?;
+                if let (Repeat::Sum, Some(a)) = (kind, lo.as_q().filter(|q| q.is_int())) {
+                    let j = "\u{2}j";
+                    let shifted = body.subs_var(v, &add2(var(j), n(a.n - 1)));
+                    let count = add2(hi.clone(), n(1 - a.n));
+                    if let Some(total) = super::nfold::power_sum(&shifted, j, &count) {
+                        return Ok(total);
+                    }
+                }
                 return Err("Solve needs whole-number bounds on a sum".into());
             };
             if !a.is_int() || !b.is_int() || b.n - a.n > 500 {

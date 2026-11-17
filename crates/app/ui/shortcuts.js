@@ -18,6 +18,102 @@
     };
   });
 
+  // Proof symbols for real analysis: number systems, logic and set theory.
+  // No trigger begins another one (so none has to wait for the next key),
+  // and none holds a word MathQuill turns into a symbol before it ends.
+  // They work in graph rows too, where ∈, ∀, ∪ and the like mean something.
+  function sym(group, list) {
+    return list.map(function (s) {
+      return { trigger: s[0], latex: s[1], note: s[2], where: s[3] || 'both', group: group };
+    });
+  }
+  var PROOF_SYMBOLS = [].concat(
+    sym('Number systems', [
+      [';N', '\\mathbb{N}', 'Natural numbers ℕ = {1, 2, 3, …} (ℕ₀ is ℕ_0)'],
+      [';Z', '\\mathbb{Z}', 'Integers ℤ (ℤ⁺ is ℤ^+, ℤₙ is ℤ_n)'],
+      [';Q', '\\mathbb{Q}', 'Rationals ℚ'],
+      [';R', '\\mathbb{R}', 'Reals ℝ (ℝⁿ is ℝ^n, ℝ⁺ is ℝ^+)'],
+      [';C', '\\mathbb{C}', 'Complex numbers ℂ'],
+      [';P', '\\mathbb{P}', 'Primes ℙ'],
+      [';A', '\\mathbb{A}', 'Algebraic numbers 𝔸'],
+      [';I', '\\mathbb{I}', 'Irrationals 𝕀 (also ℝ∖ℚ)'],
+      [';H', '\\mathbb{H}', 'Quaternions ℍ'],
+      [';O', '\\mathbb{O}', 'Octonions 𝕆'],
+      [';F', '\\mathbb{F}', 'A field 𝔽 (𝔽_p)'],
+      [';eR', '\\overline{\\mathbb{R}}', 'Extended reals ℝ ∪ {±∞}']
+    ]),
+    sym('Logic', [
+      [';fa', '\\forall ', 'For all ∀'],
+      [';ex', '\\exists ', 'There exists ∃'],
+      [';nex', '\\nexists ', 'There is no ∄'],
+      [';uex', '\\exists !', 'There exists exactly one ∃!'],
+      [';not', '\\neg ', 'Not ¬'],
+      [';and', '\\wedge ', 'And ∧'],
+      [';or', '\\vee ', 'Or ∨'],
+      [';xor', '\\oplus ', 'Exclusive or ⊕'],
+      [';<==', '\\Leftarrow ', 'Is implied by ⇐'],
+      [';->', '\\to ', 'Maps to, tends to →'],
+      [';<->', '\\leftrightarrow ', 'Corresponds to ↔'],
+      [';top', '\\top ', 'True ⊤'],
+      [';bot', '\\bot ', 'False, contradiction ⊥'],
+      [';bec', '\\because ', 'Because ∵'],
+      [';qed', '\\blacksquare ', 'End of proof ∎'],
+      [';eqv', '\\equiv ', 'Equivalent, congruent ≡'],
+      [';:=', ':=', 'Is defined as :=']
+    ]),
+    sym('Sets', [
+      [';in', '\\in ', 'Is in ∈'],
+      [';nin', '\\notin ', 'Is not in ∉'],
+      [';owns', '\\ni ', 'Contains the element ∋'],
+      [';sub', '\\subset ', 'Subset ⊂'],
+      [';sbe', '\\subseteq ', 'Subset or equal ⊆'],
+      [';psub', '\\subsetneq ', 'Proper subset ⊊'],
+      [';nsub', '\\nsubset ', 'Not a subset ⊄'],
+      [';nsbe', '\\nsubseteq ', 'Not a subset or equal ⊈'],
+      [';spr', '\\supset ', 'Superset ⊃'],
+      [';spe', '\\supseteq ', 'Superset or equal ⊇'],
+      [';cup', '\\cup ', 'Union ∪'],
+      [';cap', '\\cap ', 'Intersection ∩'],
+      [';bcup', '\\bigcup_{' + SLOT + '}^{' + SLOT + '}', 'Union of many ⋃'],
+      [';bcap', '\\bigcap_{' + SLOT + '}^{' + SLOT + '}', 'Intersection of many ⋂'],
+      [';sm', '\\setminus ', 'Set difference ∖'],
+      [';es', '\\varnothing ', 'Empty set ∅'],
+      [';cmp', '^{c}', 'Complement Aᶜ'],
+      [';pow', '\\mathcal{P}\\left(' + SLOT + '\\right)', 'Power set 𝒫(A)'],
+      [';cart', '\\times ', 'Cartesian product ×'],
+      [';card', '\\left|' + SLOT + '\\right|', 'Cardinality |A|'],
+      [';set', '\\left\\{' + SLOT + ':' + SLOT + '\\right\\}', 'Set builder {x : P(x)}'],
+      [';mid', '\\mid ', 'Such that, divides ∣'],
+      [';nmid', '\\nmid ', 'Does not divide ∤']
+    ]),
+    sym('Analysis', [
+      [';sup', '\\sup_{' + SLOT + '}', 'Supremum sup'],
+      [';lub', '\\sup_{' + SLOT + '}', 'Least upper bound (sup)'],
+      [';glb', '\\inf_{' + SLOT + '}', 'Infimum, greatest lower bound inf'],
+      [';lsup', '\\limsup_{' + SLOT + '\\to ' + SLOT + '}', 'Limit superior'],
+      [';linf', '\\liminf_{' + SLOT + '\\to ' + SLOT + '}', 'Limit inferior'],
+      [';ap', '\\approx ', 'Approximately ≈'],
+      [';cong', '\\cong ', 'Isomorphic, congruent ≅'],
+      [';ll', '\\ll ', 'Much less than ≪'],
+      [';gg', '\\gg ', 'Much greater than ≫'],
+      [';mt', '\\mapsto ', 'Maps to ↦'],
+      [';comp', '\\circ ', 'Composition ∘'],
+      [';cl', '\\overline{' + SLOT + '}', 'Closure Ā'],
+      [';itr', '^{\\circ}', 'Interior A°'],
+      [';bd', '\\partial ', 'Boundary ∂A']
+    ]),
+    sym('Proofs', [
+      [';proof', '', 'Proof block, ending in ∎', 'doc'],
+      [';thm', '', 'Theorem, numbered', 'doc'],
+      [';lem', '', 'Lemma, numbered', 'doc'],
+      [';defn', '', 'Definition, numbered', 'doc'],
+      [';cor', '', 'Corollary, numbered', 'doc']
+    ]).map(function (s) {
+      s.block = { ';proof': 'proof', ';thm': 'theorem', ';lem': 'lemma', ';defn': 'definition', ';cor': 'corollary' }[s.trigger];
+      return s;
+    })
+  );
+
   var BUILT_IN = [
     { trigger: ';pd', latex: '\\frac{\\partial ' + SLOT + '}{\\partial ' + SLOT + '}', note: 'Partial derivative' },
     { trigger: ';dd', latex: '\\frac{d' + SLOT + '}{d' + SLOT + '}', note: 'Derivative' },
@@ -33,8 +129,9 @@
     { trigger: ';tf', latex: '\\therefore ', note: 'Therefore' },
     { trigger: ';=>', latex: '\\Rightarrow ', note: 'Implies' },
     { trigger: ';<=>', latex: '\\Leftrightarrow ', note: 'If and only if' }
-  ].map(function (s) {
-    return { trigger: s.trigger, latex: s.latex, note: s.note, where: s.where || 'doc', on: true, builtin: true, base: s.trigger };
+  ].concat(PROOF_SYMBOLS).map(function (s) {
+    return { trigger: s.trigger, latex: s.latex, note: s.note, where: s.where || 'doc', on: true, builtin: true,
+      base: s.trigger, block: s.block, group: s.group };
   });
 
   function copy(list) { return JSON.parse(JSON.stringify(list)); }
@@ -48,8 +145,13 @@
     if (!Array.isArray(saved)) { list = copy(BUILT_IN); return; }
     list = saved.filter(function (s) { return s && typeof s.trigger === 'string' && typeof s.latex === 'string'; })
       .map(function (s) {
-        return { trigger: s.trigger, latex: s.latex, note: s.note || '', where: s.where === 'both' ? 'both' : 'doc',
+        var out = { trigger: s.trigger, latex: s.latex, note: s.note || '', where: s.where === 'both' ? 'both' : 'doc',
           on: s.on !== false, builtin: !!s.builtin, base: s.base || (s.builtin ? s.trigger : '') };
+        // A proof block keeps what it makes, whatever its trigger became.
+        var b = out.builtin && BUILT_IN.filter(function (x) { return x.base === out.base; })[0];
+        if (b && b.block) out.block = b.block;
+        if (b && b.group) out.group = b.group;
+        return out;
       });
     BUILT_IN.forEach(function (b) {
       if (!list.some(function (s) { return s.builtin && s.base === b.base; })) list.push(copy(b));
@@ -134,7 +236,12 @@
     return Array.prototype.slice.call(root.querySelectorAll('.mq-slot'));
   }
 
-  function expand(field, root, latex) {
+  function expand(field, root, latex, block) {
+    // A proof block is a line of the document, not math.
+    if (block) {
+      if (window.docBlocks) window.docBlocks.start(block, root);
+      return;
+    }
     field.write(latex);
     var slots = slotsIn(root);
     if (!slots.length) return;
@@ -187,7 +294,7 @@
     var typed = typedBefore(cursor);
     if (typed.slice(-p.s.trigger.length) !== p.s.trigger) return false;
     removeTyped(p.field, cursor, p.s.trigger);
-    expand(p.field, p.root, p.s.latex);
+    expand(p.field, p.root, p.s.latex, p.s.block);
     return true;
   }
 
@@ -254,7 +361,7 @@
     e.preventDefault();
     e.stopPropagation();
     removeTyped(field, cursor, best.trigger.slice(0, -1));
-    expand(field, where.root, best.latex);
+    expand(field, where.root, best.latex, best.block);
   }, true);
 
   window.shortcuts = {
