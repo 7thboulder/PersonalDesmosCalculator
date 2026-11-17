@@ -60,8 +60,109 @@ pub enum Tok {
     MatrixClose,
     Amp,
     RowBreak,
+    /// A number system written `\mathbb{R}` (or pasted as ℝ): the letter.
+    NumSet(char),
+    /// `\in` and `\notin`.
+    In,
+    NotIn,
+    /// `\subset`, `\subseteq`, `\subsetneq`, `\supset`, `\supseteq`,
+    /// `\supsetneq` and their negations: whether it is a superset, whether
+    /// equality is allowed, whether strict, and whether negated.
+    Subset(SubsetRel),
+    /// `\cup`, `\cap` and `\setminus`, between lists.
+    Cup,
+    Cap,
+    SetMinus,
+    /// `\varnothing`: the empty list.
+    EmptySet,
+    /// Logic: `\forall`, `\exists` (and `\exists!`), `\nexists`, `\neg`,
+    /// `\wedge`, `\vee`, `\oplus`, `\Rightarrow`, `\Leftarrow` and
+    /// `\Leftrightarrow`.
+    ForAll,
+    Exists,
+    ExistsOne,
+    NExists,
+    Not,
+    And,
+    Or,
+    Xor,
+    Implies,
+    ImpliedBy,
+    Iff,
+    /// A bare `\mid` (|), as in a set builder or `a \mid b`.
+    Divides,
+    NotDivides,
     /// A command this calculator does not understand yet.
     Unsupported(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubsetRel {
+    pub superset: bool,
+    pub or_equal: bool,
+    pub proper: bool,
+    pub negated: bool,
+}
+
+/// The number-system letters typed or pasted as characters.
+const NUMSET_CHARS: &[(char, char)] = &[
+    ('ℕ', 'N'),
+    ('ℤ', 'Z'),
+    ('ℚ', 'Q'),
+    ('ℝ', 'R'),
+    ('ℂ', 'C'),
+    ('ℙ', 'P'),
+    ('ℍ', 'H'),
+    ('𝔸', 'A'),
+    ('𝕀', 'I'),
+    ('𝕆', 'O'),
+    ('𝔽', 'F'),
+];
+
+/// Proof symbols typed or pasted as characters.
+fn symbol_char(c: char) -> Option<Tok> {
+    let sub = |superset, or_equal, proper, negated| {
+        Tok::Subset(SubsetRel {
+            superset,
+            or_equal,
+            proper,
+            negated,
+        })
+    };
+    Some(match c {
+        '∈' => Tok::In,
+        '∉' => Tok::NotIn,
+        '∪' => Tok::Cup,
+        '∩' => Tok::Cap,
+        '∖' => Tok::SetMinus,
+        '∅' => Tok::EmptySet,
+        '∀' => Tok::ForAll,
+        '∃' => Tok::Exists,
+        '∄' => Tok::NExists,
+        '¬' => Tok::Not,
+        '∧' => Tok::And,
+        '∨' => Tok::Or,
+        '⊕' => Tok::Xor,
+        '⇒' => Tok::Implies,
+        '⇐' => Tok::ImpliedBy,
+        '⇔' => Tok::Iff,
+        '∣' => Tok::Divides,
+        '∤' => Tok::NotDivides,
+        '⊂' => sub(false, false, false, false),
+        '⊆' => sub(false, true, false, false),
+        '⊊' => sub(false, false, true, false),
+        '⊄' => sub(false, false, false, true),
+        '⊈' => sub(false, true, false, true),
+        '⊃' => sub(true, false, false, false),
+        '⊇' => sub(true, true, false, false),
+        '⊋' => sub(true, false, true, false),
+        '≤' => Tok::Le,
+        '≥' => Tok::Ge,
+        _ => {
+            let (_, l) = NUMSET_CHARS.iter().find(|(u, _)| *u == c)?;
+            Tok::NumSet(*l)
+        }
+    })
 }
 
 pub(crate) const GREEK: &[&str] = &[
@@ -248,7 +349,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             '>' => push(&mut toks, Tok::Gt, &mut i),
             other => match greek_name(other) {
                 Some(name) => push(&mut toks, Tok::Letter(name.to_owned()), &mut i),
-                None => return Err(format!("unexpected character '{other}'")),
+                None => match symbol_char(other) {
+                    Some(tok) => push(&mut toks, tok, &mut i),
+                    None => return Err(format!("unexpected character '{other}'")),
+                },
             },
         }
     }
@@ -440,6 +544,59 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
         }
         "mathit" => {
             return Err(format!("text (\\{name}) is not supported"));
+        }
+        "mathbb" | "Bbb" => {
+            let (text, end) = text_block(chars, i)?;
+            let mut letters = text.trim().chars();
+            match (letters.next(), letters.next()) {
+                (Some(l), None) if l.is_ascii_alphanumeric() => toks.push(Tok::NumSet(l)),
+                _ => return Err("\\mathbb takes one letter, like \\mathbb{R}".into()),
+            }
+            return Ok(end);
+        }
+        "in" | "isin" => Tok::In,
+        "notin" => Tok::NotIn,
+        "ni" => {
+            // `A \ni x` is `x \in A`: rare enough to leave to documents.
+            Tok::Unsupported(name.to_string())
+        }
+        "cup" => Tok::Cup,
+        "cap" => Tok::Cap,
+        "setminus" | "smallsetminus" => Tok::SetMinus,
+        "varnothing" | "emptyset" => Tok::EmptySet,
+        "forall" => Tok::ForAll,
+        "exists" => {
+            let mut j = i;
+            while chars.get(j) == Some(&' ') {
+                j += 1;
+            }
+            if chars.get(j) == Some(&'!') {
+                i = j + 1;
+                Tok::ExistsOne
+            } else {
+                Tok::Exists
+            }
+        }
+        "nexists" => Tok::NExists,
+        "neg" | "lnot" => Tok::Not,
+        "wedge" | "land" => Tok::And,
+        "vee" | "lor" => Tok::Or,
+        "oplus" | "veebar" => Tok::Xor,
+        "Rightarrow" | "implies" | "Longrightarrow" => Tok::Implies,
+        "Leftarrow" | "impliedby" | "Longleftarrow" => Tok::ImpliedBy,
+        "Leftrightarrow" | "iff" | "Longleftrightarrow" => Tok::Iff,
+        "mid" => Tok::Divides,
+        "nmid" => Tok::NotDivides,
+        "subset" | "subseteq" | "subsetneq" | "supset" | "supseteq" | "supsetneq" | "nsubset"
+        | "nsubseteq" | "nsupset" | "nsupseteq" => {
+            let negated = name.starts_with('n');
+            let base = name.trim_start_matches('n');
+            Tok::Subset(SubsetRel {
+                superset: base.starts_with("sup"),
+                or_equal: base.ends_with("eq") && !base.ends_with("neq"),
+                proper: base.ends_with("neq"),
+                negated,
+            })
         }
         n if GREEK.contains(&n) => Tok::Letter(n.to_string()),
         n if crate::builtins::is_operator_name(n)

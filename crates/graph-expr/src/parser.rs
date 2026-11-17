@@ -5,6 +5,7 @@
 use crate::ast::{Condition, Coord, Expr, Relation, Repeat, ShapeFn, Statement};
 use crate::builtins::{self, Builtin};
 use crate::lexer::{tokenize, Tok};
+use crate::logic::{NumSet, Prop, Quant, SetExpr, SetOp};
 
 pub fn parse(latex: &str) -> Result<Statement, String> {
     parse_with_units(latex).map(crate::units::lower_statement)
@@ -115,6 +116,40 @@ pub(crate) fn parse_tokens(toks: Vec<Tok>) -> Result<Expr, String> {
         Statement::Expr(e) => Ok(e),
         _ => Err("Expected an expression".into()),
     }
+}
+
+/// A row that is a statement, such as `\forall n\in\mathbb{N}: n>0` or
+/// `3\in A`: None when the row is ordinary math (logic symbols inside a
+/// restriction's braces don't count).
+pub fn parse_statement(latex: &str) -> Option<Result<Prop, String>> {
+    let toks = tokenize(latex).ok()?;
+    let mut depth = 0i32;
+    let mut found = false;
+    for t in &toks {
+        match t {
+            Tok::LCurly | Tok::LBrace => depth += 1,
+            Tok::RCurly | Tok::RBrace => depth -= 1,
+            t if depth == 0 && crate::logic::is_statement_token(t) => found = true,
+            _ => {}
+        }
+    }
+    if !found {
+        return None;
+    }
+    let toks = match crate::dots::rewrite(toks) {
+        Ok(t) => t,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut p = Parser {
+        toks: derivatives(toks),
+        pos: 0,
+        pipe_depth: 0,
+        integral_depth: 0,
+    };
+    Some(p.prop().and_then(|prop| match p.peek() {
+        None => Ok(prop),
+        Some(tok) => Err(unexpected(tok)),
+    }))
 }
 
 const SYSTEM_HINT: &str = "A system is written x'=f, y'=g or (x',y')=(f,g)";
@@ -400,7 +435,7 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Result<Expr, String> {
-        let e = self.sum()?;
+        let e = self.set_ops()?;
         // `n^2 for n = [1...5]`, with or without brackets around it.
         if matches!(self.peek(), Some(Tok::OpName(n)) if n == "for") {
             self.pos += 1;
@@ -416,6 +451,312 @@ impl Parser {
             return Err("Incomplete expression".into());
         }
         Ok(Expr::Update(name, Box::new(self.sum()?)))
+    }
+
+    /// `A ∪ B`, `A ∩ B` and `A ∖ B` between lists, looser than `+`.
+    fn set_ops(&mut self) -> Result<Expr, String> {
+        let mut e = self.sum()?;
+        loop {
+            let f = match self.peek() {
+                Some(Tok::Cup) => ShapeFn::Union,
+                Some(Tok::Cap) => ShapeFn::Intersect,
+                Some(Tok::SetMinus) => ShapeFn::SetMinus,
+                _ => return Ok(e),
+            };
+            self.pos += 1;
+            if self.peek().is_none() {
+                return Err("Incomplete expression".into());
+            }
+            e = Expr::Shape(f, vec![e, self.sum()?]);
+        }
+    }
+
+    // ---- Statements: logic, quantifiers and sets -----------------------------
+
+    /// A statement, loosest first: ⇔, then ⇒ and ⇐, then ∨ and ⊕, then ∧,
+    /// then ¬ and the quantifiers, which reach as far right as they can.
+    fn prop(&mut self) -> Result<Prop, String> {
+        let mut a = self.prop_implies()?;
+        while self.eat(&Tok::Iff) {
+            let b = self.prop_implies()?;
+            a = Prop::Iff(Box::new(a), Box::new(b));
+        }
+        Ok(a)
+    }
+
+    fn prop_implies(&mut self) -> Result<Prop, String> {
+        let a = self.prop_or()?;
+        if self.eat(&Tok::Implies) {
+            let b = self.prop_implies()?;
+            return Ok(Prop::Implies(Box::new(a), Box::new(b)));
+        }
+        if self.eat(&Tok::ImpliedBy) {
+            let b = self.prop_implies()?;
+            return Ok(Prop::Implies(Box::new(b), Box::new(a)));
+        }
+        Ok(a)
+    }
+
+    fn prop_or(&mut self) -> Result<Prop, String> {
+        let mut a = self.prop_and()?;
+        loop {
+            if self.eat(&Tok::Or) {
+                let b = self.prop_and()?;
+                a = Prop::Or(Box::new(a), Box::new(b));
+            } else if self.eat(&Tok::Xor) {
+                let b = self.prop_and()?;
+                a = Prop::Xor(Box::new(a), Box::new(b));
+            } else {
+                return Ok(a);
+            }
+        }
+    }
+
+    fn prop_and(&mut self) -> Result<Prop, String> {
+        let mut a = self.prop_unary()?;
+        while self.eat(&Tok::And) {
+            let b = self.prop_unary()?;
+            a = Prop::And(Box::new(a), Box::new(b));
+        }
+        Ok(a)
+    }
+
+    fn prop_unary(&mut self) -> Result<Prop, String> {
+        let kind = match self.peek() {
+            Some(Tok::Not) => {
+                self.pos += 1;
+                return Ok(Prop::Not(Box::new(self.prop_unary()?)));
+            }
+            Some(Tok::ForAll) => Quant::All,
+            Some(Tok::Exists) => Quant::Exists,
+            Some(Tok::ExistsOne) => Quant::ExistsOne,
+            Some(Tok::NExists) => Quant::NotExists,
+            _ => return self.prop_atom(),
+        };
+        self.pos += 1;
+        self.quantified(kind)
+    }
+
+    /// After ∀ or ∃: the variables, what they range over and the body.
+    /// `∀x,y∈ℝ: …`, `∀ε>0 ∃δ>0: …`, `∃n∈ℕ, …`; a variable with no set
+    /// ranges over ℝ.
+    fn quantified(&mut self, kind: Quant) -> Result<Prop, String> {
+        let symbol = match kind {
+            Quant::All => "∀",
+            Quant::Exists => "∃",
+            Quant::ExistsOne => "∃!",
+            Quant::NotExists => "∄",
+        };
+        let mut vars = Vec::new();
+        loop {
+            let Some(Tok::Letter(l)) = self.next() else {
+                return Err(format!("{symbol} needs a variable, as in {symbol}x∈ℝ"));
+            };
+            vars.push(self.subscripted(l)?);
+            let more = self.peek() == Some(&Tok::Comma)
+                && matches!(self.toks.get(self.pos + 1), Some(Tok::Letter(_)))
+                && matches!(
+                    self.toks.get(self.pos + 2),
+                    Some(Tok::Comma | Tok::In | Tok::Underscore)
+                );
+            if !more {
+                break;
+            }
+            self.pos += 1;
+        }
+        let set = if self.eat(&Tok::In) {
+            self.set_expr()?
+        } else if let Some(rel) = self.relation() {
+            // ∀ε>0: ε ranges over (0, ∞).
+            self.pos += 1;
+            let bound = self.sum()?;
+            let inf = Expr::Var("infty".into());
+            let (lo, hi, lo_closed, hi_closed) = match rel {
+                Relation::Gt => (bound, inf, false, false),
+                Relation::Ge => (bound, inf, true, false),
+                Relation::Lt => (Expr::Neg(Box::new(inf)), bound, false, false),
+                Relation::Le => (Expr::Neg(Box::new(inf)), bound, false, true),
+                Relation::Eq => return Err(format!("{symbol} with = has nothing to range over")),
+            };
+            SetExpr::Interval {
+                lo,
+                hi,
+                lo_closed,
+                hi_closed,
+            }
+        } else {
+            SetExpr::Num(NumSet::Reals)
+        };
+        // A colon, comma or bar may separate the body; ∀ε>0∃δ>0 runs
+        // straight on without one.
+        let _ = self.eat(&Tok::Colon) || self.eat(&Tok::Comma) || self.eat(&Tok::Divides);
+        if self.peek().is_none() {
+            return Err(format!(
+                "{symbol} needs a statement after it, as in {symbol}x∈ℝ: x^2≥0"
+            ));
+        }
+        let mut body = self.prop()?;
+        for var in vars.into_iter().rev() {
+            body = Prop::Quant(kind, var, set.clone(), Box::new(body));
+        }
+        Ok(body)
+    }
+
+    /// A comparison, a membership, a subset or a divisibility, or a
+    /// statement in brackets.
+    fn prop_atom(&mut self) -> Result<Prop, String> {
+        let start = self.pos;
+        // (P ∧ Q) ∨ R: a statement in brackets.
+        if self.eat(&Tok::LParen) {
+            if let Ok(p) = self.prop() {
+                if self.eat(&Tok::RParen) {
+                    return Ok(p);
+                }
+            }
+            self.pos = start;
+        }
+        // ℕ ⊆ ℤ, [0, 1] ⊂ ℝ: a set on the left.
+        if let Ok(a) = self.set_expr() {
+            if let Some(Tok::Subset(rel)) = self.peek().cloned() {
+                self.pos += 1;
+                let b = self.set_expr()?;
+                return Ok(Prop::Subset(a, b, rel));
+            }
+        }
+        self.pos = start;
+        let e = self.expr()?;
+        match self.peek().cloned() {
+            Some(Tok::In) | Some(Tok::NotIn) => {
+                let negated = self.next() == Some(Tok::NotIn);
+                if self.peek().is_none() {
+                    return Err("∈ needs a set after it, like ℝ or [0, 1]".into());
+                }
+                Ok(Prop::Member(e, self.set_expr()?, negated))
+            }
+            Some(Tok::Subset(rel)) => {
+                self.pos += 1;
+                let b = self.set_expr()?;
+                Ok(Prop::Subset(SetExpr::List(e), b, rel))
+            }
+            Some(Tok::Divides) | Some(Tok::NotDivides) => {
+                let negated = self.next() == Some(Tok::NotDivides);
+                Ok(Prop::Divides(e, self.sum()?, negated))
+            }
+            _ => {
+                let mut operands = vec![e];
+                let mut relations = Vec::new();
+                while let Some(rel) = self.relation() {
+                    self.pos += 1;
+                    if self.peek().is_none() {
+                        return Err("Incomplete expression".into());
+                    }
+                    relations.push(rel);
+                    operands.push(self.expr()?);
+                }
+                if relations.is_empty() {
+                    return Err("A statement compares things, as in x > 0, n ∈ ℕ or A ⊆ B".into());
+                }
+                Ok(Prop::Cmp(Condition {
+                    operands,
+                    relations,
+                }))
+            }
+        }
+    }
+
+    /// A set: a number system, an interval, ∅, or a list, joined by ∪, ∩
+    /// and ∖.
+    fn set_expr(&mut self) -> Result<SetExpr, String> {
+        let mut a = self.set_term()?;
+        loop {
+            let op = match self.peek() {
+                Some(Tok::Cup) => SetOp::Union,
+                Some(Tok::Cap) => SetOp::Inter,
+                Some(Tok::SetMinus) => SetOp::Diff,
+                _ => return Ok(a),
+            };
+            self.pos += 1;
+            let b = self.set_term()?;
+            a = SetExpr::Op(op, Box::new(a), Box::new(b));
+        }
+    }
+
+    fn set_term(&mut self) -> Result<SetExpr, String> {
+        match self.peek().cloned() {
+            Some(Tok::NumSet(letter)) => {
+                self.pos += 1;
+                let decoration = self.numset_decoration();
+                Ok(SetExpr::Num(NumSet::from_letter(
+                    letter,
+                    decoration.as_deref(),
+                )))
+            }
+            Some(Tok::EmptySet) => {
+                self.pos += 1;
+                Ok(SetExpr::Empty)
+            }
+            Some(open @ (Tok::LParen | Tok::LBracket)) => {
+                // [a, b], (a, b], …: an interval. Anything else in brackets
+                // is a list (or a number in brackets).
+                let start = self.pos;
+                self.pos += 1;
+                if let Ok(lo) = self.expr() {
+                    if self.eat(&Tok::Comma) {
+                        if let Ok(hi) = self.expr() {
+                            let close = self.peek().cloned();
+                            if matches!(close, Some(Tok::RParen | Tok::RBracket)) {
+                                self.pos += 1;
+                                return Ok(SetExpr::Interval {
+                                    lo,
+                                    hi,
+                                    lo_closed: open == Tok::LBracket,
+                                    hi_closed: close == Some(Tok::RBracket),
+                                });
+                            }
+                        }
+                    }
+                }
+                self.pos = start;
+                Ok(SetExpr::List(self.sum()?))
+            }
+            Some(_) => Ok(SetExpr::List(self.sum()?)),
+            None => Err("A set is missing".into()),
+        }
+    }
+
+    /// What follows a number system's letter: `^+`, `^-`, `_0`,
+    /// `_{\ge 0}`, `^n`.
+    fn numset_decoration(&mut self) -> Option<String> {
+        let start = self.pos;
+        let script = if self.eat(&Tok::Caret) {
+            '^'
+        } else if self.eat(&Tok::Underscore) {
+            '_'
+        } else {
+            return None;
+        };
+        let braced = self.eat(&Tok::LBrace);
+        let text = match (script, self.next()) {
+            ('^', Some(Tok::Plus)) => "+".to_owned(),
+            ('^', Some(Tok::Minus)) => "-".to_owned(),
+            ('_', Some(Tok::Num(v))) if v == 0.0 => "0".to_owned(),
+            ('_', Some(Tok::Plus)) => "+".to_owned(),
+            ('_', Some(Tok::Ge)) if self.eat(&Tok::Num(0.0)) => "\u{2265}0".to_owned(),
+            ('_', Some(Tok::Le)) if self.eat(&Tok::Num(0.0)) => "\u{2264}0".to_owned(),
+            ('_', Some(Tok::Gt)) if self.eat(&Tok::Num(0.0)) => ">0".to_owned(),
+            ('_', Some(Tok::Lt)) if self.eat(&Tok::Num(0.0)) => "<0".to_owned(),
+            // ℝⁿ, ℤₙ, 𝔽_p: shown, not checked.
+            (_, Some(Tok::Letter(_) | Tok::Num(_))) => "other".to_owned(),
+            _ => {
+                self.pos = start;
+                return None;
+            }
+        };
+        if braced && !self.eat(&Tok::RBrace) {
+            self.pos = start;
+            return None;
+        }
+        Some(text)
     }
 
     fn sum(&mut self) -> Result<Expr, String> {
@@ -745,6 +1086,10 @@ impl Parser {
             Tok::Int => self.integral(),
             Tok::Lim => self.limit(),
             Tok::Unsupported(name) => Err(format!("'\\{name}' isn't supported yet")),
+            Tok::EmptySet => Ok(Expr::List(Vec::new())),
+            Tok::NumSet(_) => {
+                Err("A number system is a set: use it after ∈, as in n ∈ ℕ, or in ∀n∈ℕ".into())
+            }
             other => Err(unexpected(&other)),
         }
     }
@@ -1003,7 +1348,20 @@ impl Parser {
                     "The value for everything else comes last in a piecewise definition".into(),
                 );
             }
-            let mut c = self.comparison()?;
+            // A condition can be a statement: {x ∈ [0, 2]}, {x ∈ ℤ},
+            // {x > 0 ∧ x < 1}.
+            let start = self.pos;
+            let statement = self.prop();
+            let mut c = match statement {
+                Ok(Prop::Cmp(c)) => c,
+                Ok(p) if matches!(self.peek(), Some(Tok::Colon | Tok::Comma | Tok::RCurly)) => {
+                    crate::logic::restriction(&p)?
+                }
+                _ => {
+                    self.pos = start;
+                    self.comparison()?
+                }
+            };
             if c.relations.is_empty() {
                 otherwise = Some(Box::new(c.operands.remove(0)));
             } else {

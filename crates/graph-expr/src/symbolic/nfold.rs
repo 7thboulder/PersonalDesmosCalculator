@@ -648,7 +648,7 @@ fn closed_sum(r: &Sym, k: &str, count: &Sym, opaque: &mut Opaque) -> Option<Sym>
 }
 
 /// Σₖ₌₁ᴺ of a polynomial in k, up to cubes.
-fn power_sum(p: &Sym, k: &str, count: &Sym) -> Option<Sym> {
+pub(crate) fn power_sum(p: &Sym, k: &str, count: &Sym) -> Option<Sym> {
     let c = poly::coeffs(&expand(p), k)?;
     let big = count.clone();
     let s1 = || div(mul2(big.clone(), add2(big.clone(), n(1))), n(2));

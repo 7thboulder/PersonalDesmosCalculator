@@ -255,3 +255,20 @@ mod matrix_entry_tests {
         assert_eq!(f(std::f64::consts::PI), "3.14159265359");
     }
 }
+
+/// A variable's name as LaTeX: `a_1` as `a_{1}`, `theta` as `\theta`.
+pub fn name_latex(name: &str) -> String {
+    let (base, sub) = match name.split_once('_') {
+        Some((b, s)) => (b, Some(s)),
+        None => (name, None),
+    };
+    let base = if base.chars().count() > 1 {
+        format!("\\{base}")
+    } else {
+        base.to_owned()
+    };
+    match sub {
+        Some(s) => format!("{base}_{{{s}}}"),
+        None => base,
+    }
+}

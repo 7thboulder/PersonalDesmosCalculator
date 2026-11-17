@@ -390,6 +390,9 @@ pub struct RowAnalysis {
     /// For a distribution, a statistics plot, a test or a summary: what
     /// the row shows under it.
     pub stats: Option<StatsOut>,
+    /// For a statement such as `∀n∈ℕ: n>0`: true or false, with a
+    /// counterexample or witness, as LaTeX shown after `=`.
+    pub verdict: Option<String>,
 }
 
 /// What a regression found.
@@ -448,6 +451,7 @@ impl RowAnalysis {
             ode_axes: [0, 1],
             ode_autonomous: true,
             stats: None,
+            verdict: None,
         }
     }
 
@@ -1320,11 +1324,21 @@ pub fn analyze_angles(
     mode: Mode,
     degrees: bool,
 ) -> Vec<RowAnalysis> {
+    // Statements (∀n∈ℕ: …, 3 ∈ A, A ⊆ B) show true or false; they define
+    // nothing and draw nothing.
+    let mut statements: HashMap<u64, Result<crate::logic::Prop, String>> = rows
+        .iter()
+        .filter(|r| r.table.is_none() && r.matrix.is_none())
+        .filter_map(|r| crate::parser::parse_statement(&r.latex).map(|p| (r.id, p)))
+        .collect();
     let written: Vec<Option<Result<Statement, String>>> = rows
         .iter()
         .map(|r| {
-            (r.table.is_none() && r.matrix.is_none() && !r.latex.trim().is_empty())
-                .then(|| crate::parser::parse_with_units(&r.latex))
+            (r.table.is_none()
+                && r.matrix.is_none()
+                && !r.latex.trim().is_empty()
+                && !statements.contains_key(&r.id))
+            .then(|| crate::parser::parse_with_units(&r.latex))
         })
         .collect();
     // Units are checked as written, then become plain SI numbers.
@@ -1392,6 +1406,19 @@ pub fn analyze_angles(
             if degrees {
                 degree_calls(statement);
             }
+            if mode != Mode::ThreeD {
+                crate::logic::discrete_dots(statement);
+            }
+        }
+        for prop in statements.values_mut().flatten() {
+            let skip = |n: &str| defined.contains(n);
+            prop.map_exprs(&mut |e| {
+                let mut out = special_expr(std::mem::replace(e, Expr::Num(0.0)), &skip);
+                if degrees {
+                    out = degree_expr(out);
+                }
+                *e = out;
+            });
         }
         // `H_5` and `H_m` with only `H_n = …` written are H at 5 and m.
         let indexed = crate::subscripts::functions(
@@ -1676,6 +1703,12 @@ pub fn analyze_angles(
                 return RowAnalysis {
                     kind: RowKind::NotYet,
                     ..RowAnalysis::error(row.id, note)
+                };
+            }
+            if let Some(statement) = statements.remove(&row.id) {
+                return match statement {
+                    Ok(prop) => env.statement_row(row.id, &prop),
+                    Err(e) => RowAnalysis::error(row.id, e),
                 };
             }
             let mut out = match (parsed, def) {
@@ -2334,6 +2367,56 @@ impl Problems {
 
 /// Graph variables in scope, each with the program argument it reads.
 type Free<'a> = &'a [(&'static str, Arg)];
+
+impl crate::logic::Eval for Env {
+    fn program(
+        &mut self,
+        e: &Expr,
+        bound: &[String],
+    ) -> Result<crate::logic::Program, crate::logic::Failure> {
+        const ARGS: [Arg; 3] = [Arg::X, Arg::Y, Arg::Z];
+        let bindings: HashMap<String, Val> = bound
+            .iter()
+            .zip(ARGS)
+            .map(|(n, a)| (n.clone(), Val::num(Low::Arg(a))))
+            .collect();
+        let mut problems = Problems::default();
+        let val = self.lower(e, &bindings, NO_FREE, &mut problems);
+        if let Some(message) = problems.first_message() {
+            return Err(crate::logic::Failure {
+                message,
+                missing: problems.missing,
+            });
+        }
+        let low = match val.items.as_slice() {
+            [Item::Num(l)] if !val.list => l.clone(),
+            _ => return Err("Each side of a statement must be a number".into()),
+        };
+        let program = Program::compile(&low.fold()).map_err(crate::logic::Failure::from)?;
+        Ok(Box::new(move |a: &[f64; 3]| {
+            program.eval3(a[0], a[1], a[2])
+        }))
+    }
+
+    fn numbers(&mut self, e: &Expr, bound: &[String]) -> Result<Vec<f64>, crate::logic::Failure> {
+        if bound.iter().any(|b| e.mentions(b)) {
+            return Err("A list in a statement can't depend on the ∀ or ∃ variable".into());
+        }
+        let mut problems = Problems::default();
+        let val = self.lower(e, &HashMap::new(), NO_FREE, &mut problems);
+        if let Some(message) = problems.first_message() {
+            return Err(crate::logic::Failure {
+                message,
+                missing: problems.missing,
+            });
+        }
+        match val.constant() {
+            Some(Value::Number(v)) => Ok(vec![v]),
+            Some(Value::Numbers(v)) => Ok(v),
+            _ => Err("Sets in statements are lists of numbers".into()),
+        }
+    }
+}
 
 impl matrix::Scalars for Env {
     fn value(&mut self, e: &Expr) -> Result<Value, matrix::Failure> {
@@ -3699,6 +3782,19 @@ impl Env {
                 None
             }
         }
+    }
+
+    /// A statement: true or false, checked numerically over infinite sets.
+    fn statement_row(&mut self, id: u64, prop: &crate::logic::Prop) -> RowAnalysis {
+        let mut row = RowAnalysis::new(id, RowKind::Value);
+        match crate::logic::check(prop, self) {
+            Ok(v) => row.verdict = Some(v.latex),
+            Err(f) => {
+                row.missing = slider_names(&f.missing);
+                row.error = Some(f.message);
+            }
+        }
+        row
     }
 
     fn value_row(&mut self, id: u64, expr: &Expr) -> RowAnalysis {
@@ -5068,8 +5164,35 @@ impl Env {
                     });
                 }
                 let (Some(a), Some(b)) = (bound(lo, problems), bound(hi, problems)) else {
-                    problems.error(format!("A {what}'s bounds must be finite numbers"));
-                    return Val::nan();
+                    // Bounds that read x (or a quantified variable, as in
+                    // ∀n∈ℕ: Σ_{k=1}^{n} k = …): added up at each point.
+                    let ends = [
+                        self.lower_with(lo, bindings, free, depth, problems, visiting),
+                        self.lower_with(hi, bindings, free, depth, problems, visiting),
+                    ];
+                    let hole = self.hole();
+                    let mut inner = bindings.clone();
+                    inner.insert(var.clone(), Val::num(Low::Hole(hole)));
+                    let body = self.lower_with(body, &inner, free, depth, problems, visiting);
+                    let how = match kind {
+                        Repeat::Sum => crate::compile::Accum::Sum,
+                        Repeat::Product => crate::compile::Accum::Product,
+                    };
+                    let [a, b] = ends;
+                    return self.broadcast(&[a, b, body], problems, |items| {
+                        match (items[0], items[1], items[2]) {
+                            (Item::Num(a), Item::Num(b), Item::Num(f)) => {
+                                Ok(Item::Num(Low::Integral {
+                                    how,
+                                    hole,
+                                    body: Box::new(f.clone()),
+                                    lo: Box::new(a.clone()),
+                                    hi: Box::new(b.clone()),
+                                }))
+                            }
+                            _ => Err(format!("A {what}'s bounds must be numbers")),
+                        }
+                    });
                 };
                 let (op, empty) = match kind {
                     Repeat::Sum => (BinOp::Add, 0.0),
@@ -5507,6 +5630,88 @@ impl Env {
             ShapeFn::Join => {
                 let items = args.into_iter().flat_map(|v| v.items).collect::<Vec<_>>();
                 Val::list(items)
+            }
+            ShapeFn::Union | ShapeFn::Intersect | ShapeFn::SetMinus => {
+                let symbol = match f {
+                    ShapeFn::Union => "∪",
+                    ShapeFn::Intersect => "∩",
+                    _ => "∖",
+                };
+                let numbers = |v: &Val| {
+                    v.items
+                        .iter()
+                        .map(|i| match i {
+                            Item::Num(l) => constant(l),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<f64>>>()
+                };
+                let (Some(a), Some(b)) = (
+                    args.first().and_then(numbers),
+                    args.get(1).and_then(numbers),
+                ) else {
+                    problems.error(format!(
+                        "{symbol} works on lists of numbers that don't depend on x or y"
+                    ));
+                    return Val::nan();
+                };
+                let has = |l: &[f64], x: f64| l.iter().any(|y| *y == x);
+                let mut out: Vec<f64> = match f {
+                    ShapeFn::Union => a.iter().chain(&b).copied().collect(),
+                    ShapeFn::Intersect => a.iter().copied().filter(|x| has(&b, *x)).collect(),
+                    _ => a.iter().copied().filter(|x| !has(&b, *x)).collect(),
+                };
+                out.retain(|x| !x.is_nan());
+                out.sort_by(|x, y| x.total_cmp(y));
+                out.dedup();
+                Val::list(out.into_iter().map(|v| Item::Num(Low::Const(v))).collect())
+            }
+            ShapeFn::Member => {
+                let [x, list] = args.as_slice() else {
+                    problems.error("∈ needs a value and a list");
+                    return Val::nan();
+                };
+                let Some(items) = list
+                    .items
+                    .iter()
+                    .map(|i| match i {
+                        Item::Num(l) => constant(l),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<f64>>>()
+                else {
+                    problems.error("∈ needs a list of numbers that don't depend on x or y");
+                    return Val::nan();
+                };
+                let one = |item: &Item| -> Item {
+                    let Item::Num(l) = item else {
+                        return Item::Num(Low::Const(f64::NAN));
+                    };
+                    match constant(l) {
+                        Some(v) if v.is_nan() => Item::Num(Low::Const(f64::NAN)),
+                        Some(v) => {
+                            Item::Num(Low::Const(if items.contains(&v) { 1.0 } else { 0.0 }))
+                        }
+                        // x varies: 1 where it equals some element.
+                        None => {
+                            let mut sum = Low::Const(0.0);
+                            for v in &items {
+                                let eq = Low::Bin(
+                                    BinOp::Eq,
+                                    Box::new(l.clone()),
+                                    Box::new(Low::Const(*v)),
+                                );
+                                sum = Low::Bin(BinOp::Add, Box::new(sum), Box::new(eq));
+                            }
+                            let any = Low::Bin(BinOp::Gt, Box::new(sum), Box::new(Low::Const(0.0)));
+                            Item::Num(any)
+                        }
+                    }
+                };
+                Val {
+                    items: x.items.iter().map(one).collect(),
+                    list: x.list,
+                }
             }
             ShapeFn::Polygon => {
                 let polygon_error =

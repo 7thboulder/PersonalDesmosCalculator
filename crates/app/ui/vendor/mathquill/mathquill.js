@@ -3276,7 +3276,7 @@ LatexCmds.isin = LatexCmds['in'] = bind(BinaryOperator,'\\in ','&isin;');
 LatexCmds.ni = LatexCmds.contains = bind(BinaryOperator,'\\ni ','&ni;');
 
 LatexCmds.notni = LatexCmds.niton = LatexCmds.notcontains = LatexCmds.doesnotcontain =
-  bind(BinaryOperator,'\\not\\ni ','&#8716;');
+  bind(BinaryOperator,'\\notni ','&#8716;');
 
 LatexCmds.sub = LatexCmds.subset = bind(BinaryOperator,'\\subset ','&sub;');
 
@@ -3285,12 +3285,12 @@ LatexCmds.sup = LatexCmds.supset = LatexCmds.superset =
 
 LatexCmds.nsub = LatexCmds.notsub =
 LatexCmds.nsubset = LatexCmds.notsubset =
-  bind(BinaryOperator,'\\not\\subset ','&#8836;');
+  bind(BinaryOperator,'\\nsubset ','&#8836;');
 
 LatexCmds.nsup = LatexCmds.notsup =
 LatexCmds.nsupset = LatexCmds.notsupset =
 LatexCmds.nsuperset = LatexCmds.notsuperset =
-  bind(BinaryOperator,'\\not\\supset ','&#8837;');
+  bind(BinaryOperator,'\\nsupset ','&#8837;');
 
 LatexCmds.sube = LatexCmds.subeq = LatexCmds.subsete = LatexCmds.subseteq =
   bind(BinaryOperator,'\\subseteq ','&sube;');
@@ -3304,7 +3304,7 @@ LatexCmds.nsube = LatexCmds.nsubeq =
 LatexCmds.notsube = LatexCmds.notsubeq =
 LatexCmds.nsubsete = LatexCmds.nsubseteq =
 LatexCmds.notsubsete = LatexCmds.notsubseteq =
-  bind(BinaryOperator,'\\not\\subseteq ','&#8840;');
+  bind(BinaryOperator,'\\nsubseteq ','&#8840;');
 
 LatexCmds.nsupe = LatexCmds.nsupeq =
 LatexCmds.notsupe = LatexCmds.notsupeq =
@@ -3312,36 +3312,89 @@ LatexCmds.nsupsete = LatexCmds.nsupseteq =
 LatexCmds.notsupsete = LatexCmds.notsupseteq =
 LatexCmds.nsupersete = LatexCmds.nsuperseteq =
 LatexCmds.notsupersete = LatexCmds.notsuperseteq =
-  bind(BinaryOperator,'\\not\\supseteq ','&#8841;');
+  bind(BinaryOperator,'\\nsupseteq ','&#8841;');
 
 
-//the canonical sets of numbers
-LatexCmds.N = LatexCmds.naturals = LatexCmds.Naturals =
-  bind(VanillaSymbol,'\\mathbb{N}','&#8469;');
+//the canonical sets of numbers, and any other double-struck, calligraphic
+//or fraktur letter written \mathbb{A}, \mathcal{P} or \mathfrak{g}. Each is
+//one symbol whose text is the Unicode letter, so ℝ copies as ℝ.
+var TextSymbol = P(Symbol, function(_, super_) {
+  _.init = function(ctrlSeq, html, text) {
+    super_.init.call(this, ctrlSeq, '<span>'+html+'</span>', text);
+  };
+});
+var LETTER_FONTS = {
+  // Uppercase start, lowercase start, digit start (0 when none), and the
+  // letters Unicode placed earlier in Letterlike Symbols.
+  mathbb: [0x1D538, 0x1D552, 0x1D7D8,
+    { C: 0x2102, H: 0x210D, N: 0x2115, P: 0x2119, Q: 0x211A, R: 0x211D, Z: 0x2124 }],
+  mathcal: [0x1D49C, 0x1D4B6, 0,
+    { B: 0x212C, E: 0x2130, F: 0x2131, H: 0x210B, I: 0x2110, L: 0x2112, M: 0x2133, R: 0x211B,
+      e: 0x212F, g: 0x210A, o: 0x2134 }],
+  mathfrak: [0x1D504, 0x1D51E, 0,
+    { C: 0x212D, H: 0x210C, I: 0x2111, R: 0x211C, Z: 0x2128 }]
+};
+function fontChar(font, c) {
+  var f = LETTER_FONTS[font], code;
+  if (f[3][c]) code = f[3][c];
+  else if (/[A-Z]/.test(c)) code = f[0] + c.charCodeAt(0) - 65;
+  else if (/[a-z]/.test(c)) code = f[1] + c.charCodeAt(0) - 97;
+  else if (/[0-9]/.test(c) && f[2]) code = f[2] + c.charCodeAt(0) - 48;
+  else return null;
+  return String.fromCodePoint(code);
+}
+function fontSymbol(font, c) {
+  var ch = fontChar(font, c);
+  var cls = font === 'mathbb' ? 'mq-double-struck' : 'mq-' + font.slice(4);
+  return TextSymbol('\\' + font + '{' + c + '}', '<span class="' + cls + '">' + ch + '</span>', ch);
+}
+function FontLetter(font) {
+  return P(MathCommand, function(_) {
+    _.parser = function() {
+      var ws = Parser.optWhitespace, str = Parser.string;
+      return ws.then(str('{')).then(ws).then(Parser.regex(/^[A-Za-z0-9]/))
+        .skip(ws).skip(str('}'))
+        .or(ws.then(Parser.regex(/^[A-Za-z]/)))
+        .then(function(c) {
+          return fontChar(font, c) ? Parser.succeed(fontSymbol(font, c)) : Parser.fail('no ' + font + ' ' + c);
+        });
+    };
+  });
+}
+LatexCmds.mathbb = LatexCmds.Bbb = FontLetter('mathbb');
+LatexCmds.mathcal = FontLetter('mathcal');
+LatexCmds.mathfrak = FontLetter('mathfrak');
+function bindFont(font, c) { return function() { return fontSymbol(font, c); }; }
 
-LatexCmds.P =
-LatexCmds.primes = LatexCmds.Primes =
+LatexCmds.N = LatexCmds.naturals = LatexCmds.Naturals = bindFont('mathbb', 'N');
+LatexCmds.P = LatexCmds.primes = LatexCmds.Primes =
 LatexCmds.projective = LatexCmds.Projective =
-LatexCmds.probability = LatexCmds.Probability =
-  bind(VanillaSymbol,'\\mathbb{P}','&#8473;');
-
-LatexCmds.Z = LatexCmds.integers = LatexCmds.Integers =
-  bind(VanillaSymbol,'\\mathbb{Z}','&#8484;');
-
-LatexCmds.Q = LatexCmds.rationals = LatexCmds.Rationals =
-  bind(VanillaSymbol,'\\mathbb{Q}','&#8474;');
-
-LatexCmds.R = LatexCmds.reals = LatexCmds.Reals =
-  bind(VanillaSymbol,'\\mathbb{R}','&#8477;');
-
-LatexCmds.C =
-LatexCmds.complex = LatexCmds.Complex =
+LatexCmds.probability = LatexCmds.Probability = bindFont('mathbb', 'P');
+LatexCmds.Z = LatexCmds.integers = LatexCmds.Integers = bindFont('mathbb', 'Z');
+LatexCmds.Q = LatexCmds.rationals = LatexCmds.Rationals = bindFont('mathbb', 'Q');
+LatexCmds.R = LatexCmds.reals = LatexCmds.Reals = bindFont('mathbb', 'R');
+LatexCmds.C = LatexCmds.complex = LatexCmds.Complex =
 LatexCmds.complexes = LatexCmds.Complexes =
-LatexCmds.complexplane = LatexCmds.Complexplane = LatexCmds.ComplexPlane =
-  bind(VanillaSymbol,'\\mathbb{C}','&#8450;');
+LatexCmds.complexplane = LatexCmds.Complexplane = LatexCmds.ComplexPlane = bindFont('mathbb', 'C');
+LatexCmds.H = LatexCmds.Hamiltonian = LatexCmds.quaternions = LatexCmds.Quaternions = bindFont('mathbb', 'H');
+// The letters themselves, typed or pasted, become the same symbols.
+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(function(c) {
+  LatexCmds[fontChar('mathbb', c)] = bindFont('mathbb', c);
+  LatexCmds[fontChar('mathcal', c)] = bindFont('mathcal', c);
+});
 
-LatexCmds.H = LatexCmds.Hamiltonian = LatexCmds.quaternions = LatexCmds.Quaternions =
-  bind(VanillaSymbol,'\\mathbb{H}','&#8461;');
+// Proof and set theory symbols that MathQuill lacked.
+LatexCmds.subsetneq = LatexCmds['\u228A'] = bind(BinaryOperator, '\\subsetneq ', '&#8842;', '\u228A');
+LatexCmds.supsetneq = LatexCmds['\u228B'] = bind(BinaryOperator, '\\supsetneq ', '&#8843;', '\u228B');
+LatexCmds.blacksquare = LatexCmds.qed = LatexCmds.QED = LatexCmds['\u220E'] =
+  bind(VanillaSymbol, '\\blacksquare ', '&#8718;');
+LatexCmds.Box = LatexCmds['\u25A1'] = bind(VanillaSymbol, '\\Box ', '&#9633;');
+LatexCmds.complement = LatexCmds['\u2201'] = bind(VanillaSymbol, '\\complement ', '&#8705;');
+LatexCmds.nmid = LatexCmds['\u2224'] = bind(BinaryOperator, '\\nmid ', '&#8740;', '\u2224');
+LatexCmds.veebar = LatexCmds['\u22BB'] = bind(BinaryOperator, '\\veebar ', '&#8891;', '\u22BB');
+LatexCmds.nRightarrow = LatexCmds['\u21CF'] = bind(VanillaSymbol, '\\nRightarrow ', '&#8655;');
+LatexCmds.nLeftrightarrow = LatexCmds['\u21CE'] = bind(VanillaSymbol, '\\nLeftrightarrow ', '&#8654;');
+LatexCmds.triangleq = LatexCmds['\u225C'] = bind(BinaryOperator, '\\triangleq ', '&#8796;', '\u225C');
 
 //spacing
 LatexCmds.quad = LatexCmds.emsp = bind(VanillaSymbol,'\\quad ','    ');
@@ -3557,6 +3610,8 @@ LatexCmds.empty = LatexCmds.emptyset =
 LatexCmds.oslash = LatexCmds.Oslash =
 LatexCmds.nothing = LatexCmds.varnothing =
   bind(BinaryOperator,'\\varnothing ','&empty;');
+
+LatexCmds.lnot = LatexCmds.neg;
 
 LatexCmds.cup = LatexCmds.union = bind(BinaryOperator,'\\cup ','&cup;');
 
@@ -5258,6 +5313,34 @@ LatexCmds.begin = P(MathCommand, function(_, super_) {
     });
   };
 });
+
+// Quantifiers get a little room on the left, so e>0 and N don't run together.
+LatexCmds.forall = bind(VanillaSymbol, '\\forall ', '<span class="mq-quantifier">&forall;</span>');
+LatexCmds.xist = LatexCmds.xists = LatexCmds.exist = LatexCmds.exists =
+  bind(VanillaSymbol, '\\exists ', '<span class="mq-quantifier">&exist;</span>');
+LatexCmds.nexists = LatexCmds.nexist =
+  bind(VanillaSymbol, '\\nexists ', '<span class="mq-quantifier">&#8708;</span>');
+
+// Proof symbols typed or pasted as characters become the commands, so
+// \u2200x \u2208 \u211D pasted from elsewhere reads as \forall x\in \mathbb{R}.
+(function() {
+  var chars = {
+    '\u2200': 'forall', '\u2203': 'exists', '\u2204': 'nexists', '\u2208': 'in', '\u2209': 'notin',
+    '\u220B': 'ni', '\u2282': 'subset', '\u2286': 'subseteq', '\u2283': 'supset', '\u2287': 'supseteq',
+    '\u2284': 'nsubset', '\u2288': 'nsubseteq', '\u222A': 'cup', '\u2229': 'cap', '\u2216': 'setminus',
+    '\u2205': 'varnothing', '\u2227': 'wedge', '\u2228': 'vee', '\u21D2': 'Rightarrow',
+    '\u21D0': 'Leftarrow', '\u21D4': 'Leftrightarrow', '\u2194': 'leftrightarrow', '\u2234': 'therefore',
+    '\u2235': 'because', '\u2261': 'equiv', '\u2295': 'oplus', '\u22A4': 'top', '\u22A5': 'bot',
+    '\u21A6': 'mapsto', '\u2218': 'circ', '\u2245': 'cong', '\u226A': 'll', '\u226B': 'gg',
+    '\u22C3': 'bigcup', '\u22C2': 'bigcap', '\u2135': 'aleph', '\u2192': 'to', '\u2223': 'mid'
+  };
+  for (var ch in chars) {
+    if (LatexCmds[ch] || !LatexCmds[chars[ch]]) continue;
+    LatexCmds[ch] = (function(name) {
+      return function() { return LatexCmds[name](name); };
+    })(chars[ch]);
+  }
+})();
 
 var MQ1 = getInterface(1);
 for (var key in MQ1) (function(key, val) {

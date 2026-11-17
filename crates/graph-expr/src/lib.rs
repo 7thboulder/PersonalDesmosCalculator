@@ -14,6 +14,7 @@ pub mod format;
 pub mod interval;
 pub mod lexer;
 pub mod limit;
+pub mod logic;
 pub mod matrix;
 pub mod parser;
 pub mod recursion;

@@ -12,6 +12,7 @@ mod nfold;
 pub mod ode;
 pub mod pde;
 pub mod poly;
+pub mod sets;
 pub mod solve;
 pub mod sym;
 pub(crate) mod trigint;
@@ -562,6 +563,7 @@ pub fn run_row(latex_in: &str, others: &[String], op: Option<&str>, initial: &In
     DEADLINE.with(|d| d.set(Some(Instant::now() + BUDGET)));
     let report = run_inner(latex_in, others, op, initial);
     DEADLINE.with(|d| d.set(None));
+    sets::set_domains(Vec::new());
     report
 }
 
@@ -608,6 +610,27 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
         report.error = Some("Type an expression or equation first".into());
         return report;
     }
+    // `x^2 = 4, x \in \mathbb{N}` (or a row saying x ∈ ℕ) keeps the
+    // answers in ℕ.
+    let (stripped, domains) = match sets::split(source, others, &defs) {
+        Ok(found) => found,
+        Err(e) => {
+            report.error = Some(e);
+            return report;
+        }
+    };
+    let source = stripped.as_str();
+    // ∀ and ∃, ∈, ⊂ and logic: a statement to prove or disprove.
+    if let Some(statement) = crate::parser::parse_statement(source) {
+        return match statement {
+            Ok(prop) => sets::prove(&prop, source, others, &defs),
+            Err(e) => {
+                report.error = Some(e);
+                report
+            }
+        };
+    }
+    sets::set_domains(domains);
     // The engine works limits out numerically; Giac finds them exactly.
     if source.contains("\\lim") {
         report.op = "limit".into();
@@ -700,6 +723,27 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
             return report;
         }
     };
+    // Two unknowns kept to whole numbers: a Diophantine equation.
+    if let Form::Relation(l, Relation::Eq, r) = &form {
+        let vars = ordered_names(&sub(l.clone(), r.clone()));
+        if vars.len() == 2 && vars.iter().all(|v| sets::domain_of(v).is_some()) {
+            let mut st = Steps::new();
+            st.push("Solve in whole numbers", source.to_owned());
+            if let Some(done) = sets::diophantine(l, r, &vars, &mut st) {
+                report.op = "solve:integers".into();
+                report.choices = vec![choice("solve:integers", "Solve in whole numbers")];
+                report.steps = st.list;
+                match done {
+                    Ok((result, answer)) => {
+                        report.result = Some(result);
+                        report.answer = answer;
+                    }
+                    Err(e) => report.error = Some(e),
+                }
+                return report;
+            }
+        }
+    }
     report.choices = choices(&form);
     let Some(default) = report.choices.first().map(|c| c.op.clone()) else {
         report.error = Some("There's nothing here for Solve to work on".into());
@@ -721,7 +765,17 @@ fn run_inner(source: &str, others: &[String], op: Option<&str>, initial: &Initia
             if *rel == Relation::Eq {
                 equation(l.clone(), r.clone(), &v, &mut st)
             } else {
-                solve::inequality(l.clone(), *rel, r.clone(), &v, &mut st)
+                solve::inequality(l.clone(), *rel, r.clone(), &v, &mut st).map(|(result, row)| {
+                    match sets::domain_of(&v) {
+                        // The answer, with the set the row keeps it in.
+                        Some(d) => {
+                            let both = format!("{result},\\ {}", d.latex);
+                            st.push(format!("Together with ${}$", d.latex), both.clone());
+                            (both, None)
+                        }
+                        None => (result, row),
+                    }
+                })
             }
         }
         (Form::Function { body, .. }, "roots") | (Form::Expr(body), "roots") => {
@@ -1529,7 +1583,13 @@ fn equation(l: Sym, r: Sym, v: &str, st: &mut Steps) -> Done {
     if roots.iter().all(Sym::is_constant) {
         roots.sort_by(|a, b| a.value().total_cmp(&b.value()));
     }
+    let restricted = sets::domain_of(v);
+    let roots = sets::restrict(roots, v, st);
     if roots.is_empty() {
+        if let Some(d) = restricted {
+            st.push(format!("So there is no solution with ${}$", d.latex), "");
+            return Ok((format!("\\text{{no solution with }}{}", d.latex), None));
+        }
         st.push("So there is no real solution", "");
         return Ok(("\\text{no real solution}".into(), None));
     }

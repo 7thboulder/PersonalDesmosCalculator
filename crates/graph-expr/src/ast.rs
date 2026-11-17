@@ -98,6 +98,13 @@ pub enum ShapeFn {
     Shuffle,
     /// `freq(L, F)`: each value of L repeated as F says.
     Freq,
+    /// `A ∪ B`, `A ∩ B` and `A ∖ B` for lists: the result sorted, without
+    /// repeats.
+    Union,
+    Intersect,
+    SetMinus,
+    /// `x ∈ A` for a list A: 1 or 0 (for each x when x is a list).
+    Member,
     /// Rows that show a statistics table or plot: `histogram(L)`,
     /// `ttest(L, μ₀)`, `stats(L)` and the like. Each is a whole row.
     StatRow(StatRow),

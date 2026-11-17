@@ -106,6 +106,15 @@
       enter: function () {
         var i = indexOf(line);
         var latex = line.field.latex();
+        // Enter on an empty last line of a proof block leaves the block.
+        if (latex === '' && lines[i + 1] && lines[i + 1].kind === 'end') {
+          var end = lines[i + 1];
+          removeLine(line);
+          var after = newMath('', indexOf(end) + 1);
+          focusLine(indexOf(after), 'start', after);
+          changed();
+          return;
+        }
         // Enter on an empty step ends the group of steps.
         if (line.step && latex === '') {
           line.step = false;
@@ -242,6 +251,29 @@
     });
   }
 
+  // Numbers theorems, lemmas, definitions and corollaries together and
+  // marks the lines inside each block, for its rule and its type.
+  function layoutBlocks() {
+    var open = [];
+    var count = 0;
+    lines.forEach(function (l) {
+      var inside = open.length ? open[open.length - 1] : null;
+      l.el.classList.toggle('in-env', !!inside && !(l.kind === 'text' && l.env) && l.kind !== 'end');
+      Object.keys(ENV_NAMES).forEach(function (k) {
+        l.el.classList.toggle('in-' + k, inside === k && !(l.kind === 'text' && l.env) && l.kind !== 'end');
+      });
+      if (l.kind === 'text' && l.env) {
+        if (l.env !== 'proof') count++;
+        if (l.label) l.label.textContent = ENV_NAMES[l.env] + (l.env === 'proof' ? '.' : ' ' + count + '.');
+        l.el.classList.toggle('in-env', !!inside);
+        open.push(l.env);
+      } else if (l.kind === 'end') {
+        l.el.classList.toggle('in-env', open.length > 1);
+        open.pop();
+      }
+    });
+  }
+
   // The x position of a math line's first top-level relation, in pixels
   // from the start of its math.
   function relationX(line) {
@@ -276,6 +308,7 @@
       l.el.classList.remove('step', 'cont');
       l.el.querySelector('.gut').textContent = '';
     });
+    layoutBlocks();
     numbers = {};
     var n = 0;
     groups.forEach(function (g) {
@@ -438,10 +471,97 @@
     scheduleLayout();
   }
 
+  // ---- Proof blocks --------------------------------------------------------
+
+  // A proof, theorem, lemma, definition or corollary: a text line that
+  // starts with its label (Theorem 1.), the lines inside it, and an end line.
+  // A proof's end line shows ∎ at the right. Theorems, lemmas, definitions
+  // and corollaries are numbered together, as Theorem 1, Lemma 2, ….
+  var ENV_NAMES = { proof: 'Proof', theorem: 'Theorem', lemma: 'Lemma', definition: 'Definition', corollary: 'Corollary' };
+
+  function setEnv(line, env) {
+    line.env = env;
+    line.el.classList.add('env-start', 'env-' + env);
+    var label = document.createElement('span');
+    label.className = 'env-label';
+    label.contentEditable = 'false';
+    label.textContent = ENV_NAMES[env] + '.';
+    line.el.insertBefore(label, line.text);
+    line.label = label;
+    line.text.dataset.hint = env === 'proof' ? 'Write the proof' : 'State the ' + ENV_NAMES[env].toLowerCase();
+  }
+
+  function dropEnv(line) {
+    var end = matchingEnd(line);
+    if (end) removeLine(end);
+    line.el.classList.remove('env-start', 'env-' + line.env);
+    if (line.label) line.label.remove();
+    line.env = null;
+    line.label = null;
+    line.text.dataset.hint = 'Text (type $ for math)';
+  }
+
+  function makeEnd(env, at) {
+    var el = lineShell('env-end env-' + env);
+    if (env === 'proof') {
+      var qed = document.createElement('span');
+      qed.className = 'qed';
+      qed.textContent = '∎';
+      el.appendChild(qed);
+    }
+    var line = { kind: 'end', env: env, el: el };
+    el.addEventListener('mousedown', function (e) {
+      // A click on the end goes to the line after the block.
+      e.preventDefault();
+      var i = indexOf(line);
+      if (!lines[i + 1]) newMath('', i + 1);
+      focusLine(i + 1, 'start');
+    });
+    return insertLine(line, at);
+  }
+
+  // The end line that closes a block's start line (blocks can nest).
+  function matchingEnd(start) {
+    var depth = 0;
+    for (var i = indexOf(start) + 1; i < lines.length; i++) {
+      if (lines[i].env && lines[i].kind === 'text') depth++;
+      else if (lines[i].kind === 'end') {
+        if (depth === 0) return lines[i];
+        depth--;
+      }
+    }
+    return null;
+  }
+
+  function startBlock(env, at, text) {
+    var head = newText(text || '', 'text', 1, at);
+    setEnv(head, env);
+    makeEnd(env, at + 1);
+    return head;
+  }
+
+  // From a shortcut (;proof, ;thm, ...) typed in a math line: an empty
+  // line becomes the block, otherwise the block goes after it.
+  window.docBlocks = {
+    start: function (env, fieldRoot) {
+      if (!ENV_NAMES[env]) return;
+      var line = lines.filter(function (l) { return l.kind === 'math' && l.el.contains(fieldRoot); })[0];
+      var at = line ? indexOf(line) + 1 : lines.length;
+      if (line && line.field.latex() === '') {
+        at = indexOf(line);
+        removeLine(line);
+      }
+      var head = startBlock(env, at);
+      focusLine(at, 'start', head);
+      changed();
+    },
+    names: ENV_NAMES
+  };
+
   function isEmpty(line) {
     if (!line) return false;
     if (line.kind === 'math') return line.field.latex() === '';
-    if (line.kind === 'graph') return false;
+    if (line.kind === 'graph' || line.kind === 'end') return false;
     return lineText(line) === '';
   }
 
@@ -450,6 +570,13 @@
     if (!line) return;
     // Moving down lands at the end of a math line, as between Desmos rows,
     // and at the start of text.
+    if (line.kind === 'end') {
+      // An end line holds nothing to type in: go on past it.
+      var at = indexOf(line);
+      if (where === 'end') return focusLine(at - 1, 'end');
+      if (!lines[at + 1]) newMath('', at + 1);
+      return focusLine(at + 1, where === 'down' ? 'down' : 'start');
+    }
     if (where === 'down') where = line.kind === 'math' ? 'end' : 'start';
     if (line.kind === 'graph') {
       line.el.focus();
@@ -739,6 +866,12 @@
       if (textAround(t, r, -1) !== '') return;
       e.preventDefault();
       var rest = lineText(line);
+      if (line.env) {
+        // Backspace at the start of a block takes its label away first.
+        dropEnv(line);
+        changed();
+        return;
+      }
       if (rest === '') {
         // An empty heading becomes text, empty text becomes math.
         removeLine(line);
@@ -749,7 +882,9 @@
       }
       var prev = lines[i - 1];
       if (!prev) return;
-      if (isEmpty(prev)) {
+      if (prev.kind === 'end') {
+        focusLine(i - 1, 'end');
+      } else if (isEmpty(prev)) {
         removeLine(prev);
         changed();
       } else if (prev.kind !== 'math') {
@@ -837,7 +972,31 @@
   }
 
   function textInput(line) {
-    if (line.kind === 'text') {
+    if (line.kind === 'text' && !line.env && window.shortcuts) {
+      // A block's shortcut typed at the end of text, as in a math line.
+      var typed = lineText(line);
+      var hit = window.shortcuts.list().filter(function (s) {
+        return s.on && s.block && typed.slice(-s.trigger.length) === s.trigger;
+      })[0];
+      if (hit) {
+        var at = indexOf(line);
+        var keep = typed.slice(0, -hit.trigger.length).replace(/\s+$/, '');
+        loading++;
+        fillText(line, keep);
+        loading--;
+        var head;
+        if (keep === '') {
+          removeLine(line);
+          head = startBlock(hit.block, at);
+        } else {
+          head = startBlock(hit.block, at + 1);
+        }
+        focusLine(indexOf(head), 'start', head);
+        changed();
+        return;
+      }
+    }
+    if (line.kind === 'text' && !line.env) {
       // "# " or "## " at the start makes a heading, as in Markdown.
       var text = lineText(line);
       var m = /^(#{1,3})[  ]/.exec(text);
@@ -1620,8 +1779,10 @@
           if (Object.keys(l.settings).length) g.settings = l.settings;
           return g;
         }
+        if (l.kind === 'end') return { type: 'end', env: l.env };
         var text = lineText(l);
         if (l.kind === 'heading') return { type: 'heading', level: l.level, text: text };
+        if (l.env) return { type: 'text', text: text, env: l.env };
         return { type: 'text', text: text };
       })
     };
@@ -1632,7 +1793,9 @@
     lines.slice().forEach(removeLine);
     titleEl.value = doc.title || '';
     (doc.lines || []).forEach(function (l, i) {
-      if (l.type === 'text') newText(l.text, 'text', 1, i);
+      if (l.type === 'text' && ENV_NAMES[l.env]) setEnv(newText(l.text, 'text', 1, i), l.env);
+      else if (l.type === 'end') makeEnd(ENV_NAMES[l.env] ? l.env : 'proof', i);
+      else if (l.type === 'text') newText(l.text, 'text', 1, i);
       else if (l.type === 'heading') newText(l.text, 'heading', l.level || 1, i);
       else if (l.type === 'graph') makeGraph(l, i);
       else newMath(l.latex || '', i, { step: !!l.step, id: l.id, live: !!l.live });
@@ -1981,7 +2144,8 @@
       var gives = document.createElement('td');
       var m = document.createElement('span');
       m.textContent = s.latex;
-      gives.appendChild(m);
+      if (s.block) gives.textContent = ENV_NAMES[s.block] + ' block';
+      else gives.appendChild(m);
       var note = document.createElement('td');
       note.textContent = s.note || '';
       var where = document.createElement('td');
@@ -2049,8 +2213,10 @@
     var blocking = all.filter(function (w) {
       return /^Type a trigger|cannot contain spaces|already uses/.test(w);
     });
-    if (!scTemplate.latex()) blocking.push('Type the math it should give.');
-    return { blocking: blocking, all: all.concat(scTemplate.latex() ? [] : ['Type the math it should give.']) };
+    // A proof block shortcut starts a block rather than typing math.
+    var empty = !scTemplate.latex() && !(editing && editing.block);
+    if (empty) blocking.push('Type the math it should give.');
+    return { blocking: blocking, all: all.concat(empty ? ['Type the math it should give.'] : []) };
   }
 
   function checkForm() {
@@ -2081,7 +2247,7 @@
     entry.trigger = scTrigger.value.trim();
     entry.latex = scTemplate.latex();
     entry.note = scNote.value.trim();
-    entry.where = scWhere.value;
+    entry.where = entry.block ? 'doc' : scWhere.value;
     if (!editing) list.push(entry);
     sc().replace(list);
     fillForm(null);
@@ -2130,6 +2296,238 @@
   });
   document.addEventListener('mousedown', function (e) {
     if (!contextMenu.contains(e.target)) contextMenu.classList.remove('open');
+  });
+
+  // ---- Copy as LaTeX or plain text -----------------------------------------
+
+  var GREEK = 'alpha α beta β gamma γ delta δ epsilon ε varepsilon ϵ zeta ζ eta η theta θ vartheta ϑ iota ι kappa κ ' +
+    'lambda λ mu μ nu ν xi ξ pi π varpi ϖ rho ρ varrho ϱ sigma σ varsigma ς tau τ upsilon υ phi ϕ varphi φ chi χ ' +
+    'psi ψ omega ω Gamma Γ Delta Δ Theta Θ Lambda Λ Xi Ξ Pi Π Sigma Σ Upsilon Υ Phi Φ Psi Ψ Omega Ω digamma ϝ';
+  var UNI = {
+    forall: '∀', exists: '∃', nexists: '∄', in: '∈', isin: '∈', notin: '∉', ni: '∋', notni: '∌',
+    subset: '⊂', subseteq: '⊆', subsetneq: '⊊', supset: '⊃', supseteq: '⊇', supsetneq: '⊋',
+    nsubset: '⊄', nsubseteq: '⊈', nsupset: '⊅', nsupseteq: '⊉', cup: '∪', cap: '∩', bigcup: '⋃', bigcap: '⋂',
+    setminus: '∖', varnothing: '∅', emptyset: '∅', neg: '¬', lnot: '¬', wedge: '∧', land: '∧', vee: '∨', lor: '∨',
+    oplus: '⊕', veebar: '⊻', Rightarrow: '⇒', implies: '⇒', Leftarrow: '⇐', Leftrightarrow: '⇔', iff: '⇔',
+    nRightarrow: '⇏', nLeftrightarrow: '⇎', to: '→', rightarrow: '→', leftarrow: '←', leftrightarrow: '↔',
+    mapsto: '↦', top: '⊤', bot: '⊥', therefore: '∴', because: '∵', blacksquare: '∎', qed: '∎', QED: '∎', Box: '□',
+    equiv: '≡', approx: '≈', sim: '∼', cong: '≅', ll: '≪', gg: '≫', circ: '∘', partial: '∂', nabla: '∇', mid: '∣',
+    nmid: '∤', times: '×', cdot: '·', div: '÷', pm: '±', mp: '∓', le: '≤', leq: '≤', ge: '≥', geq: '≥', ne: '≠',
+    neq: '≠', infty: '∞', aleph: 'ℵ', complement: '∁', triangleq: '≜', ldots: '…', cdots: '⋯', dots: '…',
+    sum: '∑', prod: '∏', int: '∫', iint: '∬', iiint: '∭', oint: '∮', lfloor: '⌊', rfloor: '⌋', lceil: '⌈',
+    rceil: '⌉', langle: '⟨', rangle: '⟩', degree: '°', prime: '′', hbar: 'ℏ', ell: 'ℓ',
+    '{': '{', '}': '}', '|': '‖', '%': '%', '$': '$', '&': '&', '#': '#', '_': '_', ' ': ' ', ',': ' ', ';': ' ',
+    ':': ' ', '!': '', quad: '  ', qquad: '    '
+  };
+  (function () {
+    var g = GREEK.split(' ');
+    for (var i = 0; i < g.length; i += 2) UNI[g[i]] = g[i + 1];
+  })();
+  var NAMED = /^(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|arcsin|arccos|arctan|ln|log|exp|lim|limsup|liminf|sup|inf|max|min|det|gcd|deg|dim|ker|arg|Pr)$/;
+  var DOUBLE = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ', A: '𝔸', I: '𝕀', O: '𝕆', F: '𝔽', E: '𝔼', K: '𝕂' };
+  var SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+    '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', n: 'ⁿ', i: 'ⁱ', c: 'ᶜ', '∘': '°', '′': '′', T: 'ᵀ', k: 'ᵏ', '*': '*' };
+  var SUB = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+    '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎', a: 'ₐ', e: 'ₑ', o: 'ₒ', x: 'ₓ', i: 'ᵢ', j: 'ⱼ', k: 'ₖ',
+    n: 'ₙ', m: 'ₘ', p: 'ₚ', r: 'ᵣ', s: 'ₛ', t: 'ₜ', u: 'ᵤ', v: 'ᵥ', h: 'ₕ', l: 'ₗ' };
+
+  // LaTeX math as plain text with Unicode symbols: ∀ε>0 ∃N∈ℕ, x², (a)/(b).
+  function texToText(latex) {
+    var s = String(latex || ''), i = 0;
+    function group() {
+      while (s[i] === ' ') i++;
+      if (s[i] === '{') {
+        var depth = 1, start = ++i;
+        while (i < s.length && depth) {
+          if (s[i] === '\\') i++;
+          else if (s[i] === '{') depth++;
+          else if (s[i] === '}') depth--;
+          i++;
+        }
+        return s.slice(start, i - 1);
+      }
+      if (s[i] === '\\') {
+        var m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i));
+        i += m[0].length;
+        return m[0];
+      }
+      return s[i++] || '';
+    }
+    function script(text, map, mark) {
+      var chars = Array.from(text);
+      if (chars.length && chars.every(function (c) { return map[c]; })) return chars.map(function (c) { return map[c]; }).join('');
+      return mark + (chars.length > 1 ? '(' + text + ')' : text);
+    }
+    function wrap(t) { return /^[\w\u0370-\u03ff.]+$/.test(t) || /^\(.*\)$/.test(t) ? t : '(' + t + ')'; }
+    var out = '';
+    while (i < s.length) {
+      var c = s[i];
+      if (c === '\\') {
+        var m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i));
+        var name = m ? m[1] : '';
+        i += m ? m[0].length : 1;
+        if (name === 'left' || name === 'right' || name === 'big' || name === 'Big') {
+          while (s[i] === ' ') i++;
+          if (s[i] === '.') { i++; continue; }
+          if (s[i] === '\\') continue; // \left\{ and friends: the next command writes it.
+          out += s[i++];
+        } else if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
+          var top = texToText(group()), bottom = texToText(group());
+          out += wrap(top) + '/' + wrap(bottom);
+        } else if (name === 'sqrt') {
+          var index = '';
+          if (s[i] === '[') { var close = s.indexOf(']', i); index = texToText(s.slice(i + 1, close)); i = close + 1; }
+          out += (index ? script(index, SUP, '') : '') + '√' + wrap(texToText(group()));
+        } else if (name === 'mathbb' || name === 'Bbb') {
+          var letter = group();
+          out += DOUBLE[letter] || letter;
+        } else if (name === 'mathcal') {
+          var l = group();
+          out += l === 'P' ? '𝒫' : l;
+        } else if (name === 'text' || name === 'textit' || name === 'textbf' || name === 'mathrm' ||
+            name === 'mathbf' || name === 'mathit' || name === 'operatorname') {
+          out += texToText(group());
+        } else if (name === 'overline' || name === 'bar') {
+          out += Array.from(texToText(group())).map(function (ch) { return ch + '\u0305'; }).join('');
+        } else if (name === 'embed') {
+          group();
+        } else if (NAMED.test(name)) {
+          out += name;
+          var next = s.slice(i).replace(/^ +/, '');
+          if (/^[a-zA-Z0-9\\]/.test(next) && !/^\\left/.test(next)) out += ' ';
+        } else if (Object.prototype.hasOwnProperty.call(UNI, name)) {
+          out += UNI[name];
+        } else {
+          out += name;
+        }
+      } else if (c === '^' || c === '_') {
+        i++;
+        var body = texToText(group());
+        out += c === '^' ? script(body, SUP, '^') : script(body, SUB, '_');
+      } else if (c === '{' || c === '}') {
+        i++;
+      } else if (c === ' ') {
+        i++;
+      } else if (c === '~') {
+        out += ' ';
+        i++;
+      } else {
+        out += c;
+        i++;
+      }
+    }
+    return out;
+  }
+
+  // MathQuill's LaTeX made to compile with amsmath and amssymb.
+  function texForLatex(latex) {
+    return String(latex || '')
+      .replace(/\\embed\{[^}]*\}(\[[^\]]*\])?/g, '')
+      .replace(/\\nsubset(?![a-z])/g, '\\not\\subset')
+      .replace(/\\nsupset(?![a-z])/g, '\\not\\supset')
+      .replace(/\\notni(?![a-z])/g, '\\not\\ni');
+  }
+
+  function textParts(text, math, plain) {
+    return parseText(text || '').map(function (p) {
+      if (p.math !== undefined) return math(p.math);
+      if (p.ref) return '[' + p.ref + ']';
+      return plain(p.text);
+    }).join('');
+  }
+
+  var THEOREM_LIKE = { theorem: 1, lemma: 1, definition: 1, corollary: 1 };
+
+  function documentAs(kind) {
+    var doc = serialize();
+    var out = [], count = 0, open = [];
+    var latex = kind === 'latex';
+    var escape = function (t) {
+      return t.replace(/\\/g, '\\textbackslash{}').replace(/([#%&_{}$])/g, '\\$1')
+        .replace(/~/g, '\\textasciitilde{}').replace(/\^/g, '\\textasciicircum{}');
+    };
+    var inline = function (t) {
+      return latex ? textParts(t, function (m) { return '$' + texForLatex(m) + '$'; }, escape) :
+        textParts(t, texToText, function (x) { return x; });
+    };
+    if (latex) {
+      out.push('\\documentclass{article}', '\\usepackage{amsmath,amssymb,amsthm}',
+        '\\newtheorem{theorem}{Theorem}', '\\newtheorem{lemma}[theorem]{Lemma}',
+        '\\newtheorem{corollary}[theorem]{Corollary}', '\\theoremstyle{definition}',
+        '\\newtheorem{definition}[theorem]{Definition}');
+      if (doc.title) out.push('\\title{' + escape(doc.title) + '}', '\\date{}');
+      out.push('\\begin{document}');
+      if (doc.title) out.push('\\maketitle');
+      out.push('');
+    } else if (doc.title) {
+      out.push(doc.title, Array.from(doc.title).map(function () { return '='; }).join(''), '');
+    }
+    doc.lines.forEach(function (l) {
+      if (l.type === 'end') {
+        var env = open.pop() || l.env;
+        if (latex) out.push('\\end{' + env + '}', '');
+        else if (env === 'proof') out.push('∎', '');
+        else out.push('');
+        return;
+      }
+      if (l.type === 'text' && l.env) {
+        open.push(l.env);
+        if (latex) { out.push('\\begin{' + l.env + '}' + (l.text ? ' ' + inline(l.text) : '')); return; }
+        var label = ENV_NAMES[l.env] + (THEOREM_LIKE[l.env] ? ' ' + (++count) : '') + '.';
+        out.push(label + (l.text ? ' ' + inline(l.text) : ''));
+        return;
+      }
+      if (l.type === 'heading') {
+        var h = inline(l.text);
+        if (latex) out.push((l.level > 1 ? '\\subsection*{' : '\\section*{') + h + '}', '');
+        else out.push(h, Array.from(h).map(function () { return l.level > 1 ? '-' : '='; }).join(''), '');
+      } else if (l.type === 'text') {
+        out.push(inline(l.text));
+      } else if (l.type === 'math') {
+        if (!l.latex) { out.push(''); return; }
+        out.push(latex ? '\\[ ' + texForLatex(l.latex) + ' \\]' : '    ' + texToText(l.latex));
+      } else if (l.type === 'graph') {
+        out.push(latex ? '% (a graph: export the PDF to keep it)' : '[graph]');
+      }
+    });
+    while (open.length) out.push(latex ? '\\end{' + open.pop() + '}' : '');
+    if (latex) out.push('', '\\end{document}');
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+
+  function copyText(text) {
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (err) { copied = false; }
+    area.remove();
+    return copied;
+  }
+
+  var copyMenu = document.getElementById('doc-copy-menu');
+  var copyBtn = document.getElementById('doc-copy-btn');
+  copyBtn.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    if (copyMenu.classList.contains('open')) { copyMenu.classList.remove('open'); return; }
+    var r = copyBtn.getBoundingClientRect();
+    copyMenu.style.left = Math.min(r.left, window.innerWidth - 230) + 'px';
+    copyMenu.style.top = r.bottom + 4 + 'px';
+    copyMenu.classList.add('open');
+  });
+  copyMenu.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    var b = e.target.closest('button');
+    if (!b) return;
+    copyMenu.classList.remove('open');
+    var ok = copyText(documentAs(b.dataset.as));
+    showStatus(ok ? (b.dataset.as === 'latex' ? 'Copied as LaTeX' : 'Copied as text') : 'Could not copy', !ok);
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (!copyMenu.contains(e.target) && e.target !== copyBtn) copyMenu.classList.remove('open');
   });
 
   // ---- PDF export ----------------------------------------------------------
@@ -2269,6 +2667,8 @@
     checked: checked,
     // For tests: the document as it would be saved.
     serialize: serialize,
+    documentAs: documentAs,
+    texToText: texToText,
     stepLines: stepLines,
     pdfDone: pdfDone,
     // For tests: lay the page out as the PDF export does.

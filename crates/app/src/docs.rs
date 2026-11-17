@@ -15,6 +15,9 @@ const VERSION: u64 = 1;
 /// The library folder's name inside the person's Documents folder.
 pub const LIBRARY_NAME: &str = "Graph Calculator";
 
+/// The kinds of proof block a document can hold.
+const ENVS: &[&str] = &["proof", "theorem", "lemma", "definition", "corollary"];
+
 /// Checks a document the panel sent (or a file holds) and returns it in the
 /// form files are written in.
 pub fn normalize(doc: &Value) -> Result<Value, String> {
@@ -35,7 +38,16 @@ pub fn normalize(doc: &Value) -> Result<Value, String> {
         let kind = line["type"].as_str().unwrap_or("math");
         let text = |key: &str| line[key].as_str().unwrap_or_default().to_owned();
         out.push(match kind {
-            "text" => json!({ "type": "text", "text": text("text") }),
+            // A text line can start a proof block (Proof., Theorem 1., …),
+            // which an "end" line closes.
+            "text" => match line["env"].as_str().filter(|e| ENVS.contains(e)) {
+                Some(env) => json!({ "type": "text", "text": text("text"), "env": env }),
+                None => json!({ "type": "text", "text": text("text") }),
+            },
+            "end" => {
+                let env = line["env"].as_str().filter(|e| ENVS.contains(e));
+                json!({ "type": "end", "env": env.unwrap_or("proof") })
+            }
             "heading" => {
                 let level = line["level"].as_u64().unwrap_or(1).clamp(1, 3);
                 json!({ "type": "heading", "level": level, "text": text("text") })
@@ -338,6 +350,31 @@ mod tests {
         assert_eq!(g["height"], 1200.0);
         // Unknown kinds read as math lines.
         assert_eq!(back["lines"][5]["type"], "math");
+    }
+
+    #[test]
+    fn proof_blocks_round_trip() {
+        let doc = json!({
+            "lines": [
+                { "type": "text", "text": "Every bounded sequence", "env": "theorem" },
+                { "type": "end", "env": "theorem" },
+                { "type": "text", "text": "", "env": "proof" },
+                { "type": "math", "latex": "\\forall n\\in\\mathbb{N}" },
+                { "type": "end", "env": "proof" },
+                { "type": "text", "text": "x", "env": "essay" },
+                { "type": "end" }
+            ]
+        });
+        let back = from_file(&to_file(&doc).unwrap()).unwrap();
+        let lines = &back["lines"];
+        assert_eq!(lines[0]["env"], "theorem");
+        assert_eq!(lines[1]["type"], "end");
+        assert_eq!(lines[2]["env"], "proof");
+        assert_eq!(lines[3]["latex"], "\\forall n\\in\\mathbb{N}");
+        assert_eq!(lines[4]["env"], "proof");
+        // An unknown kind of block is plain text; an end without one closes a proof.
+        assert!(lines[5]["env"].is_null());
+        assert_eq!(lines[6]["env"], "proof");
     }
 
     #[test]

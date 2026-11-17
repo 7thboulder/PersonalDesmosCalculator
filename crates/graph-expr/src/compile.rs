@@ -27,6 +27,11 @@ pub fn accumulate(
     terms: usize,
 ) -> f64 {
     let mut term = |k: f64| Some(f(k));
+    // Finite bounds here come from bounds that vary (Σ_{k=1}^{x}); a range
+    // too long to add up quickly is left undefined.
+    if how != Accum::Integral && lo.is_finite() && hi.is_finite() && hi - lo > 1e6 {
+        return f64::NAN;
+    }
     match how {
         Accum::Integral => integrate(f, lo, hi),
         Accum::Sum => crate::series::sum(&mut term, lo, hi, terms).map_or(f64::NAN, |o| o.number()),
