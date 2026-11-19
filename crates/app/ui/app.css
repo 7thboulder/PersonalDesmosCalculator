@@ -1185,7 +1185,7 @@ body.dragging-row, body.dragging-row * { cursor: grabbing !important; user-selec
   position: fixed;
   top: 0;
   bottom: 0;
-  left: 380px;
+  left: var(--list-w, 380px);
   width: 400px;
   flex-direction: column;
   background: #fff;
@@ -1196,9 +1196,9 @@ body.dragging-row, body.dragging-row * { cursor: grabbing !important; user-selec
   user-select: none;
 }
 body.ref-open #reference { display: flex; }
-body.ref-open:not(.doc-view) #panel { width: 380px; }
+body.ref-open:not(.doc-view) #panel { width: var(--list-w, 380px); }
 body.ref-open:not(.doc-view) .overlay { right: 400px; }
-body.ref-open:not(.doc-view) #toast { left: 190px; }
+body.ref-open:not(.doc-view) #toast { left: calc(var(--list-w, 380px) / 2); }
 body.doc-view #reference {
   top: 45px;
   left: auto;
@@ -1423,3 +1423,18 @@ button.ref-toggle.on { background: #dfe9fb; color: #2f72dc; }
   padding: 1px 4px;
   cursor: pointer;
 }
+
+/* The divider on the expression list's right edge: drag it to make the list
+   wider or narrower, double-click it for the default width. */
+#list-divider {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--list-w, 380px) - 6px);
+  width: 6px;
+  cursor: col-resize;
+  z-index: 45;
+}
+#list-divider:hover, #list-divider.dragging { background: rgba(47, 114, 220, 0.25); }
+body.doc-view #list-divider { display: none; }
+body.list-resizing, body.list-resizing * { cursor: col-resize !important; }

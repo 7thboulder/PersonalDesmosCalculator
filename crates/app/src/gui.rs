@@ -22,8 +22,13 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowId};
 use wry::{Rect, WebView, WebViewBuilder};
 
-/// Width of the expression panel in logical pixels, close to Desmos's default.
+/// Default width of the expression panel in logical pixels, close to
+/// Desmos's. Dragging the divider on its right edge changes it.
 const PANEL_WIDTH: f64 = 380.0;
+/// The narrowest the expression list can be dragged.
+const PANEL_MIN_WIDTH: f64 = 250.0;
+/// The graph always keeps at least this much of the window.
+const GRAPH_MIN_WIDTH: f64 = 200.0;
 /// The reference panel, which opens beside the expression list over the
 /// left edge of the graph.
 const REFERENCE_WIDTH: f64 = 400.0;
@@ -289,9 +294,10 @@ impl Running {
         let shader = ShadingRenderer::new(&gpu);
         let renderer3 = renderer.renderer_3d(&gpu);
 
+        let docs = docs::read_state();
         let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
-            .with_bounds(panel_bounds(&window, false, false))
+            .with_bounds(panel_bounds(&window, false, false, docs.panel_width))
             .with_html(crate::ui::panel_html())
             .with_devtools(cfg!(debug_assertions))
             .with_ipc_handler(move |request| {
@@ -343,7 +349,7 @@ impl Running {
             proxy,
             doc_view: false,
             reference_open: false,
-            docs: docs::read_state(),
+            docs,
             block_edit: None,
         };
         let area = state.graph_area();
@@ -357,7 +363,8 @@ impl Running {
     fn graph_area(&self) -> Area {
         let width = self.config.width;
         let panel = if self.webview.is_some() {
-            ((PANEL_WIDTH * self.window.scale_factor()).round() as u32).min(width.saturating_sub(1))
+            ((self.list_width() * self.window.scale_factor()).round() as u32)
+                .min(width.saturating_sub(1))
         } else {
             0
         };
@@ -366,6 +373,37 @@ impl Running {
             y: 0,
             width: width - panel,
             height: self.config.height,
+        }
+    }
+
+    /// The expression list's width in logical pixels, as dragged, kept
+    /// inside what the window can fit.
+    fn list_width(&self) -> f64 {
+        list_width(&self.window, self.docs.panel_width)
+    }
+
+    /// Puts the panel where the view, the reference and the list width say,
+    /// and tells the list its width (which a small window may have clamped).
+    fn place_panel(&self) {
+        if let Some(webview) = &self.webview {
+            let _ = webview.set_bounds(panel_bounds(
+                &self.window,
+                self.doc_view,
+                self.reference_open,
+                self.docs.panel_width,
+            ));
+        }
+        if self.panel_ready {
+            let size = self
+                .window
+                .inner_size()
+                .to_logical::<f64>(self.window.scale_factor());
+            let max = (size.width - GRAPH_MIN_WIDTH).max(PANEL_MIN_WIDTH);
+            self.run_script(&format!(
+                "window.panel.setListWidth({}, {})",
+                self.list_width(),
+                max
+            ));
         }
     }
 
@@ -383,13 +421,7 @@ impl Running {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.gpu.device, &self.config);
-        if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(panel_bounds(
-                &self.window,
-                self.doc_view,
-                self.reference_open,
-            ));
-        }
+        self.place_panel();
         let area = self.graph_area();
         self.viewport.resize(area.width as f64, area.height as f64);
         self.view3.resize(area.width as f64, area.height as f64);
@@ -675,6 +707,7 @@ impl Running {
         match value["type"].as_str() {
             Some("ready") => {
                 self.panel_ready = true;
+                self.place_panel();
                 let info = format!(
                     "{}, {}x MSAA",
                     self.gpu.describe(),
@@ -752,12 +785,22 @@ impl Running {
             }
             Some("reference") => {
                 self.reference_open = value["open"] == true;
-                if let Some(webview) = &self.webview {
-                    let _ = webview.set_bounds(panel_bounds(
-                        &self.window,
-                        self.doc_view,
-                        self.reference_open,
-                    ));
+                self.place_panel();
+            }
+            // The divider on the list's edge was dragged (or double-clicked
+            // back to the default). The graph follows live; the width is
+            // remembered once the drag ends.
+            Some("listWidth") => {
+                if let Some(width) = value["width"].as_f64().filter(|w| w.is_finite()) {
+                    self.docs.panel_width = Some(list_width(&self.window, Some(width)));
+                    self.place_panel();
+                    let area = self.graph_area();
+                    self.viewport.resize(area.width as f64, area.height as f64);
+                    self.view3.resize(area.width as f64, area.height as f64);
+                    self.window.request_redraw();
+                }
+                if value["done"] == true {
+                    self.remember_docs();
                 }
             }
             Some("view") => {
@@ -1156,8 +1199,8 @@ impl Running {
             return;
         }
         self.doc_view = doc_view;
+        self.place_panel();
         if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(panel_bounds(&self.window, doc_view, self.reference_open));
             if doc_view {
                 let _ = webview.focus();
             }
@@ -1384,19 +1427,37 @@ impl Running {
 /// The panel's place in the window: the left strip beside the graph (wider,
 /// over the graph's left edge, while the reference is open), or all of it in
 /// the Document view.
-fn panel_bounds(window: &Window, doc_view: bool, reference_open: bool) -> Rect {
+fn panel_bounds(
+    window: &Window,
+    doc_view: bool,
+    reference_open: bool,
+    panel_width: Option<f64>,
+) -> Rect {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let list = list_width(window, panel_width);
     let width = if doc_view {
         size.width
     } else if reference_open {
-        (PANEL_WIDTH + REFERENCE_WIDTH).min(size.width)
+        (list + REFERENCE_WIDTH).min(size.width)
     } else {
-        PANEL_WIDTH
+        list
     };
     Rect {
         position: wry::dpi::LogicalPosition::new(0.0, 0.0).into(),
         size: wry::dpi::LogicalSize::new(width, size.height).into(),
     }
+}
+
+/// The expression list's width in logical pixels: the dragged width (or the
+/// default), no narrower than the minimum, leaving the graph its minimum.
+fn list_width(window: &Window, panel_width: Option<f64>) -> f64 {
+    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    clamp_list_width(panel_width.unwrap_or(PANEL_WIDTH), size.width)
+}
+
+fn clamp_list_width(width: f64, window_width: f64) -> f64 {
+    let max = (window_width - GRAPH_MIN_WIDTH).max(PANEL_MIN_WIDTH);
+    width.round().clamp(PANEL_MIN_WIDTH, max)
 }
 
 /// Opens a file in its usual app, as double-clicking it would.
