@@ -3535,8 +3535,67 @@
     }
   };
 
+  // The divider on the list's right edge. The window owns the width (it
+  // clamps it and remembers it across starts) and moves the panel and the
+  // graph; the list follows the pointer at once so dragging feels direct.
+  var LIST_DEFAULT = 380, LIST_MIN = 250;
+  var listMax = Infinity;
+  var divider = document.createElement('div');
+  divider.id = 'list-divider';
+  divider.title = 'Drag to resize the expression list (double-click to reset)';
+  document.body.appendChild(divider);
+  function clampListWidth(w) {
+    return Math.round(Math.max(LIST_MIN, Math.min(listMax, w)));
+  }
+  function showListWidth(w) {
+    document.documentElement.style.setProperty('--list-w', w + 'px');
+  }
+  function setListWidth(w, max) {
+    if (max) listMax = Math.max(LIST_MIN, max);
+    if (!divider.classList.contains('dragging')) showListWidth(w);
+  }
+  var dragFrom = null, dragLast = null;
+  divider.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    divider.setPointerCapture(e.pointerId);
+    var current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--list-w')) || LIST_DEFAULT;
+    dragFrom = { x: e.clientX, w: current };
+    dragLast = current;
+    divider.classList.add('dragging');
+    document.body.classList.add('list-resizing');
+  });
+  divider.addEventListener('pointermove', function (e) {
+    if (!dragFrom) return;
+    var w = clampListWidth(dragFrom.w + e.clientX - dragFrom.x);
+    if (w === dragLast) return;
+    dragLast = w;
+    showListWidth(w);
+    send({ type: 'listWidth', width: w });
+  });
+  function endDrag() {
+    if (!dragFrom) return;
+    dragFrom = null;
+    divider.classList.remove('dragging');
+    document.body.classList.remove('list-resizing');
+    showListWidth(dragLast);
+    send({ type: 'listWidth', width: dragLast, done: true });
+  }
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+  divider.addEventListener('lostpointercapture', endDrag);
+  divider.addEventListener('dblclick', function () {
+    var w = clampListWidth(LIST_DEFAULT);
+    dragLast = w;
+    showListWidth(w);
+    send({ type: 'listWidth', width: w, done: true });
+  });
+
   // The document view (doc.js) types with the same editor settings.
-  window.panel = { mathOptions: MATH_OPTIONS, absBars: absBars, send: send, currentField: currentField };
+  window.panel = {
+    mathOptions: MATH_OPTIONS, absBars: absBars, send: send, currentField: currentField,
+    setListWidth: setListWidth
+  };
   document.getElementById('block-done').addEventListener('click', function () {
     if (window.doc) window.doc.show(true);
   });

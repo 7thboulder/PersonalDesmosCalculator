@@ -277,6 +277,8 @@ pub struct State {
     pub library: Option<PathBuf>,
     /// The PDF export choices last used (page size, header, ...).
     pub pdf: Value,
+    /// The expression list's width as last dragged, in logical pixels.
+    pub panel_width: Option<f64>,
 }
 
 pub fn read_state() -> State {
@@ -289,6 +291,7 @@ pub fn read_state() -> State {
         path: value["path"].as_str().map(PathBuf::from),
         library: value["library"].as_str().map(PathBuf::from),
         pdf: value["pdf"].clone(),
+        panel_width: value["panelWidth"].as_f64().filter(|w| w.is_finite()),
     }
 }
 
@@ -299,6 +302,7 @@ pub fn write_state(state: &State) {
         "path": state.path,
         "library": state.library,
         "pdf": state.pdf,
+        "panelWidth": state.panel_width,
     });
     // Losing this only means starting in the graph view.
     let _ = write(&path, &value.to_string());
