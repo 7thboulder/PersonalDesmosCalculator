@@ -565,8 +565,16 @@ fn gcd(mut p: f64, mut q: f64) -> f64 {
 }
 
 fn choose(n: f64, k: f64) -> f64 {
-    if n.fract() != 0.0 || k.fract() != 0.0 || n < 0.0 {
+    if k.fract() != 0.0 {
         return f64::NAN;
+    }
+    // Any real top with a whole bottom: n(n−1)…(n−k+1)/k!, as in the
+    // binomial series (1 + x)^α = Σ C(α, k) x^k.
+    if n.fract() != 0.0 || n < 0.0 {
+        if k < 0.0 {
+            return 0.0;
+        }
+        return (1..=k as u64).fold(1.0, |acc, i| acc * (n - i as f64 + 1.0) / i as f64);
     }
     if k < 0.0 || k > n {
         return 0.0;

@@ -777,6 +777,49 @@ fn desmos_brackets(latex: &str) -> String {
     ] {
         out = out.replace(from, to);
     }
+    desmos_binom(&out)
+}
+
+/// `\binom{n}{k}` as Desmos writes it: nCr(n, k).
+fn desmos_binom(latex: &str) -> String {
+    // The group in braces starting at `at` (just past its `{`), and where it ends.
+    fn group(s: &str, at: usize) -> Option<(&str, usize)> {
+        let mut depth = 1;
+        for (i, c) in s[at..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((&s[at..at + i], at + i + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    let mut out = String::new();
+    let mut rest = latex;
+    while let Some(at) = rest.find("\\binom{") {
+        let Some((n, end)) = group(rest, at + "\\binom{".len()) else {
+            break;
+        };
+        let Some((k, end)) = rest[end..]
+            .strip_prefix('{')
+            .and_then(|_| group(rest, end + 1))
+        else {
+            break;
+        };
+        out.push_str(&rest[..at]);
+        out.push_str(&format!(
+            "\\operatorname{{nCr}}\\left({},{}\\right)",
+            desmos_binom(n),
+            desmos_binom(k)
+        ));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1365,6 +1408,14 @@ mod tests {
         // The app's own files open as before.
         let own = r#"{"format":"graphcalc","version":1,"rows":[]}"#;
         assert_eq!(open_any(own).unwrap(), (json!([]), None, false));
+    }
+
+    #[test]
+    fn binomials_export_as_ncr() {
+        assert_eq!(
+            desmos_brackets("y=\\binom{n}{2}x+\\binom{\\binom{4}{2}}{k}"),
+            "y=\\operatorname{nCr}\\left(n,2\\right)x+\\operatorname{nCr}\\left(\\operatorname{nCr}\\left(4,2\\right),k\\right)"
+        );
     }
 
     #[test]

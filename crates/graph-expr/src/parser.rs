@@ -806,6 +806,7 @@ impl Parser {
                 | Tok::Letter(_)
                 | Tok::OpName(_)
                 | Tok::Frac
+                | Tok::Binom
                 | Tok::Sqrt
                 | Tok::LParen
                 | Tok::AbsOpen
@@ -985,6 +986,15 @@ impl Parser {
                 Ok(Expr::Var(name))
             }
             Tok::OpName(name) => self.function(&name),
+            Tok::Binom => {
+                self.expect(&Tok::LBrace)?;
+                let n = self.expr()?;
+                self.expect(&Tok::RBrace)?;
+                self.expect(&Tok::LBrace)?;
+                let k = self.expr()?;
+                self.expect(&Tok::RBrace)?;
+                Ok(Expr::Call(Builtin::NCr, vec![n, k]))
+            }
             Tok::Frac => {
                 self.expect(&Tok::LBrace)?;
                 let num = self.expr()?;
