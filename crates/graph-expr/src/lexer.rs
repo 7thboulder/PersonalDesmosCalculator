@@ -9,6 +9,8 @@ pub enum Tok {
     /// A named operator: `\sin` or `\operatorname{floor}`.
     OpName(String),
     Frac,
+    /// `\binom{n}{k}`: n choose k.
+    Binom,
     Sqrt,
     LParen,
     RParen,
@@ -506,6 +508,7 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
             return Ok(end);
         }
         "frac" | "dfrac" | "tfrac" => Tok::Frac,
+        "binom" | "dbinom" | "tbinom" => Tok::Binom,
         "sqrt" => Tok::Sqrt,
         "cdot" | "times" | "ast" => Tok::Mul,
         "div" => Tok::Div,

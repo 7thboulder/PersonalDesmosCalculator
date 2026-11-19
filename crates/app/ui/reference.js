@@ -51,6 +51,7 @@
   //
   // A section has groups; a group has a heading and items. An item is
   //   { m: [side, relation, side, ...], n: note }  a formula, each side clickable
+  //     (ex: the same thing written out, shown under it but never inserted)
   //   { table: { cols: [...], rows: [[...]] } }     a table; '#text' cells are text
   // A group can also say how to type a function (type) and where it is
   // defined (domain), and add search words (k).
@@ -387,6 +388,141 @@
       { m: [I(F('1', 'a^2-x^2')), '=', F('1', '2a') + ln(A(F('a+x', 'a-x'))) + C], n: 'Equal to (1/a) arctanh(x/a) + C for |x| < a' }] }
   ];
 
+  // ---- Series ----------------------------------------------------------------
+  //
+  // Sums are written the way the calculator reads them, so a side typed into a
+  // row evaluates (or graphs, when it has x in it). An item's ex is the same
+  // series written out term by term: shown for reading, never inserted.
+
+  function S(lo, hi, body, v) { return '\\sum_{' + (v || 'n') + '=' + lo + '}^{' + hi + '}' + body; }
+  function Sn(lo, body) { return S(lo, inf, body); }
+  var neg = '\\left(-1\\right)';
+  var lim = '\\lim_{n\\to\\infty}';
+  function T(s) { return '\\text{' + s + '}'; }
+
+  var SERIES = [
+    { h: 'Geometric', k: 'geometric ratio common', n: 'a is the first term, r the common ratio', items: [
+      { m: [S('0', 'N-1', 'ar^n'), '=', F('a' + P('1-r^N'), '1-r')], n: 'The first N terms, for r ≠ 1 (when r = 1 the sum is aN)', ex: 'a+ar+ar^2+\\cdots+ar^{N-1}' },
+      { m: [Sn('0', 'ar^n'), '=', F('a', '1-r')], n: 'Converges for |r| < 1, diverges for |r| ≥ 1', ex: 'a+ar+ar^2+ar^3+\\cdots' },
+      { m: [Sn('1', 'ar^n'), '=', F('ar', '1-r')], n: 'Starting at n = 1: first term over (1 − r), for |r| < 1' },
+      { m: [Sn('0', 'nr^n'), '=', F('r', P('1-r') + '^2')], n: 'For |r| < 1; the derivative of the geometric series times r' },
+      { m: [Sn('0', 'n^2r^n'), '=', F('r' + P('1+r'), P('1-r') + '^3')], n: 'For |r| < 1' }] },
+    { h: 'Arithmetic', k: 'arithmetic difference common', n: 'a₁ is the first term, d the common difference', items: [
+      { m: ['a_n', '=', 'a_1+' + P('n-1') + 'd'], n: 'The nth term' },
+      { m: [S('1', 'n', P('a_1+' + P('k-1') + 'd'), 'k'), '=', F('n', '2') + P('2a_1+' + P('n-1') + 'd'), '=', F('n' + P('a_1+a_n'), '2')], n: 'n terms: the average of the first and last, times n', ex: 'a_1+\\left(a_1+d\\right)+\\left(a_1+2d\\right)+\\cdots+a_n' }] },
+    { h: 'Sums of powers', k: 'faulhaber power sum integers squares cubes', items: [
+      { m: [S('1', 'n', '1', 'k'), '=', 'n'] },
+      { m: [S('1', 'n', 'k', 'k'), '=', F('n' + P('n+1'), '2')], ex: '1+2+3+\\cdots+n' },
+      { m: [S('1', 'n', 'k^2', 'k'), '=', F('n' + P('n+1') + P('2n+1'), '6')], ex: '1+4+9+\\cdots+n^2' },
+      { m: [S('1', 'n', 'k^3', 'k'), '=', P(F('n' + P('n+1'), '2')) + '^2'], n: 'The square of 1 + 2 + … + n', ex: '1+8+27+\\cdots+n^3' },
+      { m: [S('1', 'n', 'k^4', 'k'), '=', F('n' + P('n+1') + P('2n+1') + P('3n^2+3n-1'), '30')] },
+      { m: [S('1', 'n', P('2k-1'), 'k'), '=', 'n^2'], n: 'The first n odd numbers', ex: '1+3+5+\\cdots+\\left(2n-1\\right)' }] },
+    { h: 'p-series and harmonic series', k: 'p series harmonic zeta basel', items: [
+      { m: [Sn('1', F('1', 'n^p')), '=', zeta('p')], n: 'Converges for p > 1, diverges for p ≤ 1', ex: '1+\\frac{1}{2^p}+\\frac{1}{3^p}+\\cdots' },
+      { m: [Sn('1', F('1', 'n'))], n: 'The harmonic series: diverges, though slowly', ex: '1+\\frac{1}{2}+\\frac{1}{3}+\\frac{1}{4}+\\cdots' },
+      { m: ['H_n', '=', S('1', 'n', F('1', 'k'), 'k')], n: 'The nth harmonic number; Hₙ ≈ ln n + γ for large n (γ ≈ 0.5772156649)' },
+      { m: [Sn('1', F('1', 'n^2')), '=', F('\\pi^2', '6')], n: 'The Basel problem' },
+      { m: [Sn('1', F('1', 'n^4')), '=', F('\\pi^4', '90')] },
+      { m: [Sn('1', F('1', P('2n-1') + '^2')), '=', F('\\pi^2', '8')], n: 'Odd squares only' }] },
+    { h: 'Alternating series', k: 'alternating leibniz ln 2', items: [
+      { m: [Sn('1', F(neg + '^{n+1}', 'n')), '=', ln('2')], n: 'The alternating harmonic series: converges, but not absolutely', ex: '1-\\frac{1}{2}+\\frac{1}{3}-\\frac{1}{4}+\\cdots' },
+      { m: [Sn('0', F(neg + '^n', '2n+1')), '=', F('\\pi', '4')], n: 'The Leibniz series', ex: '1-\\frac{1}{3}+\\frac{1}{5}-\\frac{1}{7}+\\cdots' },
+      { m: [Sn('1', F(neg + '^{n+1}', 'n^2')), '=', F('\\pi^2', '12')] },
+      { m: [A('S-S_N'), '\\le', 'b_{N+1}'], n: 'Error after N terms of Σ(−1)ⁿbₙ when the alternating series test applies: at most the first term left out' }] },
+    { h: 'Telescoping', k: 'telescoping partial fractions cancel', n: 'Split the term into a difference, often with partial fractions, so neighbouring terms cancel', items: [
+      { m: [S('1', 'N', P('b_n-b_{n+1}')), '=', 'b_1-b_{N+1}'], n: 'So the infinite sum is b₁ − lim bₙ when that limit exists', ex: '\\left(b_1-b_2\\right)+\\left(b_2-b_3\\right)+\\cdots+\\left(b_N-b_{N+1}\\right)' },
+      { m: [F('1', 'n' + P('n+1')), '=', F('1', 'n') + '-' + F('1', 'n+1')] },
+      { m: [Sn('1', F('1', 'n' + P('n+1'))), '=', '1'] },
+      { m: [Sn('1', F('1', 'n' + P('n+2'))), '=', F('3', '4')], n: 'Terms two apart: 1/(n(n+2)) = ½(1/n − 1/(n+2))' },
+      { m: [Sn('2', F('1', 'n^2-1')), '=', F('3', '4')] },
+      { m: [S('1', 'N', ln(F('n+1', 'n'))), '=', ln('N+1')], n: 'So Σ ln(1 + 1/n) diverges' }] },
+    { h: 'Sums for e and π', k: 'constant euler number e pi', items: [
+      { m: [Sn('0', F('1', 'n!')), '=', 'e'], ex: '1+1+\\frac{1}{2!}+\\frac{1}{3!}+\\cdots' },
+      { m: [Sn('0', F(neg + '^n', 'n!')), '=', F('1', 'e')] },
+      { m: [Sn('1', F('n', '2^n')), '=', '2'] },
+      { m: [Sn('0', F('1', '2^n')), '=', '2'], ex: '1+\\frac{1}{2}+\\frac{1}{4}+\\frac{1}{8}+\\cdots' },
+      { m: [Sn('1', F('1', 'n^2')), '=', F('\\pi^2', '6')] },
+      { m: [Sn('0', F(neg + '^n', '2n+1')), '=', F('\\pi', '4')] }] },
+    { h: 'Taylor series', k: 'taylor maclaurin polynomial remainder lagrange', n: 'f⁽ⁿ⁾ is the nth derivative of f; a Maclaurin series is a Taylor series at a = 0', items: [
+      { m: ['f' + P('x'), '=', Sn('0', F('f^{\\left(n\\right)}' + P('a'), 'n!') + P('x-a') + '^n')], n: 'The Taylor series of f at a, where it converges to f', ex: 'f\\left(a\\right)+f\'\\left(a\\right)\\left(x-a\\right)+\\frac{f\'\'\\left(a\\right)}{2!}\\left(x-a\\right)^2+\\cdots' },
+      { m: ['f' + P('x'), '=', Sn('0', F('f^{\\left(n\\right)}' + P('0'), 'n!') + 'x^n')], n: 'Maclaurin series', ex: 'f\\left(0\\right)+f\'\\left(0\\right)x+\\frac{f\'\'\\left(0\\right)}{2!}x^2+\\cdots' },
+      { m: ['T_N' + P('x'), '=', S('0', 'N', F('f^{\\left(n\\right)}' + P('a'), 'n!') + P('x-a') + '^n')], n: 'The Taylor polynomial of degree N' },
+      { m: ['R_N' + P('x'), '=', F('f^{\\left(N+1\\right)}' + P('c'), P('N+1') + '!') + P('x-a') + '^{N+1}'], n: 'Lagrange remainder f(x) − T_N(x), for some c between a and x' },
+      { m: [A('R_N' + P('x')), '\\le', F('M', P('N+1') + '!') + A('x-a') + '^{N+1}'], n: 'Taylor’s inequality, where |f⁽ᴺ⁺¹⁾| ≤ M between a and x' }] },
+    { h: 'Maclaurin series of common functions', k: 'maclaurin taylor expansion exp sin cos ln arctan sinh cosh binomial', n: 'Each grey note says where the series converges', items: [
+      { m: ['e^x', '=', Sn('0', F('x^n', 'n!'))], n: 'Every x', ex: '1+x+\\frac{x^2}{2!}+\\frac{x^3}{3!}+\\cdots' },
+      { m: [sin('x'), '=', Sn('0', F(neg + '^nx^{2n+1}', P('2n+1') + '!'))], n: 'Every x', ex: 'x-\\frac{x^3}{3!}+\\frac{x^5}{5!}-\\cdots' },
+      { m: [cos('x'), '=', Sn('0', F(neg + '^nx^{2n}', P('2n') + '!'))], n: 'Every x', ex: '1-\\frac{x^2}{2!}+\\frac{x^4}{4!}-\\cdots' },
+      { m: [F('1', '1-x'), '=', Sn('0', 'x^n')], n: '|x| < 1', ex: '1+x+x^2+x^3+\\cdots' },
+      { m: [F('1', '1+x'), '=', Sn('0', neg + '^nx^n')], n: '|x| < 1', ex: '1-x+x^2-x^3+\\cdots' },
+      { m: [F('1', P('1-x') + '^2'), '=', Sn('1', 'nx^{n-1}')], n: '|x| < 1', ex: '1+2x+3x^2+4x^3+\\cdots' },
+      { m: [ln('1+x'), '=', Sn('1', F(neg + '^{n+1}x^n', 'n'))], n: '−1 < x ≤ 1', ex: 'x-\\frac{x^2}{2}+\\frac{x^3}{3}-\\cdots' },
+      { m: ['-' + ln('1-x'), '=', Sn('1', F('x^n', 'n'))], n: '−1 ≤ x < 1', ex: 'x+\\frac{x^2}{2}+\\frac{x^3}{3}+\\cdots' },
+      { m: [fn('arctan', 'x'), '=', Sn('0', F(neg + '^nx^{2n+1}', '2n+1'))], n: '|x| ≤ 1', ex: 'x-\\frac{x^3}{3}+\\frac{x^5}{5}-\\cdots' },
+      { m: [fn('arcsin', 'x'), '=', Sn('0', F(P('2n') + '!', '4^n' + P('n!') + '^2' + P('2n+1')) + 'x^{2n+1}')], n: '|x| ≤ 1', ex: 'x+\\frac{1}{2}\\cdot\\frac{x^3}{3}+\\frac{1\\cdot3}{2\\cdot4}\\cdot\\frac{x^5}{5}+\\cdots' },
+      { m: [fn('sinh', 'x'), '=', Sn('0', F('x^{2n+1}', P('2n+1') + '!'))], n: 'Every x', ex: 'x+\\frac{x^3}{3!}+\\frac{x^5}{5!}+\\cdots' },
+      { m: [fn('cosh', 'x'), '=', Sn('0', F('x^{2n}', P('2n') + '!'))], n: 'Every x', ex: '1+\\frac{x^2}{2!}+\\frac{x^4}{4!}+\\cdots' },
+      { m: [fn('arctanh', 'x'), '=', Sn('0', F('x^{2n+1}', '2n+1'))], n: '|x| < 1', ex: 'x+\\frac{x^3}{3}+\\frac{x^5}{5}+\\cdots' },
+      { m: ['e^{-x^2}', '=', Sn('0', F(neg + '^nx^{2n}', 'n!'))], n: 'Every x; integrate term by term for erf', ex: '1-x^2+\\frac{x^4}{2!}-\\frac{x^6}{3!}+\\cdots' },
+      { m: [P('1+x') + '^{\\alpha}', '=', Sn('0', '\\binom{\\alpha}{n}x^n')], n: 'Binomial series: |x| < 1, or every x when α is a whole number (then it stops). The coefficient (α choose n) = α(α−1)…(α−n+1)/n!, typed ;nck', ex: '1+\\alpha x+\\frac{\\alpha\\left(\\alpha-1\\right)}{2!}x^2+\\cdots' },
+      { m: [R('1+x'), '=', '1+' + F('x', '2') + '-' + F('x^2', '8') + '+' + F('x^3', '16') + '-\\cdots'], n: 'α = ½ in the binomial series; |x| ≤ 1' },
+      { m: [tan('x'), '=', 'x+' + F('x^3', '3') + '+' + F('2x^5', '15') + '+' + F('17x^7', '315') + '+\\cdots'], n: '|x| < π/2; no simple general term' }] },
+    { h: 'Power series', k: 'power series radius interval convergence term by term', n: 'cₙ are the coefficients and a the centre', items: [
+      { m: [Sn('0', 'c_n' + P('x-a') + '^n')], n: 'Converges for |x − a| < R and diverges for |x − a| > R; test the two endpoints x = a ± R on their own', ex: 'c_0+c_1\\left(x-a\\right)+c_2\\left(x-a\\right)^2+\\cdots' },
+      { m: ['R', '=', lim + A(F('c_n', 'c_{n+1}'))], n: 'Radius of convergence, when the limit exists (∞ means every x)' },
+      { m: [F('1', 'R'), '=', '\\limsup_{n\\to\\infty}' + A('c_n') + '^{' + F('1', 'n') + '}'], n: 'Cauchy–Hadamard formula: always works' },
+      { m: [dx(Sn('0', 'c_nx^n')), '=', Sn('1', 'nc_nx^{n-1}')], n: 'Differentiate term by term; the radius stays R' },
+      { m: [I(Sn('0', 'c_nx^n')), '=', Sn('0', F('c_nx^{n+1}', 'n+1'))], n: 'Integrate term by term (+ C); the radius stays R' }] },
+    { h: 'Fourier series', k: 'fourier trigonometric periodic coefficients parseval', n: 'f has period 2L; for period 2π put L = π', items: [
+      { m: ['f' + P('x'), '=', F('a_0', '2') + '+' + Sn('1', P('a_n' + cos(F('n\\pi x', 'L')) + '+b_n' + sin(F('n\\pi x', 'L'))))], n: 'Converges to f where f is smooth, and to the average of the two sides at a jump', ex: '\\frac{a_0}{2}+a_1\\cos\\frac{\\pi x}{L}+b_1\\sin\\frac{\\pi x}{L}+a_2\\cos\\frac{2\\pi x}{L}+\\cdots' },
+      { m: ['a_n', '=', F('1', 'L') + DI('-L', 'L', 'f' + P('x') + cos(F('n\\pi x', 'L')), 'x')], n: 'n = 0, 1, 2, …; a₀/2 is the average of f' },
+      { m: ['b_n', '=', F('1', 'L') + DI('-L', 'L', 'f' + P('x') + sin(F('n\\pi x', 'L')), 'x')], n: 'n = 1, 2, 3, …; an even f has every bₙ = 0, an odd f every aₙ = 0' },
+      { m: ['f' + P('x'), '=', S('-' + inf, inf, 'c_ne^{' + F('in\\pi x', 'L') + '}')], n: 'Complex form' },
+      { m: ['c_n', '=', F('1', '2L') + DI('-L', 'L', 'f' + P('x') + 'e^{-' + F('in\\pi x', 'L') + '}', 'x')] },
+      { m: [F('1', 'L') + DI('-L', 'L', 'f' + P('x') + '^2', 'x'), '=', F('a_0^2', '2') + '+' + Sn('1', P('a_n^2+b_n^2'))], n: 'Parseval’s identity' }] },
+    { h: 'Fourier series of common waves', k: 'fourier square sawtooth triangle wave', n: 'Period 2π. Insert a sum to graph it; change ∞ to a number such as 10 to see a partial sum', items: [
+      { m: ['f' + P('x'), '=', F('4', '\\pi') + Sn('1', F(sin(P('2n-1') + 'x'), '2n-1'))], n: 'Square wave: 1 on (0, π) and −1 on (−π, 0)', ex: '\\frac{4}{\\pi}\\left(\\sin x+\\frac{\\sin 3x}{3}+\\frac{\\sin 5x}{5}+\\cdots\\right)' },
+      { m: ['f' + P('x'), '=', '2' + Sn('1', F(neg + '^{n+1}' + sin('nx'), 'n'))], n: 'Sawtooth wave: x on (−π, π)', ex: '2\\left(\\sin x-\\frac{\\sin 2x}{2}+\\frac{\\sin 3x}{3}-\\cdots\\right)' },
+      { m: ['f' + P('x'), '=', F('\\pi', '2') + '-' + F('4', '\\pi') + Sn('1', F(cos(P('2n-1') + 'x'), P('2n-1') + '^2'))], n: 'Triangle wave: |x| on (−π, π)', ex: '\\frac{\\pi}{2}-\\frac{4}{\\pi}\\left(\\cos x+\\frac{\\cos 3x}{9}+\\frac{\\cos 5x}{25}+\\cdots\\right)' },
+      { m: ['f' + P('x'), '=', F('\\pi^2', '3') + '+4' + Sn('1', F(neg + '^n' + cos('nx'), 'n^2'))], n: 'Repeated parabola: x² on (−π, π); at x = π it gives Σ 1/n² = π²/6' }] }
+  ];
+
+  var an = 'a_n', sa = Sn('1', 'a_n'), sb = Sn('1', 'b_n');
+  var CONVERGENCE = [
+    { h: 'Divergence test (nth term test)', k: 'nth term divergence limit zero', items: [
+      { m: [lim + an + '\\ne 0', '\\Rightarrow', sa + '\\ ' + T('diverges')], n: 'If the limit is 0 the test says nothing (the harmonic series has limit 0 and diverges)' }] },
+    { h: 'Geometric series test', k: 'geometric ratio', items: [
+      { m: [Sn('0', 'ar^n') + '\\ ' + T('converges'), '\\iff', A('r') + '<1'], n: 'To a/(1 − r), for a ≠ 0' }] },
+    { h: 'p-series test', k: 'p series', items: [
+      { m: [Sn('1', F('1', 'n^p')) + '\\ ' + T('converges'), '\\iff', 'p>1'], n: 'p ≤ 1 diverges, so Σ 1/n and Σ 1/√n diverge' }] },
+    { h: 'Integral test', k: 'integral improper', n: 'f positive, continuous and decreasing for x ≥ 1, with aₙ = f(n)', items: [
+      { m: [sa + '\\ ' + T('converges'), '\\iff', DI('1', inf, 'f' + P('x'), 'x') + '\\ ' + T('converges')] },
+      { m: [DI('N+1', inf, 'f' + P('x'), 'x'), '\\le', 'S-S_N', '\\le', DI('N', inf, 'f' + P('x'), 'x')], n: 'Bounds on the error after N terms' }] },
+    { h: 'Comparison test', k: 'direct comparison', n: '0 ≤ aₙ ≤ bₙ for every n past some point', items: [
+      { m: [sb + '\\ ' + T('converges'), '\\Rightarrow', sa + '\\ ' + T('converges')] },
+      { m: [sa + '\\ ' + T('diverges'), '\\Rightarrow', sb + '\\ ' + T('diverges')], n: 'Compare with geometric series and p-series' }] },
+    { h: 'Limit comparison test', k: 'limit comparison', n: 'aₙ > 0 and bₙ > 0', items: [
+      { m: [lim + F('a_n', 'b_n'), '=', 'c'], n: '0 < c < ∞: both converge or both diverge. c = 0 and Σbₙ converges: Σaₙ converges. c = ∞ and Σbₙ diverges: Σaₙ diverges' }] },
+    { h: 'Ratio test', k: 'ratio factorial', items: [
+      { m: [lim + A(F('a_{n+1}', 'a_n')), '=', 'L'], n: 'L < 1: converges absolutely. L > 1 or L = ∞: diverges. L = 1: no conclusion. Best for factorials and nth powers' }] },
+    { h: 'Root test', k: 'root nth root', items: [
+      { m: [lim + A(an) + '^{' + F('1', 'n') + '}', '=', 'L'], n: 'L < 1: converges absolutely. L > 1 or L = ∞: diverges. L = 1: no conclusion. Best when aₙ is something to the nth power' }] },
+    { h: 'Alternating series test', k: 'alternating leibniz', n: 'bₙ > 0', items: [
+      { m: ['b_{n+1}\\le b_n\\ ' + T('and') + '\\ ' + lim + 'b_n=0', '\\Rightarrow', Sn('1', neg + '^{n+1}b_n') + '\\ ' + T('converges')] },
+      { m: [A('S-S_N'), '\\le', 'b_{N+1}'], n: 'The error after N terms is at most the next term, and has its sign' }] },
+    { h: 'Absolute and conditional convergence', k: 'absolute conditional rearrangement', items: [
+      { m: [Sn('1', A(an)) + '\\ ' + T('converges'), '\\Rightarrow', sa + '\\ ' + T('converges')], n: 'Σaₙ then converges absolutely, and any rearrangement has the same sum' },
+      { m: [sa + '\\ ' + T('converges and') + '\\ ' + Sn('1', A(an)) + '\\ ' + T('diverges')], n: 'Conditional convergence: rearranging the terms can give any sum (Riemann rearrangement theorem). Example: Σ(−1)ⁿ⁺¹/n' }] },
+    { h: 'Choosing a test', k: 'which test strategy', items: [
+      { text: '1. Does aₙ fail to go to 0? Then it diverges (divergence test).' },
+      { text: '2. Geometric or p-series? Read the answer off directly.' },
+      { text: '3. Alternating? Try the alternating series test, and check absolute convergence.' },
+      { text: '4. Factorials or nth powers? Ratio test; aₙ = (something)ⁿ: root test.' },
+      { text: '5. A fraction of powers of n? Limit comparison with the p-series of the leading terms.' },
+      { text: '6. aₙ = f(n) with f easy to integrate? Integral test.' },
+      { text: 'To check numerically, type the sum with ∞ on top into a row: it shows the value, or says it diverges.' }] }
+  ];
+
   var SPECIAL = [
     { h: 'Gamma function Γ(x)', type: 'Gamma(x)', domain: 'Every x except 0, −1, −2, … (and complex z in a z row)', k: 'factorial', items: [
       { m: [Gam('x'), '=', DI('0', inf, 't^{x-1}e^{-t}')], n: 'The definition, for x > 0; the rest follows from Γ(x + 1) = xΓ(x)' },
@@ -663,6 +799,8 @@
     { title: 'Hyperbolic', groups: HYPERBOLIC },
     { title: 'Derivatives', groups: DERIVATIVES },
     { title: 'Integrals', groups: INTEGRALS },
+    { title: 'Series', groups: SERIES },
+    { title: 'Convergence tests', groups: CONVERGENCE },
     { title: 'Special functions', groups: SPECIAL },
     { title: 'Statistics', groups: STATISTICS },
     { title: 'Statistics tools', groups: TOOLS },
@@ -751,6 +889,14 @@
       all.textContent = '+';
       all.dataset.latex = whole(item.m);
       el.appendChild(all);
+    }
+    // The series written out term by term, for reading only.
+    if (item.ex) {
+      var ex = document.createElement('div');
+      ex.className = 'ref-expanded';
+      ex.appendChild(mathSpan('=' + item.ex, 'ref-static'));
+      el.appendChild(ex);
+      text += ' ' + words(item.ex);
     }
     if (item.n) {
       var note = document.createElement('div');
