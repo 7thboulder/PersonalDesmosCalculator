@@ -108,6 +108,17 @@ fn symbolic_letters() {
     assert_eq!(r, "x=-\\frac{b}{a}");
 }
 
+#[test]
+fn hatted_letters() {
+    assert_eq!(result("2\\hat{k}+1=7", None), "\\hat{k}=3");
+    let r = result("\\hat{a}x+b=0", Some("solve:x"));
+    assert_eq!(r, "x=-\\frac{b}{\\hat{a}}");
+    assert_eq!(
+        result("\\hat{\\theta}^{2}=9", None),
+        "\\hat{\\theta}=-3\\quad\\text{or}\\quad \\hat{\\theta}=3"
+    );
+}
+
 fn ode(latex: &str, seeds: Option<&str>, derivs: &[&str]) -> String {
     let initial = Initial {
         seeds: seeds.map(str::to_owned),

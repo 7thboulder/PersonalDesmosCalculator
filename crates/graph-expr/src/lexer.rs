@@ -424,6 +424,57 @@ fn word_at(chars: &[char], at: usize, word: &str) -> bool {
         && !chars.get(at + n).is_some_and(|c| c.is_ascii_alphabetic())
 }
 
+/// The combining circumflex that marks a name typed with a hat over it:
+/// `\hat{k}` is the name "k\u{302}", and `\hat{\theta}` "theta\u{302}".
+pub const HAT: char = '\u{302}';
+
+/// The letter under an accent such as `\hat`: `{k}`, `k`, `{\theta}` or
+/// `\theta`, and the index after it.
+fn accented_letter(chars: &[char], mut i: usize) -> Result<(String, usize), String> {
+    const ONE_LETTER: &str = "A hat goes over one letter, like \\hat{k}";
+    while chars.get(i) == Some(&' ') {
+        i += 1;
+    }
+    let (inner, end): (String, usize) = match chars.get(i) {
+        Some('{') => {
+            let mut depth = 0;
+            let mut j = i;
+            loop {
+                match chars.get(j) {
+                    None => return Err(ONE_LETTER.into()),
+                    Some('{') => depth += 1,
+                    Some('}') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            (chars[i + 1..j].iter().collect(), j + 1)
+        }
+        Some('\\') => {
+            let mut j = i + 1;
+            while chars.get(j).is_some_and(|c| c.is_ascii_alphabetic()) {
+                j += 1;
+            }
+            (chars[i..j].iter().collect(), j)
+        }
+        Some(c) => (c.to_string(), i + 1),
+        None => return Err(ONE_LETTER.into()),
+    };
+    match tokenize(&inner)?.as_slice() {
+        [Tok::Letter(l)]
+            if !l.ends_with(HAT) && !matches!(l.as_str(), "partial" | "nabla" | "infty") =>
+        {
+            Ok((l.clone(), end))
+        }
+        _ => Err(ONE_LETTER.into()),
+    }
+}
+
 /// Handles `\name`, returning the index after everything it consumed.
 fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Result<usize, String> {
     let tok = match name {
@@ -543,6 +594,12 @@ fn command(name: &str, chars: &[char], mut i: usize, toks: &mut Vec<Tok>) -> Res
                 None => Tok::Unit(text.to_owned()),
             };
             toks.push(tok);
+            return Ok(end);
+        }
+        "hat" | "widehat" => {
+            // `\hat{k}`: k̂, a name of its own, written k with U+0302 after it.
+            let (letter, end) = accented_letter(chars, i)?;
+            toks.push(Tok::Letter(format!("{letter}{HAT}")));
             return Ok(end);
         }
         "mathit" => {
@@ -683,5 +740,28 @@ mod tests {
                 Num(2.5)
             ]
         );
+    }
+
+    #[test]
+    fn hat_letters() {
+        let hat = |l: &str| Letter(format!("{l}{HAT}"));
+        assert_eq!(
+            tokenize("2\\hat{k}+\\hat j\\cdot \\hat{\\theta }_{1}").unwrap(),
+            vec![
+                Num(2.0),
+                hat("k"),
+                Plus,
+                hat("j"),
+                Mul,
+                hat("theta"),
+                Underscore,
+                LBrace,
+                Num(1.0),
+                RBrace
+            ]
+        );
+        assert_eq!(tokenize("\\hat\\omega").unwrap(), vec![hat("omega")]);
+        assert!(tokenize("\\hat{xy}").is_err());
+        assert!(tokenize("\\hat{}").is_err());
     }
 }

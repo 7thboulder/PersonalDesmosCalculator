@@ -256,17 +256,26 @@ mod matrix_entry_tests {
     }
 }
 
+/// The letter part of a name as LaTeX: `theta` as `\theta`, and a name
+/// with a hat (see [`crate::lexer::HAT`]) as `\hat{k}`.
+pub fn letter_latex(base: &str) -> String {
+    if let Some(under) = base.strip_suffix(crate::lexer::HAT) {
+        return format!("\\hat{{{}}}", letter_latex(under));
+    }
+    if base.chars().count() > 1 {
+        format!("\\{base}")
+    } else {
+        base.to_owned()
+    }
+}
+
 /// A variable's name as LaTeX: `a_1` as `a_{1}`, `theta` as `\theta`.
 pub fn name_latex(name: &str) -> String {
     let (base, sub) = match name.split_once('_') {
         Some((b, s)) => (b, Some(s)),
         None => (name, None),
     };
-    let base = if base.chars().count() > 1 {
-        format!("\\{base}")
-    } else {
-        base.to_owned()
-    };
+    let base = letter_latex(base);
     match sub {
         Some(s) => format!("{base}_{{{s}}}"),
         None => base,

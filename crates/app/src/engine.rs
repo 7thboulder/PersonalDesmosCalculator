@@ -1440,19 +1440,7 @@ fn fitted(v: f64) -> f64 {
 }
 
 pub fn name_latex(name: &str) -> String {
-    let (base, sub) = match name.split_once('_') {
-        Some((b, s)) => (b, Some(s)),
-        None => (name, None),
-    };
-    let base = if base.chars().count() > 1 {
-        format!("\\{base}")
-    } else {
-        base.to_owned()
-    };
-    match sub {
-        Some(s) => format!("{base}_{{{s}}}"),
-        None => base,
-    }
+    graph_expr::format::name_latex(name)
 }
 
 /// `#rrggbb` to RGBA floats in 0..1; anything unreadable is Desmos red.

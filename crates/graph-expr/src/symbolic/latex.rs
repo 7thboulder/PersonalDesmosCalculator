@@ -27,7 +27,9 @@ pub fn name(v: &str) -> String {
         Some((b, s)) => (b, Some(s)),
         None => (v, None),
     };
-    let base = if base.chars().count() > 1 {
+    let base = if base.ends_with(crate::lexer::HAT) {
+        crate::format::letter_latex(base)
+    } else if base.chars().count() > 1 {
         format!("\\{base} ")
     } else {
         base.to_owned()

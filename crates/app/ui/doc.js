@@ -2389,6 +2389,9 @@
           out += texToText(group());
         } else if (name === 'overline' || name === 'bar') {
           out += Array.from(texToText(group())).map(function (ch) { return ch + '\u0305'; }).join('');
+        } else if (name === 'hat' || name === 'widehat' || name === 'vec') {
+          var accent = name === 'vec' ? '\u20d7' : '\u0302';
+          out += Array.from(texToText(group())).map(function (ch) { return ch + accent; }).join('');
         } else if (name === 'embed') {
           group();
         } else if (NAMED.test(name)) {
