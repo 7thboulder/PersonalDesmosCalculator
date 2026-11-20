@@ -65,6 +65,8 @@ impl Names {
             name.chars()
                 .map(|c| if c.is_ascii_alphanumeric() {
                     c.to_string()
+                } else if c == crate::lexer::HAT {
+                    "QH".into()
                 } else {
                     "QU".into()
                 })
@@ -925,19 +927,7 @@ fn setup_lines(
 }
 
 fn name_latex(name: &str) -> String {
-    let (base, sub) = match name.split_once('_') {
-        Some((b, s)) => (b, Some(s)),
-        None => (name, None),
-    };
-    let base = if base.chars().count() > 1 {
-        format!("\\{base}")
-    } else {
-        base.to_owned()
-    };
-    match sub {
-        Some(s) => format!("{base}_{{{s}}}"),
-        None => base,
-    }
+    crate::format::name_latex(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,7 +1184,9 @@ impl Printer<'_> {
                     Some((b, sub)) => (b, Some(sub)),
                     None => (name, None),
                 };
-                let base = if GREEK.contains(&base) {
+                let base = if base.ends_with(crate::lexer::HAT) {
+                    crate::format::letter_latex(base)
+                } else if GREEK.contains(&base) {
                     format!("\\{base}")
                 } else if base.chars().count() > 1 {
                     format!("\\operatorname{{{base}}}")

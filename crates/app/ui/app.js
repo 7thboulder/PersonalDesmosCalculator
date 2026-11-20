@@ -98,8 +98,9 @@
     // Every Greek letter Desmos spells out, so typing omega gives ω, and
     // matrix for a matrix in place.
     // Typing abs makes |x| bars, as in Desmos, and floor and ceil make ⌊x⌋
-    // and ⌈x⌉; partial gives ∂ and nabla ∇.
-    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs floor ceil partial nabla ' + GREEK_LETTERS,
+    // and ⌈x⌉; partial gives ∂ and nabla ∇; hat puts a hat over the
+    // letter typed next, as in k̂.
+    autoCommands: 'sqrt sum prod int nthroot infinity infty pi tau matrix abs floor ceil partial nabla hat ' + GREEK_LETTERS,
     autoOperatorNames: 'sin cos tan sec csc cot arcsin arccos arctan arcsec arccsc arccot ' +
       'sinh cosh tanh sech csch coth arcsinh arccosh arctanh ' +
       'ln log exp min max round sign mod mean median total length ' +
@@ -183,6 +184,26 @@
     // A limit's subscript holds all of x→0⁺ (^ then + or - gives the side).
     if (limSub(block)) return;
     if (e.key === '(' && !cursor.previousElementSibling) return;
+    var field = MQ(root);
+    if (field) field.keystroke('Right');
+  }, true);
+
+  // A hat goes over one letter, so once it has one, the next key steps out
+  // of it first: hat k+1 types as k̂+1 and hat k_1 as k̂₁. A letter that
+  // could still spell a Greek name, as in hat theta, stays under the hat.
+  document.addEventListener('keydown', function (e) {
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+    var root = e.target.closest && e.target.closest('.mq-editable-field');
+    var cursor = root && root.querySelector('.mq-cursor');
+    var block = cursor && cursor.parentElement;
+    if (!block || !block.classList.contains('mq-hat-stem')) return;
+    if (cursor.nextElementSibling || !cursor.previousElementSibling) return;
+    // The cursor itself holds a zero-width space.
+    var typed = block.textContent.replace(/​/g, '');
+    if (/[A-Za-z]/.test(e.key)) {
+      var word = typed + e.key;
+      if ((GREEK_LETTERS + ' pi tau').split(' ').some(function (g) { return g.indexOf(word) === 0; })) return;
+    }
     var field = MQ(root);
     if (field) field.keystroke('Right');
   }, true);
@@ -2881,6 +2902,7 @@
       ['y=x^2\\left\\{x>0\\right\\}', 'Restriction'],
       ['\\left\\{x<0:-x,x\\right\\}', 'Piecewise'],
       ['y_1\\sim mx_1+b', 'Regression: fits m and b'],
+      ['\\hat{k}=2', 'A letter with a hat is a name of its own (type hat, then the letter)'],
       ["y'=x-y", 'Slope field, with solution curves through the points under it (drag them)'],
       ["y''=-y", "Any order up to 6; set y'(x\u2080) under it"],
       ["\\left(y'\\right)^2+y^2=1", "Not solved for y': every branch is drawn"],

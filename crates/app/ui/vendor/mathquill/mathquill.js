@@ -4648,6 +4648,19 @@ var Vec = LatexCmds.vec = P(MathCommand, function(_, super_) {
   _.textTemplate = ['vec(', ')'];
 });
 
+// Added for this app: a hat over a letter, as in k̂ for a unit vector.
+// Typed as \hat or hat; \widehat is read as the same thing.
+var Hat = LatexCmds.hat = LatexCmds.widehat = P(MathCommand, function(_, super_) {
+  _.ctrlSeq = '\\hat';
+  _.htmlTemplate =
+      '<span class="mq-non-leaf mq-hat">'
+    +   '<span class="mq-hat-prefix">^</span>'
+    +   '<span class="mq-hat-stem">&0</span>'
+    + '</span>'
+  ;
+  _.textTemplate = ['hat(', ')'];
+});
+
 var NthRoot =
 LatexCmds.nthroot = P(SquareRoot, function(_, super_) {
   _.htmlTemplate =

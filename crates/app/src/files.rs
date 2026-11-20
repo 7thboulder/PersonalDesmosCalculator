@@ -777,7 +777,51 @@ fn desmos_brackets(latex: &str) -> String {
     ] {
         out = out.replace(from, to);
     }
-    desmos_binom(&out)
+    desmos_hats(&desmos_binom(&out))
+}
+
+/// Desmos has no hats, so `\hat{k}` goes as the name `k_{hat}`, and
+/// `\hat{k}_{1}` as `k_{hat1}`, which Desmos reads as names of their own.
+fn desmos_hats(latex: &str) -> String {
+    let mut out = String::new();
+    let mut rest = latex;
+    while let Some(at) = rest.find("\\hat") {
+        out.push_str(&rest[..at]);
+        rest = rest[at + "\\hat".len()..].trim_start();
+        // The letter: {k}, {\theta }, k or \theta.
+        let letter: String = if let Some(inner) = rest.strip_prefix('{') {
+            let end = inner.find('}').unwrap_or(inner.len());
+            let l = inner[..end].trim().to_owned();
+            rest = inner.get(end + 1..).unwrap_or("");
+            l
+        } else if let Some(cmd) = rest.strip_prefix('\\') {
+            let n = cmd
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(cmd.len());
+            let l = format!("\\{}", &cmd[..n]);
+            rest = &cmd[n..];
+            l
+        } else {
+            let mut chars = rest.chars();
+            let l = chars.next().map(String::from).unwrap_or_default();
+            rest = chars.as_str();
+            l
+        };
+        // Its subscript, if it has one.
+        let mut sub = String::new();
+        if let Some(s) = rest.strip_prefix("_{") {
+            let end = s.find('}').unwrap_or(s.len());
+            sub = s[..end].to_owned();
+            rest = s.get(end + 1..).unwrap_or("");
+        } else if let Some(s) = rest.strip_prefix('_') {
+            let mut chars = s.chars();
+            sub = chars.next().map(String::from).unwrap_or_default();
+            rest = chars.as_str();
+        }
+        out.push_str(&format!("{}_{{hat{sub}}}", letter.trim_end()));
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `\binom{n}{k}` as Desmos writes it: nCr(n, k).
@@ -1415,6 +1459,14 @@ mod tests {
         assert_eq!(
             desmos_brackets("y=\\binom{n}{2}x+\\binom{\\binom{4}{2}}{k}"),
             "y=\\operatorname{nCr}\\left(n,2\\right)x+\\operatorname{nCr}\\left(\\operatorname{nCr}\\left(4,2\\right),k\\right)"
+        );
+    }
+
+    #[test]
+    fn hats_export_as_subscripts() {
+        assert_eq!(
+            desmos_brackets("y=\\hat{k}x+\\hat{\\theta }_{1}+\\hat j_2"),
+            "y=k_{hat}x+\\theta_{hat1}+j_{hat2}"
         );
     }
 
