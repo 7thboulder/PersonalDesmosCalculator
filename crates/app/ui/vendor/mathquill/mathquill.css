@@ -332,9 +332,10 @@
   display: block;
 }
 /* Added for this app: \hat, a circumflex over the letter. */
+/* Baseline: the letter under the hat sits on the line like any other. */
 .mq-math-mode .mq-hat {
   display: inline-block;
-  vertical-align: bottom;
+  vertical-align: baseline;
   text-align: center;
 }
 .mq-math-mode .mq-hat-prefix {
