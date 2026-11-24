@@ -414,6 +414,32 @@ other function:
 A letter such as Γ, W or K is only the special function while the graph
 doesn't define that name itself.
 
+## Daily problems
+
+**Daily** (beside Graph and Document at the top of the Document view, or
+**☰ → Daily problems** in the calculator) keeps the problems of the day from
+[dailyintegral.com](https://dailyintegral.com/): the integral at every level
+(Beginner, Easy, Medium, Hard), the derivative and the differential equation
+(Easy, Medium, Hard each), ten a day, with the site's two hints for each.
+
+- **Fetch today's problems** loads the site's own pages in a hidden browser
+  panel, as a browser would, and saves what they show in `daily.json` beside
+  the autosave. The site only shows the current day for free, so fetch each
+  day you want kept. Its day changes at midnight Sydney time.
+- **Fetch when the app opens** does that in the background at each start.
+  It is off until you tick it, so a fresh copy of the app never goes online
+  by itself.
+- Hints and solutions stay hidden until you press **Reveal**. The site's own
+  worked solutions are a paid feature, so **Reveal solution** runs Solve on
+  the problem and shows its working (it works on the integral, the value a
+  problem asks to find, or the differential equation with its conditions).
+- **Open day as a document** makes a new document, *Daily Integrals 11-25*
+  (month-day), in a *Daily Integrals* folder of the library, with every
+  problem of that day under a *Problem n* heading.
+- **Add to a document…** on a problem, or ticking several and **Add selected
+  to a document…**, puts them at the bottom of a document you pick. The open
+  document takes them as one step you can undo.
+
 ## Trying it on Windows 10 or 11
 
 1. Open the latest successful run of the **Windows build** workflow under the

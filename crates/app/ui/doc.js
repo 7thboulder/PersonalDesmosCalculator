@@ -2037,19 +2037,29 @@
 
   // ---- Switching views -----------------------------------------------------
 
+  // The Daily problems page shares this view's place; any switch of view
+  // leaves it (it opens itself again over the document).
+  function dailyShowing() { return document.body.classList.contains('daily-view'); }
+
   function show(doc) {
     var was = visible();
+    if (window.daily) window.daily.toggle(false);
     document.body.classList.toggle('doc-view', doc);
     if (doc !== was) send({ type: 'view', view: doc ? 'doc' : 'graph' });
     if (doc) {
-      setTimeout(function () { focusLine(Math.min(lastFocus, lines.length - 1), 'end'); }, 0);
+      setTimeout(function () {
+        if (!dailyShowing()) focusLine(Math.min(lastFocus, lines.length - 1), 'end');
+      }, 0);
     } else {
       flush();
     }
   }
 
   root.querySelectorAll('#views button').forEach(function (b) {
-    b.addEventListener('click', function () { show(b.dataset.view === 'doc'); });
+    b.addEventListener('click', function () {
+      if (b.dataset.view === 'daily') { if (window.daily) window.daily.open(); }
+      else show(b.dataset.view === 'doc');
+    });
   });
 
   function openHelp(open) {
@@ -2070,7 +2080,7 @@
       show(k === 'd');
       return;
     }
-    if (!visible()) return;
+    if (!visible() || dailyShowing()) return;
     var handled = true;
     if (helpBox.classList.contains('open') && e.key === 'Escape') openHelp(false);
     else if (scBox.classList.contains('open') && e.key === 'Escape') closeShortcuts();
@@ -2668,6 +2678,20 @@
     evaluated: evaluated,
     solved: solved,
     checked: checked,
+    // For the Daily problems page: which file is open, its library, and
+    // problems added at the bottom (one step of undo).
+    currentPath: function () { return path; },
+    libraryItems: function () { return library.items.slice(); },
+    flush: flush,
+    appendLines: function (added) {
+      var d = serialize();
+      while (d.lines.length > 1 && d.lines[d.lines.length - 1].type === 'math' &&
+        !d.lines[d.lines.length - 1].latex) d.lines.pop();
+      if (d.lines.length === 1 && d.lines[0].type === 'math' && !d.lines[0].latex) d.lines = [];
+      d.lines = d.lines.concat(added);
+      build(d);
+      changed();
+    },
     // For tests: the document as it would be saved.
     serialize: serialize,
     documentAs: documentAs,

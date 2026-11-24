@@ -2,6 +2,7 @@
 //! WebView2 child covers the left side with the MathQuill expression panel.
 //! This is the layout wry's own wgpu example uses on Windows.
 
+use crate::daily;
 use crate::docs;
 use crate::engine::Engine;
 use crate::files::{self, BoxView, Document, Space};
@@ -65,7 +66,16 @@ pub enum UserEvent {
     },
     /// Work done off the UI thread (a solve), as script for the panel.
     Script(String),
+    /// A message from the hidden panel that loads dailyintegral.com.
+    DailyCaptured(String),
+    /// Time is up for the daily page `seq` was loading.
+    DailyTick { seq: u64 },
 }
+
+/// How long one of the site's pages may take to load its problem.
+const DAILY_PAGE_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long to wait for hints once the problem has come.
+const DAILY_HINT_WAIT: Duration = Duration::from_secs(6);
 
 pub fn run(options: Options) -> Result<(), String> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
@@ -139,6 +149,28 @@ struct Running {
     /// A document's graph block open in the graph view, with the graph it
     /// took the place of.
     block_edit: Option<BlockEdit>,
+    /// The daily problems archive, as `daily.json` holds it.
+    daily: serde_json::Value,
+    /// The hidden panel going through the site's pages, while fetching.
+    daily_fetch: Option<DailyFetch>,
+    /// Whether the archive's "fetch when the app opens" has had its turn.
+    daily_opened: bool,
+}
+
+/// A fetch of the day's problems: a hidden panel loads each of the site's
+/// pages in turn and reports what they load.
+struct DailyFetch {
+    webview: WebView,
+    /// Which of `daily::PAGES` is loading.
+    page: usize,
+    /// Counts page loads, so a late timer for an earlier page is ignored.
+    seq: u64,
+    /// The page's problem and which of its two hints have come.
+    puzzle: bool,
+    hints: [bool; 2],
+    /// Problems that came, and pages that never sent theirs.
+    saved: usize,
+    failed: Vec<String>,
 }
 
 /// The calculator's own graph, put aside while a graph block is edited.
@@ -171,6 +203,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Fetched { url, reply } => state.fetched(&url, reply),
             UserEvent::PdfSaved { path, result, open } => state.pdf_saved(path, result, open),
             UserEvent::Script(script) => state.run_script(&script),
+            UserEvent::DailyCaptured(message) => state.daily_captured(&message),
+            UserEvent::DailyTick { seq } => state.daily_tick(seq),
         }
     }
 
@@ -351,6 +385,9 @@ impl Running {
             reference_open: false,
             docs,
             block_edit: None,
+            daily: daily::read(),
+            daily_fetch: None,
+            daily_opened: false,
         };
         let area = state.graph_area();
         state.viewport = Viewport::new(area.width as f64, area.height as f64);
@@ -837,6 +874,25 @@ impl Running {
                     self.doc_error(format!("Could not save the shortcuts: {e}"));
                 }
             }
+            Some("dailyInit") => self.daily_init(),
+            Some("dailyFetch") => self.daily_start(),
+            Some("dailySetting") => {
+                self.daily["fetchOnOpen"] = serde_json::Value::Bool(value["fetchOnOpen"] == true);
+                self.daily_save();
+            }
+            Some("dailySolve") => {
+                let token = value["token"].clone();
+                let latex = value["latex"].as_str().unwrap_or_default().to_owned();
+                let op = value["op"].as_str().map(str::to_owned);
+                let rows = crate::solve::doc_rows(&value["lines"]);
+                self.in_background(move || {
+                    let reply = crate::solve::reply(&rows, 0, &latex, op.as_deref());
+                    let reply = serde_json::json!({ "token": token, "reply": reply });
+                    format!("window.daily.solved({reply})")
+                });
+            }
+            Some("dailyNewDoc") => self.daily_new_doc(&value["doc"]),
+            Some("dailyAppend") => self.daily_append(&value),
             Some("docNew") => {
                 self.docs.path = None;
                 self.remember_docs();
@@ -1417,6 +1473,245 @@ impl Running {
         );
     }
 
+    // ---- Daily problems archive --------------------------------------------
+
+    fn daily_reply(&self, function: &str, value: serde_json::Value) {
+        self.run_script(&format!("window.daily.{function}({value})"));
+    }
+
+    fn daily_save(&mut self) {
+        if self.smoke_test {
+            return;
+        }
+        if let Err(e) = daily::write(&self.daily) {
+            self.daily_reply(
+                "status",
+                serde_json::json!({ "error": format!("Could not save the archive: {e}") }),
+            );
+        }
+    }
+
+    /// The archive's page starts: what is saved, and whether a fetch is
+    /// running. With "fetch when the app opens" on, the first start of the
+    /// page in a run of the app fetches.
+    fn daily_init(&mut self) {
+        self.daily_reply(
+            "init",
+            serde_json::json!({ "archive": self.daily, "busy": self.daily_fetch.is_some() }),
+        );
+        if !self.daily_opened {
+            self.daily_opened = true;
+            if self.daily["fetchOnOpen"] == true && !self.smoke_test {
+                self.daily_start();
+            }
+        }
+    }
+
+    fn daily_start(&mut self) {
+        if self.daily_fetch.is_some() {
+            return;
+        }
+        let proxy = self.proxy.clone();
+        let url = format!("{}{}", daily::SITE, daily::PAGES[0].path);
+        // Off screen and hidden: it only loads the pages.
+        let webview = WebViewBuilder::new()
+            .with_bounds(Rect {
+                position: wry::dpi::LogicalPosition::new(-2000.0, -2000.0).into(),
+                size: wry::dpi::LogicalSize::new(1000.0, 800.0).into(),
+            })
+            .with_visible(false)
+            .with_initialization_script(daily::CAPTURE_SCRIPT)
+            .with_navigation_handler(|url| daily::allowed_url(&url))
+            .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
+            .with_ipc_handler(move |request| {
+                let _ = proxy.send_event(UserEvent::DailyCaptured(request.body().clone()));
+            })
+            .with_url(&url)
+            .build_as_child(&self.window);
+        match webview {
+            Ok(webview) => {
+                self.daily_fetch = Some(DailyFetch {
+                    webview,
+                    page: 0,
+                    seq: 0,
+                    puzzle: false,
+                    hints: [false; 2],
+                    saved: 0,
+                    failed: Vec::new(),
+                });
+                self.daily_progress();
+                self.daily_timer(0, DAILY_PAGE_TIMEOUT);
+            }
+            Err(e) => self.daily_reply(
+                "fetched",
+                serde_json::json!({ "error": format!("Could not open the site: {e}") }),
+            ),
+        }
+    }
+
+    fn daily_timer(&self, seq: u64, after: Duration) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            let _ = proxy.send_event(UserEvent::DailyTick { seq });
+        });
+    }
+
+    fn daily_progress(&self) {
+        if let Some(fetch) = &self.daily_fetch {
+            let page = daily::PAGES[fetch.page];
+            self.daily_reply(
+                "progress",
+                serde_json::json!({
+                    "at": fetch.page,
+                    "total": daily::PAGES.len(),
+                    "kind": page.kind,
+                    "level": page.level,
+                }),
+            );
+        }
+    }
+
+    /// Something the page loaded. Its own problem and hints go in the
+    /// archive; once all three have come, the next page loads.
+    fn daily_captured(&mut self, message: &str) {
+        let Some(fetch) = &mut self.daily_fetch else {
+            return;
+        };
+        let Some(captured) = daily::parse_capture(message) else {
+            return;
+        };
+        let page = daily::PAGES[fetch.page];
+        let (kind, level) = match &captured {
+            daily::Captured::Puzzle { kind, level, .. } => (kind, level),
+            daily::Captured::Hint { kind, level, .. } => (kind, level),
+        };
+        let mine = kind == page.kind && *level == page.level;
+        let mut first_puzzle = false;
+        if mine {
+            match &captured {
+                daily::Captured::Puzzle { .. } => {
+                    first_puzzle = !fetch.puzzle;
+                    if first_puzzle {
+                        fetch.saved += 1;
+                    }
+                    fetch.puzzle = true;
+                }
+                daily::Captured::Hint { index, .. } => fetch.hints[*index] = true,
+            }
+        }
+        let (done, seq) = (fetch.puzzle && fetch.hints == [true; 2], fetch.seq);
+        if daily::add(&mut self.daily, &captured) {
+            self.daily_save();
+            self.daily_reply("archive", self.daily.clone());
+        }
+        if done {
+            self.daily_next();
+        } else if first_puzzle {
+            // Some levels have no hints: don't wait the whole page timeout.
+            self.daily_timer(seq, DAILY_HINT_WAIT);
+        }
+    }
+
+    fn daily_tick(&mut self, seq: u64) {
+        let Some(fetch) = &mut self.daily_fetch else {
+            return;
+        };
+        if fetch.seq != seq {
+            return;
+        }
+        if !fetch.puzzle {
+            let page = daily::PAGES[fetch.page];
+            fetch.failed.push(format!("{} {}", page.kind, page.level));
+        }
+        self.daily_next();
+    }
+
+    fn daily_next(&mut self) {
+        let Some(fetch) = &mut self.daily_fetch else {
+            return;
+        };
+        fetch.page += 1;
+        fetch.seq += 1;
+        fetch.puzzle = false;
+        fetch.hints = [false; 2];
+        if fetch.page < daily::PAGES.len() {
+            let url = format!("{}{}", daily::SITE, daily::PAGES[fetch.page].path);
+            let _ = fetch.webview.load_url(&url);
+            let seq = fetch.seq;
+            self.daily_progress();
+            self.daily_timer(seq, DAILY_PAGE_TIMEOUT);
+            return;
+        }
+        let fetch = self.daily_fetch.take().expect("fetching");
+        drop(fetch.webview);
+        if fetch.saved > 0 {
+            self.daily["lastFetch"] = serde_json::Value::String(now_stamp());
+            self.daily_save();
+        }
+        self.daily_reply(
+            "fetched",
+            serde_json::json!({ "saved": fetch.saved, "failed": fetch.failed, "archive": self.daily }),
+        );
+    }
+
+    /// A whole day as a new document, in the library's Daily Integrals
+    /// folder, opened in the Document view.
+    fn daily_new_doc(&mut self, doc: &serde_json::Value) {
+        let title = doc["title"].as_str().unwrap_or_default();
+        let dir = self.library().join("Daily Integrals");
+        let path = docs::free_path(&dir, title, None);
+        let written = docs::to_file(doc).and_then(|text| docs::write(&path, &text));
+        match written {
+            Ok(()) => {
+                self.doc_open(Some(path));
+                self.doc_list();
+                self.daily_reply("opened", serde_json::json!({}));
+            }
+            Err(e) => self.daily_reply(
+                "status",
+                serde_json::json!({ "error": format!("Could not make the document: {e}") }),
+            ),
+        }
+    }
+
+    /// Problems added at the bottom of a document that isn't open (the
+    /// panel adds them itself to the open one), which then opens.
+    fn daily_append(&mut self, value: &serde_json::Value) {
+        let Some(path) = value["path"].as_str().map(PathBuf::from) else {
+            return;
+        };
+        let added = value["lines"].as_array().cloned().unwrap_or_default();
+        let result = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| docs::from_file(&t))
+            .and_then(|mut doc| {
+                if let Some(lines) = doc["lines"].as_array_mut() {
+                    // A document's last line is often an empty one to type in.
+                    while lines.len() > 1
+                        && lines.last().is_some_and(|l| {
+                            l["type"] == "math" && l["latex"].as_str().unwrap_or("").is_empty()
+                        })
+                    {
+                        lines.pop();
+                    }
+                    lines.extend(added);
+                }
+                docs::to_file(&doc).and_then(|text| docs::write(&path, &text))
+            });
+        match result {
+            Ok(()) => {
+                self.doc_open(Some(path));
+                self.doc_list();
+                self.daily_reply("opened", serde_json::json!({}));
+            }
+            Err(e) => self.daily_reply(
+                "status",
+                serde_json::json!({ "error": format!("Could not add to {}: {e}", path.display()) }),
+            ),
+        }
+    }
+
     fn run_script(&self, js: &str) {
         if let Some(webview) = &self.webview {
             let _ = webview.evaluate_script(js);
@@ -1816,4 +2111,12 @@ mod dialogs {
             _ => Answer::Save,
         }
     }
+}
+
+/// Now, as seconds since 1970, for the archive's "last fetched".
+fn now_stamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default()
 }

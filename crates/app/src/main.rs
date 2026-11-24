@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod axes;
+mod daily;
 mod docs;
 mod engine;
 mod files;
@@ -57,7 +58,10 @@ USAGE:
     graphcalc --solve-degrees LATEX [OP]   (as in degree mode)
                                        run the Solve button on one row and print
                                        the working as JSON (OP as in its choices,
-                                       such as factor or solve:x)";
+                                       such as factor or solve:x)
+    graphcalc --solve-doc              run a document line's Solve, read as JSON
+                                       {latex, lines} on stdin (lines: the live
+                                       lines it may use), and print the working";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -130,6 +134,20 @@ fn run(args: &[String]) -> Result<(), String> {
             }]);
             let op = args.get(2).map(String::as_str).filter(|o| !o.is_empty());
             let reply = solve::reply_in(&row, 0, latex, op, degrees);
+            println!("{reply:#}");
+            Ok(())
+        }
+        // As a document's (or the daily archive's) Solve: the line and the
+        // other lines it may use, as {"latex": ..., "lines": [...]} on stdin.
+        Some("--solve-doc") => {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let request: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
+            let latex = request["latex"].as_str().unwrap_or_default();
+            let rows = solve::doc_rows(&request["lines"]);
+            let reply = solve::reply(&rows, 0, latex, request["op"].as_str());
             println!("{reply:#}");
             Ok(())
         }
