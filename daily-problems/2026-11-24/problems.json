@@ -1,0 +1,29 @@
+[
+  {
+    "kind": "integral",
+    "latex": null,
+    "hint": null,
+    "solve_input": null,
+    "solve_reply": null,
+    "verdict": "FETCH_FAILED",
+    "notes": "Not fetched: the site loads each puzzle from its Supabase edge functions at btulehndzikuesmrzmhd.supabase.co (get-server-day, get-daily-puzzle), and this cloud environment's network policy refuses that host (net::ERR_TUNNEL_CONNECTION_FAILED), so the page shows 404 / loading. dailyintegral.com itself is reachable. Fix: allow btulehndzikuesmrzmhd.supabase.co (or *.supabase.co) in the environment's network settings."
+  },
+  {
+    "kind": "derivative",
+    "latex": null,
+    "hint": null,
+    "solve_input": null,
+    "solve_reply": null,
+    "verdict": "FETCH_FAILED",
+    "notes": "Not fetched: the site loads each puzzle from its Supabase edge functions at btulehndzikuesmrzmhd.supabase.co (get-server-day, get-daily-puzzle), and this cloud environment's network policy refuses that host (net::ERR_TUNNEL_CONNECTION_FAILED), so the page shows 404 / loading. dailyintegral.com itself is reachable. Fix: allow btulehndzikuesmrzmhd.supabase.co (or *.supabase.co) in the environment's network settings."
+  },
+  {
+    "kind": "differential",
+    "latex": null,
+    "hint": null,
+    "solve_input": null,
+    "solve_reply": null,
+    "verdict": "FETCH_FAILED",
+    "notes": "Not fetched: the site loads each puzzle from its Supabase edge functions at btulehndzikuesmrzmhd.supabase.co (get-server-day, get-daily-puzzle), and this cloud environment's network policy refuses that host (net::ERR_TUNNEL_CONNECTION_FAILED), so the page shows 404 / loading. dailyintegral.com itself is reachable. Fix: allow btulehndzikuesmrzmhd.supabase.co (or *.supabase.co) in the environment's network settings."
+  }
+]
