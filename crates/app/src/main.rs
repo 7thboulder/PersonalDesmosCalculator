@@ -133,6 +133,31 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{reply:#}");
             Ok(())
         }
+        Some("--solve-rows") => {
+            // Solve one row with other rows in scope, as the panel does:
+            // stdin is {"rows": [{"id", "latex", "seeds"?, "derivs"?}], "id", "op"?, "degrees"?}.
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let ask: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad JSON: {e}"))?;
+            let id = ask["id"].as_u64().ok_or("--solve-rows needs an id")?;
+            let latex = ask["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r["id"].as_u64() == Some(id))
+                .and_then(|r| r["latex"].as_str())
+                .ok_or("no row with that id")?
+                .to_owned();
+            let op = ask["op"].as_str().filter(|o| !o.is_empty());
+            let degrees = ask["degrees"].as_bool().unwrap_or(false);
+            println!(
+                "{:#}",
+                solve::reply_in(&ask["rows"], id, &latex, op, degrees)
+            );
+            Ok(())
+        }
         Some("--bench" | "--bench-implicit") => {
             let implicit = args[0] == "--bench-implicit";
             let (w, h) = match args.get(1) {
