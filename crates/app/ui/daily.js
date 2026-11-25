@@ -262,7 +262,6 @@
     var out = [{ type: 'heading', level: 2, text: heading }];
     if (p.title) out.push({ type: 'text', text: escText(p.title) });
     st.lines.forEach(function (l) { out.push(l); });
-    if (st.credit) out.push({ type: 'text', text: escText(st.credit) });
     return out;
   }
 

@@ -435,7 +435,8 @@ doesn't define that name itself.
   problem asks to find, or the differential equation with its conditions).
 - **Open day as a document** makes a new document, *Daily Integrals 11-25*
   (month-day), in a *Daily Integrals* folder of the library, with every
-  problem of that day under a *Problem n* heading.
+  problem of that day under a *Problem n* heading (the "Submitted by" credit
+  shows in the Daily view only).
 - **Add to a document…** on a problem, or ticking several and **Add selected
   to a document…**, puts them at the bottom of a document you pick. The open
   document takes them as one step you can undo.
