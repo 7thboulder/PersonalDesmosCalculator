@@ -8,6 +8,8 @@ const DOC_STYLE: &str = include_str!("../ui/doc.css");
 const DOC_SCRIPT: &str = include_str!("../ui/doc.js");
 const SHORTCUTS_SCRIPT: &str = include_str!("../ui/shortcuts.js");
 const REFERENCE_SCRIPT: &str = include_str!("../ui/reference.js");
+const DAILY_SCRIPT: &str = include_str!("../ui/daily.js");
+const DAILY_STYLE: &str = include_str!("../ui/daily.css");
 const JQUERY: &str = include_str!("../ui/vendor/jquery.min.js");
 const MATHQUILL_JS: &str = include_str!("../ui/vendor/mathquill/mathquill.js");
 const MATHQUILL_CSS: &str = include_str!("../ui/vendor/mathquill/mathquill.css");
@@ -24,6 +26,8 @@ pub fn panel_html() -> String {
         .replace("{{JQUERY}}", JQUERY)
         .replace("{{MATHQUILL_JS}}", MATHQUILL_JS)
         .replace("{{DOC_STYLE}}", DOC_STYLE)
+        .replace("{{DAILY_STYLE}}", DAILY_STYLE)
+        .replace("{{DAILY_SCRIPT}}", DAILY_SCRIPT)
         .replace("{{DOC_SCRIPT}}", DOC_SCRIPT)
         .replace("{{SHORTCUTS_SCRIPT}}", SHORTCUTS_SCRIPT)
         .replace("{{REFERENCE_SCRIPT}}", REFERENCE_SCRIPT)
@@ -77,6 +81,8 @@ mod tests {
             "{{DOC_SCRIPT}}",
             "{{SHORTCUTS_SCRIPT}}",
             "{{REFERENCE_SCRIPT}}",
+            "{{DAILY_STYLE}}",
+            "{{DAILY_SCRIPT}}",
         ] {
             assert!(!html.contains(name), "unfilled placeholder {name}");
         }

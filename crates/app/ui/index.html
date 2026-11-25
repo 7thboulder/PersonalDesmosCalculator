@@ -6,6 +6,7 @@
 <style>{{MATHQUILL_CSS}}</style>
 <style>{{STYLE}}</style>
 <style>{{DOC_STYLE}}</style>
+<style>{{DAILY_STYLE}}</style>
 </head>
 <body>
 <div id="panel">
@@ -43,6 +44,7 @@
   <button data-file="import">Import from Desmos&hellip;</button>
   <button data-file="csv">Open CSV as table&hellip;</button>
   <button data-file="exportDesmos">Export to Desmos&hellip;</button>
+  <button data-file="daily">Daily problems&hellip;</button>
   <button data-file="help">Functions and shortcuts<span class="key">Ctrl+/</span></button>
 </div>
 <div id="settings-menu">
@@ -106,7 +108,7 @@
   <div id="doc-bar">
     <button id="doc-side-toggle" class="icon" title="Documents">&#x2630;</button>
     <div id="views">
-      <button data-view="graph" title="Graphing calculator (Ctrl+Alt+G)">Graph</button><button data-view="doc" class="on" title="Math document (Ctrl+Alt+D)">Document</button>
+      <button data-view="graph" title="Graphing calculator (Ctrl+Alt+G)">Graph</button><button data-view="doc" class="on" title="Math document (Ctrl+Alt+D)">Document</button><button data-view="daily" title="Daily problems from dailyintegral.com">Daily</button>
     </div>
     <span class="doc-status"></span>
     <span class="spacer"></span>
@@ -133,6 +135,31 @@
         <div class="folder" title="Documents are saved here as .gcdoc files"></div>
       </div>
     </aside>
+    <div id="daily">
+      <div id="daily-head">
+        <h1>Daily problems</h1>
+        <p class="daily-sub">Today's integrals, derivatives and differential equations from
+          <b>dailyintegral.com</b>, at every level, kept here with their hints. Hints and
+          solutions stay hidden until you reveal them.</p>
+        <div class="daily-actions">
+          <button id="daily-fetch" class="primary">Fetch today's problems</button>
+          <label title="Fetch the day's problems in the background each time the app opens"><input type="checkbox" id="daily-auto"> Fetch when the app opens</label>
+          <span class="grow"></span>
+          <button id="daily-add-selected" disabled title="Add the ticked problems at the bottom of a document">Add selected to a document&hellip;</button>
+        </div>
+        <div id="daily-status"></div>
+      </div>
+      <div id="daily-days"></div>
+    </div>
+    <div id="daily-pick" class="overlay">
+      <div class="box">
+        <h2>Add to which document?</h2>
+        <p class="daily-pick-what"></p>
+        <input type="search" class="daily-pick-search" placeholder="Search documents" spellcheck="false">
+        <div class="daily-pick-list"></div>
+        <div class="buttons"><button class="cancel">Cancel</button></div>
+      </div>
+    </div>
     <div id="doc-scroll">
       <div id="doc-page">
         <input id="doc-title" placeholder="Untitled" spellcheck="true" autocomplete="off">
@@ -348,5 +375,6 @@
 <script>{{SHORTCUTS_SCRIPT}}</script>
 <script>{{DOC_SCRIPT}}</script>
 <script>{{REFERENCE_SCRIPT}}</script>
+<script>{{DAILY_SCRIPT}}</script>
 </body>
 </html>

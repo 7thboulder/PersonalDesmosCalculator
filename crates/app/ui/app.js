@@ -3198,6 +3198,7 @@
     if (b.dataset.file === 'import') openImport();
     else if (b.dataset.file === 'csv') openCsv();
     else if (b.dataset.file === 'help') openHelp();
+    else if (b.dataset.file === 'daily') { if (window.daily) window.daily.open(); }
     else send({ type: b.dataset.file });
   });
   document.addEventListener('mousedown', function () { fileMenu.classList.remove('open'); });

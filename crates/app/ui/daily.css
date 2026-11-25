@@ -1,0 +1,121 @@
+/* Daily problems: shown in the Document view's place. */
+#daily { display: none; }
+body.daily-view #doc-main > #doc-side,
+body.daily-view #doc-main > #doc-scroll { display: none; }
+body.daily-view #daily {
+  display: block;
+  flex: 1;
+  overflow-y: auto;
+  background: #f6f7f9;
+  font: 14px "Segoe UI", Arial, sans-serif;
+  color: #222;
+}
+/* The document's own buttons don't apply here. */
+body.daily-view #doc-bar #doc-undo,
+body.daily-view #doc-bar #doc-redo,
+body.daily-view #doc-bar #doc-check,
+body.daily-view #doc-bar #doc-check-type,
+body.daily-view #doc-bar #doc-pdf-btn,
+body.daily-view #doc-bar #doc-copy-btn,
+body.daily-view #doc-bar #doc-shortcuts-btn,
+body.daily-view #doc-bar #doc-side-toggle,
+body.daily-view #doc-bar #doc-help,
+body.daily-view #doc-bar .doc-status { visibility: hidden; }
+
+#daily-head, #daily-days { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+#daily-head { padding-top: 20px; padding-bottom: 8px; }
+#daily-head h1 { font-size: 22px; margin: 0 0 4px; font-weight: 600; }
+.daily-sub { margin: 0 0 12px; color: #555; }
+.daily-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.daily-actions .grow, .daily-day-head .grow { flex: 1; }
+.daily-actions label { display: flex; align-items: center; gap: 6px; color: #444; cursor: pointer; }
+#daily button {
+  font: 600 12px "Segoe UI", Arial, sans-serif;
+  padding: 5px 11px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  background: #fff;
+  color: #444;
+  cursor: pointer;
+}
+#daily button:hover:not(:disabled) { background: #eef3fb; border-color: #9bb7e0; }
+#daily button:disabled { opacity: 0.55; cursor: default; }
+#daily button.primary { background: #2f72b3; border-color: #2f72b3; color: #fff; }
+#daily button.primary:hover:not(:disabled) { background: #2863a0; }
+#daily-status { min-height: 18px; margin-top: 8px; font-size: 12px; color: #666; }
+#daily-status.error { color: #b3261e; }
+
+.daily-empty { padding: 40px 0; text-align: center; color: #777; }
+.daily-day { margin: 16px 0 28px; }
+.daily-day-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 0;
+  background: #f6f7f9;
+  border-bottom: 1px solid #dcdfe4;
+}
+.daily-day-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.daily-count { color: #777; font-size: 12px; }
+
+.daily-problem {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #dcdfe4;
+  border-radius: 8px;
+}
+.daily-problem-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.daily-problem-top input { margin: 0; }
+.daily-title { flex: 1; color: #555; font-size: 13px; }
+.daily-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: #e8eef8;
+  color: #2f5f9a;
+}
+.daily-badge.derivative { background: #e9f5ec; color: #2c7a3f; }
+.daily-badge.differential { background: #f6ecf8; color: #7d3b8f; }
+#daily button.daily-add { font-weight: 400; padding: 3px 9px; }
+
+.daily-statement { padding: 4px 2px 8px; }
+.daily-text { margin: 4px 0; line-height: 1.7; }
+.daily-math { margin: 8px 0; font-size: 18px; text-align: center; overflow-x: auto; }
+.daily-inline { font-size: 15px; }
+.daily-credit { margin-top: 6px; font-size: 12px; color: #888; font-style: italic; }
+
+.daily-reveal { border-top: 1px dashed #dcdfe4; padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.daily-hint { line-height: 1.6; }
+#daily button.daily-reveal-btn { font-weight: 400; color: #2f72b3; }
+#daily button.daily-link { border: 0; background: transparent; color: #888; font-weight: 400; padding: 0 6px; }
+#daily button.daily-link:hover { color: #333; background: transparent; }
+.daily-none { color: #888; font-size: 12px; }
+.daily-dsolve { margin: 4px 0; }
+.daily-solving { color: #555; margin-bottom: 6px; }
+
+#daily-pick .box { width: 420px; max-width: 90vw; }
+.daily-pick-what { color: #555; margin: 4px 0 8px; }
+.daily-pick-search { width: 100%; box-sizing: border-box; padding: 5px 8px; margin-bottom: 6px; }
+.daily-pick-list { max-height: 50vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+.daily-pick-item {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+  font: 13px "Segoe UI", Arial, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.daily-pick-item:hover { background: #eef3fb; }
+.daily-pick-item .where { color: #888; font-size: 12px; }
+.daily-pick-list .daily-none { padding: 10px; }
